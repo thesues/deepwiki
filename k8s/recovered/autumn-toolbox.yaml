@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autumn-toolbox
+  namespace: autumn
+  labels:
+    app: autumn-toolbox
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: autumn-toolbox
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: autumn-toolbox
+    spec:
+      containers:
+      - args:
+        - 'set -euo pipefail
+
+          # autumn''s Rust client is IP-only (no DNS) -> resolve once, bake it in.
+
+          # (Restart this pod if the manager ClusterIP ever changes.)
+
+          M="$(getent hosts autumn-manager | awk ''{print $1}''):9001"
+
+          echo "export AUTUMN_MANAGER=$M"          >  /etc/profile.d/autumn.sh
+
+          echo "export M=$M"                       >> /etc/profile.d/autumn.sh
+
+          echo "alias afs=''autumnfs --manager $M''" >> /etc/profile.d/autumn.sh
+
+          echo "alias acl=''autumn-client --manager $M''" >> /etc/profile.d/autumn.sh
+
+          echo "alias aop=''autumn-op --manager $M''"     >> /etc/profile.d/autumn.sh
+
+          echo "toolbox ready: manager=$M"
+
+          sleep infinity
+
+          '
+        command:
+        - bash
+        - -lc
+        image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:633a4832de031848b34d971902c5aaac37be5f90
+        imagePullPolicy: IfNotPresent
+        name: toolbox
+        securityContext:
+          capabilities:
+            add:
+            - IPC_LOCK
+            - SYS_ADMIN
+          privileged: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/autumn/cred
+          name: cred
+          readOnly: true
+        - mountPath: /etc/autumn/authz
+          name: authz
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        autumn-node: 'true'
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: cred
+        secret:
+          defaultMode: 420
+          optional: true
+          secretName: autumn-credential
+      - name: authz
+        secret:
+          defaultMode: 420
+          optional: true
+          secretName: autumn-authz
+

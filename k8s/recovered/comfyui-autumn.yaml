@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comfyui-autumn
+  namespace: autumn
+  labels:
+    app.kubernetes.io/component: comfyui
+    app.kubernetes.io/name: autumn
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: comfyui
+      app.kubernetes.io/name: autumn
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: comfyui
+        app.kubernetes.io/name: autumn
+    spec:
+      containers:
+      - args:
+        - "set -euo pipefail\necho \"NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}\"\
+          \nexport CUDA_VISIBLE_DEVICES=\"${NVIDIA_VISIBLE_DEVICES}\"\nM=\"$(getent\
+          \ hosts autumn-manager | awk '{print $1}'):9001\"\necho \"manager = $M\"\
+          \nMP=/mnt/autumn\nMODEL_DIR=/opt/ComfyUI/models\nmkdir -p \"$MP\" \"$MODEL_DIR\"\
+          \nif grep -qs \" $MODEL_DIR \" /proc/mounts; then\n  umount -l \"$MODEL_DIR\"\
+          \ 2>/dev/null || true\nfi\nif grep -qs \" $MP fuse\" /proc/mounts; then\n\
+          \  fusermount3 -uz \"$MP\" 2>/dev/null || umount -l \"$MP\" 2>/dev/null\
+          \ || true\nfi\n/opt/fusebin/autumn-fuse --manager \"$M\" --mountpoint \"\
+          $MP\" --transport tcp \\\n  --direct-read true \\\n  --read-io-threads 8\
+          \ \\\n  --credential-file /etc/autumn/cred/fs.cred &\nFUSE_PID=$!\ntrap\
+          \ 'umount -l /opt/ComfyUI/models 2>/dev/null || true; kill $FUSE_PID 2>/dev/null\
+          \ || true; fusermount3 -u /mnt/autumn 2>/dev/null || true' EXIT\nfor i in\
+          \ $(seq 1 120); do\n  ls \"$MP/models\" >/dev/null 2>&1 && break\n  kill\
+          \ -0 $FUSE_PID 2>/dev/null || { echo \"autumn-fuse exited during mount\"\
+          ; exit 1; }\n  sleep 1\ndone\nls \"$MP/models\" >/dev/null 2>&1 || { echo\
+          \ \"mount not serving $MP/models after 120s\"; exit 1; }\nmount --bind \"\
+          $MP/models\" \"$MODEL_DIR\"\necho \"AutumnFS models mounted at $MODEL_DIR\"\
+          \nls \"$MODEL_DIR/diffusion_models\" | head -5 || true\nmkdir -p /opt/ComfyUI/user/default/workflows\
+          \ /opt/ComfyUI/user/default/subgraphs\n[ -f /opt/ComfyUI/user/default/comfy.templates.json\
+          \ ] || printf '{}\\n' > /opt/ComfyUI/user/default/comfy.templates.json\n\
+          exec python3 main.py --listen 0.0.0.0 --port 8188"
+        command:
+        - bash
+        - -lc
+        image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/comfyui-autumn:e2e71a7d4a5ea6408fba6321f7a2b26765751f5c
+        imagePullPolicy: IfNotPresent
+        name: comfyui
+        ports:
+        - containerPort: 8188
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: '16'
+            memory: 128Gi
+            nvidia.com/gpu: '1'
+            vke.volcengine.com/eni-ip: '1'
+          requests:
+            cpu: '8'
+            memory: 64Gi
+            nvidia.com/gpu: '1'
+            vke.volcengine.com/eni-ip: '1'
+        securityContext:
+          capabilities:
+            add:
+            - SYS_ADMIN
+          privileged: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        - mountPath: /opt/fusebin
+          name: fusebin
+        - mountPath: /mnt/autumn
+          name: mnt
+        - mountPath: /etc/autumn/cred
+          name: cred
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      initContainers:
+      - args:
+        - cp /usr/local/bin/autumn-fuse /fusebin/ && chmod +x /fusebin/autumn-fuse
+        command:
+        - sh
+        - -c
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: '1'
+        image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:633a4832de031848b34d971902c5aaac37be5f90
+        imagePullPolicy: IfNotPresent
+        name: fusebin
+        resources:
+          limits:
+            cpu: '1'
+            memory: 256Mi
+          requests:
+            cpu: '1'
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /fusebin
+          name: fusebin
+      nodeSelector:
+        kubernetes.io/hostname: 192.168.3.2
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: cred
+        secret:
+          defaultMode: 420
+          secretName: autumn-credential
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+        name: dshm
+      - emptyDir: {}
+        name: fusebin
+      - emptyDir: {}
+        name: mnt
+status:
+  conditions:
+  - lastTransitionTime: '2026-09-14T03:52:45Z'
+    lastUpdateTime: '2026-09-14T09:56:38Z'
+    message: ReplicaSet "comfyui-autumn-5c5d475cdc" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: 'True'
+    type: Progressing
+  - lastTransitionTime: '2026-09-15T06:45:05Z'
+    lastUpdateTime: '2026-09-15T06:45:05Z'
+    message: Deployment does not have minimum availability.
+    reason: MinimumReplicasUnavailable
+    status: 'False'
+    type: Available
+  observedGeneration: 11
+  replicas: 1
+  unavailableReplicas: 1
+  updatedReplicas: 1
+

@@ -65,7 +65,7 @@ spec:
         # proxy path — measured at 164 MiB/s on this cluster, so ~4 s for this
         # file — and needs no mount, no privilege and no FUSE.
         - name: fetch-model
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:c211b626a140ddc43bd101925e3b019c7d0839f9
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:633a4832de031848b34d971902c5aaac37be5f90
           command: ["sh","-c"]
           args:
             - |
