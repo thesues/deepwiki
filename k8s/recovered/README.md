@@ -11,3 +11,7 @@ next rollout does not have to guess.
 - `autumn-toolbox.yaml` — image `autumn-rs:633a4832…`.
 
 If a manifest for these lands in a proper directory later, delete the copy here.
+
+- `comfyui-autumn.yaml` — REMOVED: moved to its real home,
+  `github.com/thesues/ComfyUI` branch `autumn-dev`, `k8s/comfyui-autumn.yaml`
+  (next to the Dockerfile that builds the image).
