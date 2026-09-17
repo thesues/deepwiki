@@ -4,3 +4,4 @@
 md/
 *.epub
 *.pdf
+__pycache__/
