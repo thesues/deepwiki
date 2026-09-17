@@ -124,3 +124,66 @@ def test_a_call_whose_result_was_never_stored_is_not_left_running(monkeypatch):
     answered = _replay(monkeypatch, _msgs("echo ok", "ok", 0))
     assert answered[-1]["status"] == "completed"
     assert all(r["status"] != "incomplete" for r in answered), answered
+
+
+# ── compaction summaries must not render as speech ─────────────────────────
+
+def test_history_compaction_summary_becomes_a_note_not_a_message():
+    """hermes persists a `[CONTEXT COMPACTION — REFERENCE ONLY]…` instruction
+    block as an ordinary user row after compressing history. The transcript
+    rendered it as if someone had said it — a wall of highlighted prose nobody
+    wrote. It is a note now."""
+    import hermes_session_api as hsa
+
+    class FakeDB:
+        def get_messages(self, sid):
+            return [
+                {"role": "user", "content":
+                 "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were "
+                 "compacted into the summary below. " + "x" * 500},
+                {"role": "user", "content": "金刚经里面的故事?"},
+                {"role": "assistant", "content": "好的，讲一个故事"},
+            ]
+
+    orig = hsa._db
+    hsa._db = lambda: FakeDB()
+    try:
+        events = hsa.history("s", 100)
+    finally:
+        hsa._db = orig
+    assert [e["kind"] for e in events] == ["note", "history_user", "delta"]
+    assert events[0]["text"] == "（此前的对话已压缩为上下文摘要）"
+
+
+def test_history_legacy_summary_prefix_also_becomes_a_note():
+    import hermes_session_api as hsa
+
+    class FakeDB:
+        def get_messages(self, sid):
+            return [{"role": "assistant", "content": "[CONTEXT SUMMARY]: earlier stuff"}]
+
+    orig = hsa._db
+    hsa._db = lambda: FakeDB()
+    try:
+        events = hsa.history("s", 100)
+    finally:
+        hsa._db = orig
+    assert [e["kind"] for e in events] == ["note"]
+
+
+def test_history_real_user_message_with_similar_opening_is_kept():
+    """Only whole-summary rows are skipped. A human message that merely quotes
+    or mentions compaction is speech and must survive."""
+    import hermes_session_api as hsa
+
+    class FakeDB:
+        def get_messages(self, sid):
+            return [{"role": "user", "content": "什么是 context compaction？"}]
+
+    orig = hsa._db
+    hsa._db = lambda: FakeDB()
+    try:
+        events = hsa.history("s", 100)
+    finally:
+        hsa._db = orig
+    assert [e["kind"] for e in events] == ["history_user"]

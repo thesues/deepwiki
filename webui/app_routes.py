@@ -28,7 +28,7 @@ from hermes_agent import Endpoint
 from sse import SSE_HEADERS, write_stream
 from turns import Refused, TurnManager
 
-log = logging.getLogger("buda.routes")
+log = logging.getLogger("deepwiki.routes")
 
 
 def build_app(

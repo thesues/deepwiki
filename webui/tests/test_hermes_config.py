@@ -217,7 +217,7 @@ def test_compression_floor_defaults_to_hermes_when_importable(tmp_path, monkeypa
 
 def test_resolution_prefers_hermes_own_resolver(monkeypatch):
     """The same function the CLI uses on itself — including its `mcp-<name>`
-    appending. If buda re-derived that by hand, the two ends would drift."""
+    appending. If deepwiki re-derived that by hand, the two ends would drift."""
     fake = types.ModuleType("hermes_cli.tools_config")
     fake._get_platform_tools = lambda cfg, platform, **kw: {"file", "terminal", "mcp-memory"}
     monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))

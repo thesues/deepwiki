@@ -7,7 +7,7 @@
 # ClusterIP Services.
 #
 # `IMAGE_WEBUI` below is a PLACEHOLDER, not an image. Substitute it before
-# applying — `sed "s|IMAGE_WEBUI|<repo>/buda-webui:<sha>|" k8s/webui.yaml |
+# applying — `sed "s|IMAGE_WEBUI|<repo>/deepwiki-webui:<sha>|" k8s/webui.yaml |
 # kubectl apply -f -`. A raw `kubectl apply` of this file is accepted and then
 # leaves the pod in InvalidImageName with the old one already torn down, which
 # is how the webui went down once. The same holds for `IMAGE_FREETOKEN_L3` in
@@ -218,7 +218,7 @@ spec:
             #    "base_url":"https://api.deepseek.com/v1",
             #    "provider":"custom","api_key":"sk-...","maxConcurrent":4}
             # — better carried in a Secret than inlined here.
-            - name: BUDA_ENDPOINTS
+            - name: DEEPWIKI_ENDPOINTS
               value: |
                 [{"key":"dsv4","label":"DSV4-Flash","model":"dsv4-flash",
                   "base_url":"http://freetoken-l3:1919/v1","maxConcurrent":1,
@@ -406,7 +406,7 @@ metadata:
 spec:
   ingressClassName: physicalai-apig
   rules:
-    - host: buda.apig.local
+    - host: deepwiki.apig.local
       http:
         paths:
           # One backend, one prefix. The SSE stream is a plain GET on this same

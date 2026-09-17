@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-log = logging.getLogger("buda.http")
+log = logging.getLogger("deepwiki.http")
 
 # The URL namespace the static assets live under. `index.html` and `app.js`
 # reference `/static/...`, and the aiohttp server this module replaced mounted
@@ -50,7 +50,7 @@ STATIC_PREFIX = "/static/"
 # credential; this only separates two people's cursors and double-click
 # detection. A cookie rather than a header because `EventSource` cannot set
 # headers, and a cookie rides every request including the SSE one.
-CLIENT_COOKIE = "buda_cid"
+CLIENT_COOKIE = "deepwiki_cid"
 
 
 class Request:
@@ -243,7 +243,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] != "/healthz" and not self.app.authorised(self.headers):
             body = b"unauthorized"
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="buda"')
+            self.send_header("WWW-Authenticate", 'Basic realm="deepwiki"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

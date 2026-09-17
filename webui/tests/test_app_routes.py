@@ -268,10 +268,10 @@ def test_a_sessions_read_that_fails_does_not_take_the_app_down(app_server, monke
 def test_each_browser_keeps_its_own_position(app_server):
     """Shared, this leaked one person's position into another's page."""
     base, _, _ = app_server
-    _post(base, "/api/session/open", {"sessionId": "s-a"}, cookie="buda_cid=alice")
-    _post(base, "/api/session/open", {"sessionId": "s-b"}, cookie="buda_cid=bob")
-    assert _get(base, "/api/status", cookie="buda_cid=alice")["session"] == "s-a"
-    assert _get(base, "/api/status", cookie="buda_cid=bob")["session"] == "s-b"
+    _post(base, "/api/session/open", {"sessionId": "s-a"}, cookie="deepwiki_cid=alice")
+    _post(base, "/api/session/open", {"sessionId": "s-b"}, cookie="deepwiki_cid=bob")
+    assert _get(base, "/api/status", cookie="deepwiki_cid=alice")["session"] == "s-a"
+    assert _get(base, "/api/status", cookie="deepwiki_cid=bob")["session"] == "s-b"
 
 
 def test_status_advertises_the_endpoints_the_client_can_pick(app_server):
@@ -385,3 +385,55 @@ def test_a_changed_bundle_changes_the_version(app_server, tmp_path):
     before = get_v()
     (tmp_path / "app.js").write_text("console.log(2)")
     assert get_v() != before, "app.js changed but its versioned URL did not"
+
+
+# ── compression chains collapse to one sidebar row ─────────────────────────
+
+def test_list_sessions_projects_compression_chains(monkeypatch):
+    """Context compression rotates the session id; each rotation used to show
+    up as its own sidebar row (five fragments of one conversation). The bridge
+    must use hermes' chain projection, keyed to the tip where messages live."""
+    import hermes_session_api as hsa
+
+    seen = {}
+
+    class FakeDB:
+        def list_sessions_rich(self, **kw):
+            seen.update(kw)
+            return [{
+                "id": "tip", "end_reason": None, "message_count": 23,
+                "title": "不是有那个第二只箭的故事吗", "preview": "…",
+                "last_active": 22, "started_at": 1,
+                "_lineage_root_id": "root",
+            }]
+        def resolve_resume_session_id(self, sid):
+            return "tip" if sid == "root" else sid
+        def message_count(self, sid):
+            return 23 if sid == "tip" else 0
+
+    monkeypatch.setattr(hsa, "_db", lambda: FakeDB())
+    rows = hsa.list_sessions(limit=100, include_empty=False)
+    assert seen["include_children"] is False
+    assert seen["project_compression_tips"] is True
+    assert seen["order_by_last_active"] is True
+    assert len(rows) == 1 and rows[0]["id"] == "tip"
+    assert rows[0]["messageCount"] == 23
+
+
+def test_list_sessions_zero_message_root_resolves_through_the_chain(monkeypatch):
+    """A compression root whose tip flushed nothing yet must not vanish (the
+    '全没了' regression): walk the chain to the first descendant with messages."""
+    import hermes_session_api as hsa
+
+    class FakeDB:
+        def list_sessions_rich(self, **kw):
+            return [{"id": "root", "end_reason": None, "message_count": 0,
+                     "title": "", "preview": "", "last_active": 1, "started_at": 1}]
+        def resolve_resume_session_id(self, sid):
+            return "tip" if sid == "root" else sid
+        def message_count(self, sid):
+            return 9 if sid == "tip" else 0
+
+    monkeypatch.setattr(hsa, "_db", lambda: FakeDB())
+    rows = hsa.list_sessions(limit=100, include_empty=False)
+    assert len(rows) == 1 and rows[0]["id"] == "tip" and rows[0]["messageCount"] == 9

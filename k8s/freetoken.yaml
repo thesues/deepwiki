@@ -168,7 +168,7 @@ spec:
       containers:
         - name: freetoken
           image: IMAGE_FREETOKEN
-          # Always, not the IfNotPresent default: this tag is the buda commit,
+          # Always, not the IfNotPresent default: this tag is the deepwiki commit,
           # but the image ALSO embeds an autumn client chosen by a build-arg the
           # tag cannot see. Rebuilding at the same commit against a new
           # AUTUMN_IMAGE produces different bytes under an identical tag, and a

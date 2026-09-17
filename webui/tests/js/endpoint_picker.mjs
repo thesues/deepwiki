@@ -7,7 +7,7 @@
 //      a reader who picked an endpoint, reloaded, and got silently dropped to
 //      the default would send to a model that is not the one on screen.
 //   2. A STALE SAVED KEY FALLS BACK — the server's endpoint list changes
-//      without telling the browser (a redeploy with BUDA_ENDPOINTS edited).
+//      without telling the browser (a redeploy with DEEPWIKI_ENDPOINTS edited).
 //      A saved key that is no longer advertised must resolve to the default,
 //      not to a 404-shaped silence on every send.
 //

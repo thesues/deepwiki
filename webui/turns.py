@@ -38,7 +38,7 @@ from typing import Any, Callable
 from hermes_agent import AgentPool, Endpoint, history_for, run_turn
 from turn_stream import EventSink, TurnStream
 
-log = logging.getLogger("buda.turns")
+log = logging.getLogger("deepwiki.turns")
 
 
 class Refused(Exception):
@@ -57,7 +57,10 @@ class Refused(Exception):
 # How long a permission card waits before the turn gives up on it. Long,
 # because the person it is asking may be away from the tab; bounded, because a
 # turn blocked forever holds its thread and its agent.
-APPROVAL_TIMEOUT_S = int(os.environ.get("BUDA_APPROVAL_TIMEOUT_S", "600"))
+APPROVAL_TIMEOUT_S = int(
+    os.environ.get("DEEPWIKI_APPROVAL_TIMEOUT_S",
+                   os.environ.get("BUDA_APPROVAL_TIMEOUT_S", "600"))
+)
 
 
 class _TurnPool:

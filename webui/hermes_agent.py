@@ -47,18 +47,35 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
-log = logging.getLogger("buda.agent")
+log = logging.getLogger("deepwiki.agent")
 
 
 def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 
 
+# Endpoint env: DEEPWIKI_ENDPOINTS (the repo was renamed from buda; the old
+# BUDA_ENDPOINTS is still read so an un-rolled-out manifest keeps working).
+def _env_first(*names: str) -> str:
+    for n in names:
+        v = os.environ.get(n, "")
+        if v.strip():
+            return v
+    return ""
+
+
+def load_endpoints_env() -> str:
+    """The endpoint env, new name first."""
+    return _env_first("DEEPWIKI_ENDPOINTS", "BUDA_ENDPOINTS")
+
+
 # How many built agents to keep. Each one pins a full transcript, so this is the
 # dominant lever on this process' resident memory — hermes' own web UI ships 25
 # with a note that fifty large sessions can hold more than a gigabyte. Sessions
 # are unbounded (they live in state.db); agents are not.
-AGENT_CACHE_MAX = max(1, int(os.environ.get("BUDA_AGENT_CACHE_MAX", "25")))
+AGENT_CACHE_MAX = max(1, int(
+    os.environ.get("DEEPWIKI_AGENT_CACHE_MAX", os.environ.get("BUDA_AGENT_CACHE_MAX", "25"))
+))
 
 
 class _Db:
@@ -163,7 +180,7 @@ class Endpoint:
 
 
 def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoint]:
-    """Parse `BUDA_ENDPOINTS` (JSON list). First entry is the default.
+    """Parse `DEEPWIKI_ENDPOINTS` (JSON list). First entry is the default.
 
     Unparseable input yields the single endpoint the environment already
     describes rather than raising: a chat that starts with one model beats a
@@ -189,13 +206,13 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
                 for e in items
             ]
             if not eps:
-                raise ValueError("BUDA_ENDPOINTS is empty")
+                raise ValueError("DEEPWIKI_ENDPOINTS is empty")
             keys = [e.key for e in eps]
             if len(set(keys)) != len(keys):
                 raise ValueError(f"duplicate endpoint keys: {keys}")
             return eps
         except Exception as e:  # noqa: BLE001
-            log.error("BUDA_ENDPOINTS ignored (%s); falling back to the env's single model", e)
+            log.error("DEEPWIKI_ENDPOINTS ignored (%s); falling back to the env's single model", e)
     return [
         Endpoint(
             key="default",
@@ -248,7 +265,7 @@ def build_agent(session_id: str, ep: Endpoint) -> Any:
             toolsets.append(t)
 
     candidate = {
-        "platform": "buda",
+        "platform": "deepwiki",
         "model": ep.model,
         "provider": ep.provider,
         "base_url": ep.base_url,

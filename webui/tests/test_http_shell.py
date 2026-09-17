@@ -82,7 +82,7 @@ def test_a_browser_id_is_minted_on_whatever_was_asked_for_first(server):
     base = server(app)
     r = _get(base + "/api/who")
     cookie = r.headers.get("Set-Cookie") or ""
-    assert "buda_cid=" in cookie and "HttpOnly" in cookie
+    assert "deepwiki_cid=" in cookie and "HttpOnly" in cookie
     assert json.loads(r.read())["cid"], "the handler must already know the id"
 
 
@@ -95,7 +95,7 @@ def test_the_handler_sees_the_id_it_is_about_to_hand_out(server):
     handed_out = [
         p.split("=", 1)[1]
         for p in (r.headers.get("Set-Cookie") or "").split(";")
-        if p.strip().startswith("buda_cid=")
+        if p.strip().startswith("deepwiki_cid=")
     ][0]
     assert _client_ids_seen(app)[0] == handed_out
 
@@ -103,7 +103,7 @@ def test_the_handler_sees_the_id_it_is_about_to_hand_out(server):
 def test_an_existing_cookie_is_kept_rather_than_reissued(server):
     app = _app()
     base = server(app)
-    r = _get(base + "/api/who", {"Cookie": "buda_cid=abc123"})
+    r = _get(base + "/api/who", {"Cookie": "deepwiki_cid=abc123"})
     assert r.headers.get("Set-Cookie") is None
     assert json.loads(r.read())["cid"] == "abc123"
 

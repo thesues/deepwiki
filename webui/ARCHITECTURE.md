@@ -45,7 +45,7 @@ client, which is also why `session/load` used to read as "move the agent".
 
 One deployment serves several providers, and the browser picks among them.
 
-The server is the source of truth for WHICH endpoints exist: `BUDA_ENDPOINTS`
+The server is the source of truth for WHICH endpoints exist: `DEEPWIKI_ENDPOINTS`
 (JSON list, first entry the default) is parsed once at startup into `Endpoint`
 records — key, label, model, base_url, provider, api_key, a `maxConcurrent`
 that is PER ENDPOINT because the ceiling is the model behind it, not the
@@ -149,7 +149,7 @@ leak. **None can regress here, because there is no terminal.**
 |---|---|---|
 | `hermes` | **library** — `run_agent.AIAgent` in this process, on threads | no subprocess to respawn or multiplex; an endpoint is a cache key, so one deployment serves several providers (see "Endpoints"). Import resolves only inside hermes' venv, which is why `main.py` runs under `/opt/hermes/.venv/bin/python` |
 | `memory-mcp` | **HTTP MCP** (`MEMORY_MCP_URL`) | no spawned process, no autumn credential, **not under autumn's WIRE lockstep** |
-| providers | OpenAI-compatible HTTP, from `BUDA_ENDPOINTS` | `hermes config set model.*` still runs at pod start as the fallback single-model path, but a turn's model comes from the `Endpoint` the picker named |
+| providers | OpenAI-compatible HTTP, from `DEEPWIKI_ENDPOINTS` | `hermes config set model.*` still runs at pod start as the fallback single-model path, but a turn's model comes from the `Endpoint` the picker named |
 
 The MCP transport is the load-bearing choice. A stdio MCP server must be spawned
 by its client, so this image would have needed `memory-mcp`'s binary, an autumn

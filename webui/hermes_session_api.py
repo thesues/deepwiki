@@ -69,22 +69,42 @@ def list_sessions(limit: int, include_empty: bool) -> list[dict]:
     # exclude_sources=["tool"] mirrors the CLI's default: hide third-party tool
     # sessions, which are not conversations anyone opened.
     #
-    # include_children + project_compression_tips=False is deliberate, against
-    # the CLI's defaults: context compression ROTATES the session id — the old
-    # row becomes a child and the conversation continues under a new one — and
-    # the CLI's projection collapses each chain into ONE row keyed to wherever
-    # its tip happens to be. A chain whose tip died mid-turn (a restart, a
-    # killed pod) projected NOWHERE and the whole conversation vanished from
-    # the sidebar — “全没了”. Physical rows never disappear: every session the
-    # reader had is still here, at the id its transcript actually lives under.
+    # include_children=False + project_compression_tips=True is the CLI's own
+    # projection: context compression ROTATES the session id — the old row ends
+    # with end_reason='compression' and the conversation continues under a new
+    # child — and without the projection every link of that chain showed up as
+    # its own sidebar row (five fragments of one conversation in production).
+    # The projection collapses each chain to ONE row keyed to its tip, which is
+    # where the messages actually live.
+    #
+    # The opposite shape was tried before and had a real failure: a chain whose
+    # tip died mid-turn projected NOWHERE and vanished from the sidebar. But
+    # that was the OLD projection; hermes' `list_sessions_rich` keeps the root
+    # row when the tip row is missing, and the only true loss is a tip with
+    # ZERO messages (compression flushed nothing yet) — covered below by
+    # `resolve_resume_session_id`, which walks the chain to the first
+    # descendant that holds messages.
     rows = _db().list_sessions_rich(
         source=None, exclude_sources=["tool"], limit=limit,
-        include_children=True, project_compression_tips=False,
+        include_children=False, project_compression_tips=True,
+        order_by_last_active=True,
     )
     out = []
     for r in rows:
-        # A session with no messages is a ghost. They carry no title or preview
-        # and cannot be usefully loaded, so drop them unless asked for.
+        # A session with no messages is a ghost — unless it is a compression
+        # root whose messages live in a descendant (the tip flushed nothing
+        # yet). `resolve_resume_session_id` (#15000) walks the chain forward;
+        # still nothing anywhere, and the drop below is correct. Projected rows
+        # carry `_lineage_root_id` when the tip differs from the root.
+        if not include_empty and not r.get("message_count"):
+            root = r.get("_lineage_root_id") or r.get("id")
+            try:
+                sid2 = _db().resolve_resume_session_id(root)
+                if sid2 and sid2 != root:
+                    r = {**r, "id": sid2,
+                         "message_count": _db().message_count(sid2)}
+            except Exception:  # noqa: BLE001 — an unmapped chain is just a ghost
+                pass
         if not include_empty and not r.get("message_count"):
             continue
         # hermes titles a session asynchronously, so a conversation that is
@@ -121,6 +141,30 @@ def _tool_calls(raw) -> list[dict]:
     return []
 
 
+def _is_compaction_summary(text: str) -> bool:
+    """True when a persisted message IS a context-compaction summary, not
+    something a human or the model said.
+
+    hermes compresses overflowing history into one message that starts
+    `[CONTEXT COMPACTION — REFERENCE ONLY]…` (older builds: `[CONTEXT
+    SUMMARY]:`), persists it as an ordinary user/assistant row, and the
+    transcript faithfully rendered that instruction block to the reader as if
+    it were speech. hermes has its own detector for exactly this — the
+    compressor uses it to find summaries it wrote before — and it is preferred
+    here so a renamed prefix keeps being recognised; the literal fallbacks
+    cover the builds where the helper moved.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    try:
+        from agent.context_compressor import ContextCompressor
+        return bool(ContextCompressor._is_context_summary_content(text))
+    except Exception:  # noqa: BLE001 — the helper moved; fall through to literals
+        pass
+    t = text.lstrip()
+    return t.startswith("[CONTEXT COMPACTION") or t.startswith("[CONTEXT SUMMARY]:")
+
+
 def history(sid: str, limit: int) -> list[dict]:
     """One session's transcript, in the UI's own event shape.
 
@@ -146,6 +190,15 @@ def history(sid: str, limit: int) -> list[dict]:
     for m in msgs:
         role = m.get("role")
         text = m.get("content") or ""
+        # A compaction summary is an instruction block hermes addressed to the
+        # MODEL, persisted as an ordinary message row. Rendered as speech it is
+        # a wall of highlighted prose nobody wrote — replace it with a note and
+        # skip the block. Only whole-summary rows are skipped here; a summary
+        # hermes MERGED into a real user message keeps that message (the prefix
+        # rides along, the rarer shape).
+        if role in ("user", "assistant") and _is_compaction_summary(text):
+            out.append({"kind": "note", "text": "（此前的对话已压缩为上下文摘要）"})
+            continue
         if role == "user":
             if text:
                 out.append({"kind": "history_user", "text": text})

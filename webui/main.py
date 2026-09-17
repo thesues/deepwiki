@@ -6,7 +6,7 @@ stdlib, so nothing of ours competes with hermes' dependency tree:
 
     /opt/hermes/.venv/bin/python main.py
 
-`BUDA_ENDPOINTS` is a JSON list, first entry the default:
+`DEEPWIKI_ENDPOINTS` is a JSON list, first entry the default:
 
     [{"key":"dsv4","label":"DSV4","model":"dsv4-flash",
       "base_url":"http://freetoken-l3:1919/v1","maxConcurrent":4}, ...]
@@ -29,11 +29,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from app_routes import build_app  # noqa: E402
-from hermes_agent import AgentPool, load_endpoints  # noqa: E402
+from hermes_agent import AgentPool, load_endpoints, load_endpoints_env  # noqa: E402
 from http_shell import serve  # noqa: E402
 from turns import TurnManager  # noqa: E402
 
-log = logging.getLogger("buda")
+log = logging.getLogger("deepwiki")
 
 
 def _sessions_module():
@@ -78,7 +78,7 @@ def main() -> None:
     )
 
     endpoints = load_endpoints(
-        os.environ.get("BUDA_ENDPOINTS"),
+        load_endpoints_env(),
         default_home_model=os.environ.get("LLM_MODEL", ""),
     )
     log.info(
@@ -134,9 +134,7 @@ def main() -> None:
     try:
         from hermes_config import ensure_compression_model
 
-        ensure_compression_model(
-            hermes_cfg, load_endpoints(os.environ.get("BUDA_ENDPOINTS", ""))
-        )
+        ensure_compression_model(hermes_cfg, load_endpoints(load_endpoints_env()))
     except Exception as e:  # noqa: BLE001
         log.error("could not seed auxiliary.compression: %s", e)
 
@@ -194,7 +192,7 @@ def main() -> None:
     )
 
     srv = serve(app, args.host, args.port)
-    log.info("buda webui on http://%s:%d", args.host, args.port)
+    log.info("deepwiki webui on http://%s:%d", args.host, args.port)
 
     stop = threading.Event()
     threading.Thread(target=_reaper, args=(manager, stop), name="reaper", daemon=True).start()
