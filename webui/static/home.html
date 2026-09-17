@@ -8,11 +8,16 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
+<script>
+/* Same pre-paint theme apply as the chat page. */
+try { if (localStorage.getItem("hermes.theme") === "light") document.documentElement.dataset.theme = "light"; } catch (_) {}
+</script>
 </head>
 <body class="home">
 <div class="shell home-shell">
   <header class="home-head">
     <h1>deep<em>wiki</em></h1>
+    <button id="theme-toggle" class="btn ghost home-theme" title="切换亮色/暗色主题" aria-label="切换主题">☀</button>
   </header>
   <main class="home-main">
     <p class="home-ask">选择一个项目</p>

@@ -28,6 +28,7 @@ const LS_OPEN = "hermes.open";      // which activity groups the reader had open
 const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessions start on
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
                         // still shows a conversation's model after a reload
+const LS_THEME = "hermes.theme";    // "light" | "dark"; unset = dark (the original look)
 
 // Keyed by session + the group's index in the transcript, which is stable for a
 // given conversation: reload it, switch away and back, and the rows you opened
@@ -1426,15 +1427,43 @@ async function boot() {
     if (e.key === "Escape" && !$("#about").hidden) $("#about").hidden = true;
   });
 
-  // 新会话 is a HOME-page action now: a conversation belongs to a project,
-  // and the project is chosen there. The key still works (Cmd/Ctrl+K) — it
-  // opens the home page, which is where the choice happens.
+  // 新会话 is a per-project action: it creates a fresh conversation INSIDE
+  // the project this page serves (the send carries S.profile, so the pin is
+  // right). Both the header button and the sidebar's tail link do the same
+  // thing. The key still works (Cmd/Ctrl+K).
+  const newSess = () => { newSession(); };
+  const nsBtn = $("#new-session");
+  if (nsBtn) nsBtn.onclick = newSess;
+  const nsSide = $("#new-session-side");
+  if (nsSide) nsSide.onclick = newSess;
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      location.href = "/";
+      newSession();
     }
   });
+
+  // Theme toggle. Dark is the original look and the default; light is the
+  // same layout with a daylight palette (style.css [data-theme="light"]).
+  // Persisted per browser; applied before first paint via the inline script
+  // in <head> so a light reader never sees a dark flash.
+  const themeBtn = $("#theme-toggle");
+  if (themeBtn) {
+    const paint = () => {
+      const light = document.documentElement.dataset.theme === "light";
+      themeBtn.textContent = light ? "☾" : "☀";   // the theme a click GOES to
+      themeBtn.title = light ? "切换到暗色主题" : "切换到亮色主题";
+    };
+    themeBtn.onclick = () => {
+      const light = document.documentElement.dataset.theme === "light";
+      const next = light ? "dark" : "light";
+      if (next === "dark") delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = "light";
+      try { localStorage.setItem(LS_THEME, next); } catch (_) {}
+      paint();
+    };
+    paint();
+  }
   $("#send").onclick = (e) => {
     if (!S.owns) return;                    // not replying HERE: let the form submit
     e.preventDefault();

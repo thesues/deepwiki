@@ -193,14 +193,16 @@ spec:
             # Match the model, not the agent. The server defaults to 4 because
             # ACP can carry four conversations, and it argues that a fifth
             # queueing at the model beats being refused at the door. On THIS
-            # deployment the model behind it is freetoken-l3 with
-            # `--max-running-requests 1`, so "queueing at the model" is what a
-            # reader sees as a second conversation that says it is replying and
-            # then produces nothing for as long as the first one runs -- while
-            # its composer stays enabled, because the composer is gated on the
-            # server's limit and the server had room. One is the honest number
-            # here: the second turn is refused immediately, and every other
-            # conversation greys out while one is answering.
+            # deployment the models behind it are freetoken-l3 with
+            # `--max-running-requests 1` and freetoken-mm2 (H20) with 2, so
+            # "queueing at the model" is what a reader sees as a second
+            # conversation that says it is replying and then produces nothing
+            # for as long as the first one runs -- while its composer stays
+            # enabled, because the composer is gated on the server's limit and
+            # the server had room. Per-endpoint admission (DEEPWIKI_ENDPOINTS
+            # below) is the real gate; this env is only the fallback seed for
+            # a deploy that declares no endpoints, and 1 is the smallest
+            # honest number it could name.
             - { name: MAX_CONCURRENT_TURNS, value: "1" }
             # Every endpoint the picker offers, first one the default. The limit
             # is per entry because the ceiling is the MODEL behind it: one
@@ -224,7 +226,7 @@ spec:
                   "base_url":"http://freetoken-l3:1919/v1","maxConcurrent":1,
                   "context":62080},
                  {"key":"mm2","label":"MiniMax-M2.5","model":"minimax-m25-ftw",
-                  "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":1,
+                  "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":2,
                   "context":65536}]
             # The two model ids are the served names each engine reports on
             # /v1/models (the --model path's basename): dsv4-flash-ftw's pod was
@@ -326,7 +328,7 @@ spec:
                 - 回答时给出经名与原文引文，并标出出处（文件 › 标题路径 › 行号）。
                 - 语料库里没有的，直说没有；可以补充常识背景，但要注明那不是来自语料库。
                 - 简明作答，通常几段以内。除非明确要求，不要写长文、不要综述式铺陈。
-            # The project cards. Three projects:
+            # The project cards. Four projects:
             #   buda            — the scripture agent. skills ONLY: everything
             #                     it does a skill initiates, and the skill calls
             #                     the MCP (memory) tools. NO terminal — observed
@@ -334,24 +336,29 @@ spec:
             #                     instead of calling retrieval; without a shell
             #                     it cannot take that shortcut.
             #   code-autumn-rs  — code understanding for github.com/journeymidnight/
-            #                     autumn-rs. clarify ONLY: reading the code goes
-            #                     through the code-index MCP server (the
-            #                     tree-sitter index over the pinned tarball,
-            #                     k8s/code-index-mcp.yaml) — search_code /
-            #                     get_symbol / document_outline. NO file tools:
-            #                     a raw file surface lets the agent bypass the
-            #                     index (and read a tree that may not exist on
-            #                     this pod); the index IS the interface, the
-            #                     same discipline the buda profile applies to
-            #                     its corpus. NO workspace: there is no local
-            #                     tree for a terminal to cd into, and this pod
-            #                     deliberately does not mount autumnfs.
+            #                     autumn-rs. skills + the code-index MCP server
+            #                     (the tree-sitter index over the pinned
+            #                     tarball, k8s/code-index-mcp.yaml) —
+            #                     search_code / get_symbol / document_outline.
+            #                     NO file tools: a raw file surface lets the
+            #                     agent bypass the index; the index IS the
+            #                     interface, the same discipline the buda
+            #                     profile applies to its corpus. NO workspace:
+            #                     this pod deliberately does not mount autumnfs.
+            #   general         — the general-purpose agent: hermes' own default
+            #                     toolsets, spelled out (terminal, web, search,
+            #                     file, todo, memory, skills, session_search,
+            #                     clarify) and EVERY MCP server. terminal ⇒
+            #                     clarify is enforced by scope_agent_tools
+            #                     regardless. No mcp_servers key = no
+            #                     narrowing.
             # directive is omitted everywhere: each profile inherits
             # CHAT_DIRECTIVE until a project earns its own brief.
             - name: DEEPWIKI_PROFILES
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"]},
-                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["clarify"],"mcp_servers":["code-index"]}]
+                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"]},
+                 {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"]}]
             # The second corpus's MCP server (k8s/code-index-mcp.yaml), as
             # NAME=URL pairs — the same ensure_mcp_server path as the primary,
             # then narrowed per profile by scope_agent_tools.

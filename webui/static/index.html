@@ -8,6 +8,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
+<script>
+/* Apply the saved theme BEFORE first paint — a light reader must not see a
+   dark flash on every navigation. Inline, not app.js: app.js loads at the
+   end of the body. */
+try { if (localStorage.getItem("hermes.theme") === "light") document.documentElement.dataset.theme = "light"; } catch (_) {}
+</script>
 </head>
 <body>
 <div class="shell">
@@ -20,6 +26,8 @@
     <a id="home-link" class="btn ghost" href="/" title="返回首页 — 重新选择项目或会话">← 首页</a>
     <span class="proj-name" id="proj-name"></span>
     <span class="spacer"></span>
+    <button id="new-session" class="btn" title="在这个项目里新建会话">＋ 新会话</button>
+    <button id="theme-toggle" class="btn ghost" title="切换亮色/暗色主题" aria-label="切换主题">☀</button>
     <div class="meta">
       <span id="build" title="本页加载的前端构建号 — 反馈问题时带上它">@@BUILD@@</span>
     </div>
@@ -32,7 +40,7 @@
            profile the URL names, because a conversation belongs to the
            project it was opened under and a project page shows its own. -->
       <ul id="sessions"></ul>
-      <a class="new-sess" href="/">＋ 新会话（回首页选项目）</a>
+      <button class="new-sess" id="new-session-side" title="在这个项目里新建会话">＋ 新会话</button>
     </section>
 
     <section class="card chat">

@@ -55,6 +55,24 @@ async function boot() {
     );
     grid.appendChild(card);
   });
+
+  // Theme toggle — same behaviour as the chat page's, one palette.
+  const themeBtn = document.getElementById("theme-toggle");
+  if (themeBtn) {
+    const paint = () => {
+      const light = document.documentElement.dataset.theme === "light";
+      themeBtn.textContent = light ? "☾" : "☀";
+    };
+    themeBtn.onclick = () => {
+      const light = document.documentElement.dataset.theme === "light";
+      const next = light ? "dark" : "light";
+      if (next === "dark") delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = "light";
+      try { localStorage.setItem("hermes.theme", next); } catch (_) {}
+      paint();
+    };
+    paint();
+  }
 }
 
 boot();
