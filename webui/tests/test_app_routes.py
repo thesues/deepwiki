@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: E402
 
 import hermes_agent as ha  # noqa: E402
+import profiles as pr  # noqa: E402
 from app_routes import build_app  # noqa: E402
 from http_shell import serve  # noqa: E402
 from turns import TurnManager  # noqa: E402
@@ -47,11 +48,16 @@ class FakeSessions:
 
 @pytest.fixture
 def app_server(monkeypatch, tmp_path):
-    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep: FakeAgent())
+    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep, profile=None: FakeAgent())
     (tmp_path / "index.html").write_text(
         '<html><link rel="stylesheet" href="/static/style.css">'
         '<script src="/static/app.js"></script></html>'
     )
+    (tmp_path / "home.html").write_text(
+        '<html><link rel="stylesheet" href="/static/style.css">'
+        '<script src="/static/home.js"></script></html>'
+    )
+    (tmp_path / "home.js").write_text("console.log(1)")
     (tmp_path / "app.js").write_text("console.log(1)")   # the versioned URL must serve
     gate = threading.Event()
     gate.set()
@@ -67,9 +73,14 @@ def app_server(monkeypatch, tmp_path):
         ha.Endpoint("dsv4", "DSV4", "m1", "http://a/v1", max_concurrent=1),
         ha.Endpoint("vision", "Vision", "m2", "http://b/v1", max_concurrent=1),
     ]
+    pfs = pr.build_profiles([
+        {"key": "buda", "label": "佛典检索"},
+        {"key": "video", "label": "解说视频", "endpoints": ["vision"]},
+    ])
     app = build_app(
         manager=mgr,
         endpoints=eps,
+        profiles=pfs,
         static_dir=tmp_path,
         index_html=tmp_path / "index.html",
         sessions=state["sessions"],
@@ -136,6 +147,45 @@ def test_an_unknown_endpoint_falls_back_rather_than_failing(app_server):
     base, mgr, _ = app_server
     _, body = _post(base, "/api/chat/start", {"text": "hi", "endpoint": "nope"})
     assert body["endpoint"] == "dsv4"
+    _drain(mgr.stream(body["streamId"]))
+
+
+# ── profiles ─────────────────────────────────────────────────────────────────
+
+
+def test_status_advertises_the_project_cards(app_server):
+    """The homepage renders FROM this list. A deploy that declares none gets
+    the built-in default — one card, no behaviour change."""
+    base, _, _ = app_server
+    j = _get(base, "/api/status")
+    assert [p["key"] for p in j["profiles"]] == ["buda", "video"]
+    assert j["defaultProfile"] == "buda"
+
+
+def test_the_profile_named_by_the_client_is_the_one_echoed(app_server):
+    base, mgr, _ = app_server
+    _, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "video"})
+    assert body["profile"] == "video"
+    _drain(mgr.stream(body["streamId"]))
+
+
+def test_an_unknown_profile_falls_back_to_the_default(app_server):
+    """Same stale-key rule as endpoints: a profile renamed in config while an
+    old tab still sends the old key must land somewhere real."""
+    base, mgr, _ = app_server
+    _, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "gone"})
+    assert body["profile"] == "buda"   # the first entry is the default
+    _drain(mgr.stream(body["streamId"]))
+
+
+def test_a_pinned_profile_redirects_a_foreign_endpoint(app_server):
+    """The video profile may only use the multimodal model. The redirect is
+    echoed, so the client's picker follows what will actually answer."""
+    base, mgr, _ = app_server
+    _, body = _post(base, "/api/chat/start", {
+        "text": "hi", "profile": "video", "endpoint": "dsv4",
+    })
+    assert body["endpoint"] == "vision"
     _drain(mgr.stream(body["streamId"]))
 
 
@@ -365,13 +415,17 @@ def test_index_versioned_the_static_urls(app_server):
     the no-cache fix itself never reached that browser. A URL that changes
     with every build is the only bust that works by construction."""
     base, _, _ = app_server
-    html = urllib.request.urlopen(base + "/").read().decode()
-    assert "app.js?v=" in html and "style.css?v=" in html, "statics must be versioned"
-    assert "@@BUILD@@" not in html, "the build marker must be injected"
+    # The home page is served at / (deepwiki: cards first); the chat page at
+    # /<profile>/. Both are versioned the same way.
+    home = urllib.request.urlopen(base + "/").read().decode()
+    assert "home.js?v=" in home and "style.css?v=" in home, "statics must be versioned"
+    assert "@@BUILD@@" not in home, "the build marker must be injected"
+    chat = urllib.request.urlopen(base + "/buda/").read().decode()
+    assert "app.js?v=" in chat and "style.css?v=" in chat, "statics must be versioned"
     # and the versioned URL still serves
     import re
-    v = re.search(r"app\.js\?v=([0-9a-f]+)", html).group(1)
-    urllib.request.urlopen(f"{base}/static/app.js?v={v}")
+    v = re.search(r"home\.js\?v=([0-9a-f]+)", home).group(1)
+    urllib.request.urlopen(f"{base}/static/home.js?v={v}")
 
 
 def test_a_changed_bundle_changes_the_version(app_server, tmp_path):
@@ -380,11 +434,11 @@ def test_a_changed_bundle_changes_the_version(app_server, tmp_path):
     import re
     base, _, _ = app_server
     get_v = lambda: re.search(
-        r"app\.js\?v=([0-9a-f]+)", urllib.request.urlopen(base + "/").read().decode()
+        r"home\.js\?v=([0-9a-f]+)", urllib.request.urlopen(base + "/").read().decode()
     ).group(1)
     before = get_v()
-    (tmp_path / "app.js").write_text("console.log(2)")
-    assert get_v() != before, "app.js changed but its versioned URL did not"
+    (tmp_path / "home.js").write_text("console.log(2)")
+    assert get_v() != before, "home.js changed but its versioned URL did not"
 
 
 # ── compression chains collapse to one sidebar row ─────────────────────────

@@ -116,14 +116,14 @@ function page() {
     Object.assign(n._attrs, attrs); parent.appendChild(n); return n;
   };
   mk("button", "new-session", "btn", body);
-  mk("button", "about-btn", "", body);
-  mk("span", "mcp-badge", "", body);
   mk("span", "sess-count", "", body);
   mk("ul", "sessions", "", body);
   const chat = mk("section", "", "card chat", body);
   mk("span", "spin", "", chat); mk("span", "run-status", "", chat); mk("span", "elapsed", "", chat);
   mk("div", "messages", "", chat);
   const form = mk("form", "composer", "", chat);
+  mk("span", "profile-badge", "", form).hidden = true;
+  mk("select", "profile", "", form).hidden = true;
   mk("span", "model-badge", "", form).hidden = true;
   mk("select", "endpoint", "", form).hidden = true;
   mk("textarea", "input", "", form).placeholder = "发消息…";
@@ -212,6 +212,9 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     confirm: () => true,
     marked: { parse: (s) => s },
     DOMPurify: { sanitize: (s) => s, addHook: () => {} },
+    // app.js reads the project key off the URL (/buda/ → buda); the test page
+    // is served at /, so S.profile is "" — same as the home-page edge case.
+    location: { pathname: "/", replace: (u) => { calls.push({ path: u, body: null }); } },
   });
   vm.runInContext(SRC, ctx);
   const $ = (s) => document.querySelector(s);

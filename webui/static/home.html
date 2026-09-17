@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deepwiki</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="home">
+<div class="shell home-shell">
+  <header class="home-head">
+    <h1>deep<em>wiki</em></h1>
+  </header>
+  <main class="home-main">
+    <p class="home-ask">选择一个项目</p>
+    <div id="cards" class="project-grid home-grid"><!-- cards render here --></div>
+    <p id="home-error" class="home-error" hidden>项目列表加载失败</p>
+  </main>
+  <div class="meta home-meta"><span id="build" title="本页加载的前端构建号">@@BUILD@@</span></div>
+</div>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/home.js"></script>
+</body>
+</html>

@@ -78,6 +78,47 @@ with the session's history intact — hermes persists the transcript to the
 store, and each turn starts from what the store holds. A turn already running
 keeps the endpoint it started on.
 
+## Profiles: one project per agent
+
+Where an endpoint says WHICH model answers, a profile says WHO the agent is —
+its brief (`directive`), its toolset list, its MCP subset, its workspace
+folder. deepwiki serves several projects from one process, deepwiki.com
+style: the homepage lists project cards and opening one starts a conversation
+whose agent carries that project's identity. Without profiles this is all
+global, and multi-project is contamination: the scripture agent sees the
+code-index tools and vice versa.
+
+Declarations, in precedence order (`profiles.load_profiles`):
+
+1. `DEEPWIKI_PROFILES` (JSON list, same shape as the endpoints env) — the
+   override entry for a k8s ConfigMap;
+2. hermes' config.yaml, a `profiles:` section keyed by profile key — the same
+   file that owns the toolsets and MCP servers, so editing a project is a
+   config edit + restart;
+3. neither → one built-in default profile whose directive is `None`, which
+   makes run_turn fall back to `CHAT_DIRECTIVE` — the pre-profile behaviour,
+   byte for byte, so an un-migrated deploy boots unchanged.
+
+The scoping (`profiles.scope_agent_tools`) is two independent rules applied at
+`build_agent` time: a profile naming `mcp_servers` gets only those servers
+AND loses the excluded ones' `mcp-<name>` toolsets (a tool whose server was
+never connected reads as working and always fails); a profile naming
+`toolsets` replaces the platform list outright, with the MCP reconciliation
+re-run on top. The profile's `workspace` folder is registered as the
+session's terminal cwd via hermes' own per-task override — the same injection
+point its ACP adapter uses on `session/load` — so directory isolation is a
+mechanism, not a prompt request.
+
+The plumbing reuses the endpoint machinery everywhere: `/api/chat/start`
+takes a `profile` key and echoes the resolved one; a stale key falls back to
+the default profile; the agent cache signature carries the profile key, so
+switching projects rebuilds the agent exactly as switching endpoints does.
+`run_turn`'s system message is the profile's directive, every turn, for the
+same reason CHAT_DIRECTIVE was. One known gap, declared and inert:
+per-profile SKILLS have no hermes injection point yet (hermes reads one
+process-wide directory), so `AgentProfile.skills` is surfaced but not wired —
+see profiles.py.
+
 ## Toolsets and MCP
 
 Both are owned by ONE file: `HERMES_HOME/config.yaml` — the same file hermes'

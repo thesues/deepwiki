@@ -25,6 +25,7 @@ from pathlib import Path
 
 from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint
+from profiles import AgentProfile, allowed_endpoint, build_profiles
 from sse import SSE_HEADERS, write_stream
 from turns import Refused, TurnManager
 
@@ -35,6 +36,7 @@ def build_app(
     *,
     manager: TurnManager,
     endpoints: list[Endpoint],
+    profiles: list[AgentProfile] | None = None,
     static_dir: Path,
     index_html: Path,
     auth_user: str = "",
@@ -45,12 +47,29 @@ def build_app(
     app = App(static_dir=static_dir, auth_user=auth_user, auth_pass=auth_pass)
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]
+    # The project cards. A deploy that declares none gets the built-in default
+    # profile — one card's worth of behaviour change: none. Resolution and the
+    # stale-key fallback live in profiles.resolve_profile; routes only wire.
+    profile_list = profiles if profiles is not None else build_profiles(None)
+    default_profile = profile_list[0]
+    by_profile = {p.key: p for p in profile_list}
     # Which conversation each BROWSER last opened. Per browser, not global:
     # shared, it leaked one person's position into another's page.
     last_session: dict[str, str] = {}
 
     def _endpoint(req: Request, session_hint: str = "") -> Endpoint:
         return by_key.get(req.json().get("endpoint") or req.query.get("endpoint", ""), default_ep)
+
+    def _profile_of(body: dict) -> AgentProfile:
+        """The profile this request names, with the stale-key fallback.
+
+        Same rule as endpoints: a key the server no longer advertises — a
+        profile renamed in config, a pod behind a rollout — resolves to the
+        DEFAULT profile rather than failing every send until someone notices.
+        The route echoes the resolved key, and the client adopts the echo, so
+        the picker stays honest about what will answer next time.
+        """
+        return by_profile.get((body.get("profile") or "").strip(), default_profile)
 
     # ── health and status ──────────────────────────────────────────────────
 
@@ -67,6 +86,8 @@ def build_app(
             "turns": [{"session": sid, "streamId": st} for sid, st in running.items()],
             "endpoints": [e.as_json() for e in endpoints],
             "defaultEndpoint": default_ep.key,
+            "profiles": [p.as_json() for p in profile_list],
+            "defaultProfile": default_profile.key,
         })
 
     # ── chat ───────────────────────────────────────────────────────────────
@@ -85,10 +106,18 @@ def build_app(
             import secrets
 
             session_id = secrets.token_hex(8)
-        endpoint = by_key.get(body.get("endpoint") or "", default_ep)
+        profile = _profile_of(body)
+        # The profile may pin its endpoints (a video project needs the
+        # multimodal model). The pin redirects, never errors — see
+        # allowed_endpoint — and the echo below carries the endpoint actually
+        # used, so the client's picker follows the redirect.
+        wanted_ep = by_key.get(body.get("endpoint") or "", default_ep)
+        ep_key = allowed_endpoint(profile, wanted_ep.key, default_ep.key)
+        endpoint = by_key.get(ep_key, default_ep)
         try:
             stream = manager.start(
-                session_id=session_id, text=text, endpoint=endpoint, client_id=req.client_id
+                session_id=session_id, text=text, endpoint=endpoint,
+                client_id=req.client_id, profile=profile,
             )
         except Refused as r:
             # 409 for a conversation already replying, 429 for a full endpoint —
@@ -100,6 +129,7 @@ def build_app(
             "streamId": stream.stream_id,
             "sessionId": session_id,
             "endpoint": endpoint.key,
+            "profile": profile.key,
         })
 
     @app.route("GET", "/api/chat/stream")
@@ -179,6 +209,8 @@ def build_app(
             "sessions": rows,
             "current": last_session.get(req.client_id),
             "streaming": running,
+            "profiles": [p.as_json() for p in profile_list],
+            "defaultProfile": default_profile.key,
             # `running` per endpoint, not a global: the composer gates on the
             # picker's CHOICE, and one full endpoint must not grey out a send
             # aimed at another one. `running_on` reads the stream's endpoint_key,
@@ -336,25 +368,31 @@ def build_app(
 
     # ── the page ───────────────────────────────────────────────────────────
 
-    @app.route("GET", "/")
-    def _index(req: Request) -> Response:
+    # Same contract as the static handler: no-cache + ETag, so a deploy's
+    # new bundle cannot be trapped behind a heuristically-cached index.
+    #
+    # Version every static URL with the page's own hash. The no-cache header
+    # only helps a browser that ASKS again — a copy cached BEFORE any
+    # validator existed sits heuristically fresh for hours and never
+    # revalidates, which is exactly how a fixed bug kept "not working". A
+    # changed URL cannot be served from any cache, by construction. The hash
+    # covers the ASSETS too, not only the page.
+    #
+    # deepwiki.com's two pages, as two pages — NOT one SPA: the home (/) is
+    # the card grid (home.html), and each project lives at /<key>/ serving the
+    # chat page (index.html). A card is a LINK; navigation is the mechanism.
+    # Both get the same cache/ETag/versioning treatment. The chat page reads
+    # its project off the URL and falls back client-side (redirect home) for
+    # an unknown key, which is what makes a renamed profile degrade to the
+    # homepage instead of a 404.
+    home_html = static_dir / "home.html"
+
+    def _versioned_page(req: Request, source: Path) -> Response:
         try:
-            body = index_html.read_bytes()
+            body = source.read_bytes()
         except OSError:
             return json_response({"error": "index missing"}, status=500)
-        # Same contract as the static handler: no-cache + ETag, so a deploy's
-        # new bundle cannot be trapped behind a heuristically-cached index.
-        #
-        # Version every static URL with the page's own hash. The no-cache
-        # header only helps a browser that ASKS again — a copy cached BEFORE
-        # any validator existed sits heuristically fresh for hours and never
-        # revalidates, which is exactly how a fixed bug kept "not working".
-        # A changed URL cannot be served from any cache, by construction.
-        #
-        # The hash covers the ASSETS too, not only this page. Hashed alone, a
-        # deploy that changed just app.js — most of them — kept the same `?v=`,
-        # so the URL promised a new bundle and could still be served the old.
-        assets = (b"app.js", b"style.css", b"vendor/marked.min.js", b"vendor/purify.min.js")
+        assets = (b"app.js", b"home.js", b"style.css", b"vendor/marked.min.js", b"vendor/purify.min.js")
         h = hashlib.sha256(body)
         for asset in assets:
             try:
@@ -372,5 +410,9 @@ def build_app(
             return Response(304, [("ETag", etag), ("Cache-Control", "no-cache")])
         return Response(200, [("Content-Type", "text/html; charset=utf-8"),
                               ("ETag", etag), ("Cache-Control", "no-cache")], body)
+
+    app.route("GET", "/")(lambda req: _versioned_page(req, home_html))
+    for p in profile_list:
+        app.route("GET", f"/{p.key}/")(lambda req, _src=index_html: _versioned_page(req, _src))
 
     return app

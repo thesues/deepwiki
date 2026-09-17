@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>buda · 佛典检索</title>
+<title>deepwiki</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -13,10 +13,9 @@
 <div class="shell">
   <header>
     <button id="new-session" class="btn" title="新建会话">＋ 新会话</button>
+    <a id="home-link" class="btn ghost" href="/" title="返回项目列表">项目</a>
     <span class="spacer"></span>
-    <button id="about-btn" class="btn ghost" title="架构说明">架构</button>
     <div class="meta">
-      <span id="mcp-badge"></span>
       <span id="build" title="本页加载的前端构建号 — 反馈问题时带上它">@@BUILD@@</span>
     </div>
   </header>
@@ -34,16 +33,19 @@
       </div>
       <div id="messages"></div>
       <form id="composer">
-        <!-- The model lives here, by the composer, because it is a property of
-             THIS conversation: the picker shows and edits what the open session
-             answers with, the way every chat UI does it. One endpoint renders
-             as a badge; several render as this select — app.js decides. -->
-        <div class="model-side">
+        <!-- The textarea + send sit in one row; the pickers live in a
+             SMALL-FONT ROW BELOW the box (deepwiki/Devin style): the project
+             on the left, the model that answers on the right. Both are
+             properties of THIS conversation, and both are always a select —
+             a single entry is information, not noise. -->
+        <div class="compose-row">
+          <textarea id="input" rows="1" placeholder="发消息…  Enter 发送 · Shift+Enter 换行"></textarea>
+          <button id="send" type="submit" class="btn">发送</button>
+        </div>
+        <div class="picker-row">
           <span id="model-badge" hidden></span>
           <select id="endpoint" hidden title="本会话回复所用的模型"></select>
         </div>
-        <textarea id="input" rows="1" placeholder="发消息…  Enter 发送 · Shift+Enter 换行"></textarea>
-        <button id="send" type="submit" class="btn">发送</button>
       </form>
     </section>
   </div>

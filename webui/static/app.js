@@ -98,6 +98,11 @@ const S = {
   sessionEp: loadSessionEp(),  //   sessionEp[sessionId]; sessions WITHOUT a choice (new, other
                         //   tab) start on the last-used default. A turn already running
                         //   keeps its own endpoint; switching decides the next turn only.
+  // The PROJECT this page serves. Two pages, deepwiki style: the home (/) is
+  // the card grid and a project lives at /<key>/ — this chat page reads its
+  // key off the URL and never changes it. Switching project = going back to
+  // the home page and opening another card, a navigation, not a widget state.
+  profile: (location.pathname.replace(/\/+$/, "").split("/").pop() || "").trim(),
   // (maxConcurrent/running were flat scalars from the single-endpoint days;
   // per-endpoint numbers live inside S.endpoints now.)
   // "a turn this view does not own is running, and the pool is full" — decided
@@ -224,14 +229,9 @@ function renderEndpoints() {
     badge.hidden = false; sel.hidden = true;
     return;
   }
-  if (S.endpoints.length === 1) {
-    // One endpoint is not a choice, and a dropdown with one entry reads as
-    // broken. The badge shows what it is; the select stays out of the way.
-    const e = S.endpoints.find((x) => x.key === S.endpoint) || S.endpoints[0];
-    badge.textContent = `${e.label} · ${e.model}`;
-    badge.hidden = false; sel.hidden = true;
-    return;
-  }
+  // Always a select, one entry or several — the small-font row below the
+  // composer box (the "Fast ⌄" slot): what will answer is visible and
+  // changeable, not a passive label.
   badge.hidden = true; sel.hidden = false;
   // Rebuild only when the set changed: replaceChildren on every poll would
   // close the open dropdown under a reader's hand.
@@ -1269,6 +1269,11 @@ async function send() {
         // between turns — the agent cache keys on (model, base_url, provider),
         // so the switch is a rebuild against the new one, history intact.
         endpoint: S.endpoint || undefined,
+        // Which project this page serves — read off the URL (/buda/ → buda),
+        // not chosen by a widget. The server echoes the resolved key; a stale
+        // bookmark that outlived a rename falls back server-side, and the
+        // echo below is adopted only to keep the title honest.
+        profile: S.profile || undefined,
       }),
     })).json();
   } catch (_) { status("发送失败"); return; }
@@ -1337,12 +1342,15 @@ async function send() {
 async function boot() {
   loadSessions();
   fetch("/api/status").then((r) => r.json()).then((j) => {
-    if (j.mcp) $("#mcp-badge").innerHTML = `mcp <b>${j.mcp.name}</b>`;
-    else $("#mcp-badge").textContent = "mcp 未接";
+    // The profile this page serves comes off the URL (/buda/ → buda). The
+    // server's list is the truth: an unknown key (renamed profile, stale
+    // bookmark) sends the reader back to the home page's cards, the same
+    // stale-key fallback the API applies — navigation instead of silence.
+    const keys = new Set((j.profiles || []).map((p) => p.key));
+    if (!keys.has(S.profile)) { location.replace("/"); return; }
     // The list of endpoints and the default are the server's to declare.
     setEndpoints(j.endpoints || [], j.defaultEndpoint || null);
   }).catch(() => {
-    $("#mcp-badge").textContent = "mcp 未接";
     $("#model-badge").textContent = "模型未配置";
     $("#model-badge").hidden = false;
   });
@@ -1375,25 +1383,9 @@ async function boot() {
     showFresh();
   }
 
-  // The architecture note. Fetched on first open, not inlined: it is prose that
-  // changes on its own schedule, and a reader who never opens it should not pay
-  // for it.
-  let aboutLoaded = false;
-  const openAbout = async () => {
-    const box = $("#about");
-    if (!aboutLoaded) {
-      try {
-        box.querySelector("#about-body").innerHTML = renderMD(
-          await (await fetch("/static/about.md")).text()
-        );
-        aboutLoaded = true;
-      } catch (_) {
-        box.querySelector("#about-body").textContent = "架构说明加载失败";
-      }
-    }
-    box.hidden = false;
-  };
-  $("#about-btn").onclick = openAbout;
+  // The architecture note keeps its modal markup and close handling — but no
+  // header button opens it any more. It stays reachable only by keeping the
+  // markup, in case a future entry point wants it back.
   $("#about-close").onclick = () => { $("#about").hidden = true; };
   $("#about").onclick = (e) => { if (e.target.id === "about") $("#about").hidden = true; };
   document.addEventListener("keydown", (e) => {

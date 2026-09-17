@@ -1,7 +1,9 @@
 /* Visual language borrowed from autumn's own examples (memory-mcp / gallery):
-   near-black ground, monospace body, serif display with a gold accent, a faint
-   film grain, and small-caps card headers. Keeping one look across the tools
-   that talk to one cluster is the point. */
+   near-black ground, monospace body, serif display with a gold accent, and
+   small-caps card headers. Keeping one look across the tools that talk to one
+   cluster is the point. The mural background, its scrim and the grain layer
+   were removed with the buda→deepwiki repositioning: a plain ground reads
+   cleaner under several projects' cards than a painting tied to one of them. */
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -44,51 +46,12 @@ body {
   font-family:var(--sans); font-weight:400;
   height:100vh; overflow:hidden;
 }
-/* The Yuan-dynasty Bhaishajyaguru assembly from Guangsheng Lower Monastery
-   (Shanxi, ca. 1319), Met object 42716, public domain. Blurred hard and dimmed:
-   it should read as a ground the eye settles on, never as something competing
-   with the text in front of it -- so it is a `background` layer at low opacity
-   under a scrim, not an image anyone is asked to look at.
-   `scale(1.1)` hides the soft edges a 60px blur leaves at the viewport border. */
-body::after {
-  content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
-  /* `?v=` because the file changed under its own name: a browser holding the
-     first, much darker cut would keep showing it. */
-  background:url("/static/img/mural.jpg?v=4") center 30%/cover no-repeat;
-  /* The asset is already blurred and brightness-lifted at encode time, so what
-     is left here is a small blur to hide JPEG blocking at this upscale. It is
-     deliberately NOT dimmed much further: the painting is dark earth pigment to
-     begin with, and the earlier brightness(0.42) on top of that put it below
-     the point where a viewer could see it at all. The cards above carry their
-     own near-opaque background, so contrast does not depend on this layer. */
-  filter:blur(2px) brightness(0.82);
-  transform:scale(1.04);
-  opacity:.8;
-}
 body { position:relative; }
-/* A scrim over the mural so text contrast never depends on which part of the
-   painting happens to sit behind it. It belongs to `.shell` because `.shell` is
-   a stacking context: a z-index:-1 child of it lands above the mural (which is
-   in the ROOT context) and below every pixel of the interface. */
-.shell { position:relative; z-index:1; }
-.shell::before {
-  content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
-  background:
-    radial-gradient(130% 100% at 50% 0%,
-      transparent 0%,
-      color-mix(in srgb, var(--bg) 22%, transparent) 60%,
-      color-mix(in srgb, var(--bg) 55%, transparent) 100%);
-}
-
-/* Grain. Fixed, 3%, pointer-events:none — texture, never interaction. */
-/* Under the interface, not over it. At z-index 9999 this noise fell on the
-   glyphs themselves, and high-frequency texture directly on text edges is a
-   strain source out of all proportion to 3% opacity. It belongs on the mural. */
-body::before {
-  content:''; position:fixed; inset:0; opacity:.03; pointer-events:none; z-index:0;
-  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size:256px;
-}
+/* The Yuan-dynasty mural background, its scrim and the grain layer were
+   removed with the buda→deepwiki repositioning (§4 of PLAN.md): a plain
+   ground reads cleaner under several projects' cards than a painting tied to
+   one of them, and every layer that sat between the two cost contrast
+   budget elsewhere. */
 
 .shell { max-width:1240px; margin:0 auto; padding:1.6rem 1.6rem 1.2rem;
          height:100vh; display:flex; flex-direction:column; }
@@ -103,20 +66,29 @@ header h1 em { color:var(--accent); font-style:italic; }
 .meta b { color:var(--accent); font-weight:500; }
 #build { color:var(--text-muted); font-size:0.62rem; opacity:.7; }
 
-/* The endpoint picker, when there is more than one to pick. A quiet text
-   control, not a form widget: appearance:none strips the UA arrow, the data-URI
-   chevron recolors with the hover, and there is no box to clash with the
-   composer — its options are the deployment's models, not a settings form. */
-#endpoint { background:transparent; border:none; color:var(--text-dim);
-            font-family:var(--mono); font-size:0.72rem; cursor:pointer;
-            max-width:10rem; text-overflow:ellipsis; text-align:right;
-            appearance:none; -webkit-appearance:none;
-            padding:0.45rem 1.05rem 0.45rem 0.1rem;
-            background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6'%3E%3Cpath d='M1 1.5 L4 4.5 L7 1.5' fill='none' stroke='%237d7466' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 0.15rem center / 0.55rem;
-            transition:color .15s var(--ease); }
+/* ---------- the pickers, in a small-font row BELOW the box ---------- */
+/* deepwiki/Devin style: the composer is the box; what steers it — the project
+   on the left, the model on the right — sits underneath in small quiet mono,
+   out of the way of the text. */
+#composer { display:flex; flex-direction:column; gap:0.35rem; flex:none;
+            padding:0.8rem 1rem 1rem; border-top:1px solid var(--border); }
+.compose-row { display:flex; gap:0.6rem; align-items:flex-end; }
+.picker-row { display:flex; align-items:center; gap:1rem; min-height:1.4rem; }
+.picker-row #endpoint { margin-left:auto; }   /* model on the right */
+#endpoint { background:transparent; border:none; color:var(--text-muted);
+           font-family:var(--mono); font-size:0.7rem; cursor:pointer;
+           max-width:12rem; text-overflow:ellipsis;
+           appearance:none; -webkit-appearance:none;
+           padding:0.2rem 1.05rem 0.2rem 0.1rem;
+           background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6'%3E%3Cpath d='M1 1.5 L4 4.5 L7 1.5' fill='none' stroke='%237d7466' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 0.15rem center / 0.55rem;
+           transition:color .15s var(--ease); }
 #endpoint:hover, #endpoint:focus-visible { color:var(--accent); outline:none;
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6'%3E%3Cpath d='M1 1.5 L4 4.5 L7 1.5' fill='none' stroke='%23c5a05e' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E"); }
+           background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6'%3E%3Cpath d='M1 1.5 L4 4.5 L7 1.5' fill='none' stroke='%23c5a05e' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E"); }
 #endpoint option { background:var(--surface); color:var(--text); }
+#model-badge { font-size:0.7rem; color:var(--text-dim); white-space:nowrap;
+               font-family:var(--mono); margin-left:auto; }
+
+/* ---------- the project picker's old badge (retired) ---------- */
 
 .btn { background:rgba(197,160,94,0.1); border:1px solid var(--accent-dim); color:var(--accent);
        font-family:var(--mono); font-size:0.78rem; border-radius:var(--radius);
@@ -129,12 +101,7 @@ header h1 em { color:var(--accent); font-style:italic; }
         gap:1.2rem; align-items:stretch; flex:1; min-height:0; }
 @media (max-width:820px){ .grid { grid-template-columns:1fr; } .sessions { display:none; } }
 
-/* Near-opaque on purpose. A lower value let the painting read through the
-   panel, which looked better in a screenshot and is the single worst thing you
-   can put behind a paragraph: local contrast changes under every line. The
-   mural stays visible where it costs nothing — the margins, and the band above
-   the cards — which is where background art belongs. */
-.card { background:color-mix(in srgb, var(--surface) 94%, transparent);
+.card { background:var(--surface);
         border:1px solid var(--border); border-radius:var(--radius);
         display:flex; flex-direction:column; min-height:0; overflow:hidden; }
 .card-head { padding:0.7rem 1rem; border-bottom:1px solid var(--border);
@@ -225,14 +192,7 @@ header h1 em { color:var(--accent); font-style:italic; }
 .opt { padding:0.3rem 0.9rem; font-size:0.74rem; }
 
 /* ---------- composer ---------- */
-#composer { display:flex; gap:0.6rem; align-items:flex-end; flex:none;
-            padding:0.8rem 1rem 1rem; border-top:1px solid var(--border); }
-/* The model picker lives in the composer because it is a property of the open
-   conversation, the way every chat UI does it: the pill shows what THIS
-   session answers with, bottom-left, next to what it answers into. */
-.model-side { flex:none; display:flex; align-items:flex-end; min-width:0; }
-#model-badge { font-size:0.72rem; color:var(--text-dim); white-space:nowrap;
-               font-family:var(--mono); }
+/* (layout rules for #composer/.compose-row live with the picker styles above) */
 #input { flex:1; resize:none; background:var(--bg); border:1px solid var(--border);
          border-radius:var(--radius); color:var(--text); font-family:var(--mono);
          font-size:0.84rem; font-weight:300; line-height:1.6; padding:0.55rem 0.75rem;
@@ -322,19 +282,54 @@ header h1 em { color:var(--accent); font-style:italic; }
 .chat.fresh #messages { flex:0 0 auto; margin-top:auto; overflow:visible;
                         padding-bottom:0; }
 .chat.fresh #composer { margin-bottom:auto; border-top:0; padding:0 1rem 0;
-                        max-width:640px; width:100%; align-self:center;
-                        gap:0.5rem; }
+                        max-width:640px; width:100%; align-self:center; }
 .chat.fresh #input { background:var(--surface-raised); border-radius:14px;
                      padding:0.85rem 1.05rem; font-size:0.9rem;
                      font-family:inherit; }
 .chat.fresh #input::placeholder { font-family:inherit; }
 .chat.fresh #send { align-self:center; }
+.chat.fresh .picker-row { padding:0 0.4rem; }
 
 .fresh-hero { text-align:center; padding:0 1rem 1.5rem; }
 .fresh-title { font-size:1.5rem; font-weight:400; color:var(--text);
                letter-spacing:0.02em; }
 .fresh-sub { font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem;
              letter-spacing:0.02em; }
+
+/* ---------- the homepage: project cards ---------- */
+/* deepwiki.com's opening move — several projects, one card each — rendered in
+   this UI's own language: quiet bordered cards on the plain ground, the name
+   in the serif, the key underneath in small mono. A card is a LINK to
+   /<key>/: navigation is the whole mechanism, no SPA. */
+.project-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+                gap:0.9rem; max-width:640px; margin:1.6rem auto 0; }
+.project-card { display:block; background:var(--surface); border:1px solid var(--border);
+                border-radius:var(--radius); padding:1.1rem 1rem 0.9rem;
+                text-decoration:none;
+                transition:border-color .15s var(--ease), background .15s var(--ease); }
+a.project-card:hover { border-color:var(--accent-dim); background:var(--surface-raised); }
+.project-card .pc-name { font-family:var(--serif); font-size:1.15rem; color:var(--text);
+                         letter-spacing:0.01em; }
+.project-card .pc-key { font-family:var(--mono); font-size:0.66rem; color:var(--text-muted);
+                        margin-top:0.35rem; letter-spacing:0.06em; }
+.project-card:hover .pc-key { color:var(--accent); }
+
+/* The HOME page proper: the logo, the ask, the cards, nothing else. The body
+   gets class="home" so these rules can never leak into the chat page's own
+   fresh view. */
+.home { height:100%; }
+.home-shell { min-height:100%; display:flex; flex-direction:column; }
+.home-head { padding:2.2rem 2rem 0; }
+.home-head h1 { font-family:var(--serif); font-weight:400; font-size:1.5rem;
+                color:var(--text); margin:0; }
+.home-head h1 em { font-style:italic; color:var(--accent); }
+.home-main { flex:1; display:flex; flex-direction:column; justify-content:center;
+             align-items:center; padding:0 2rem; }
+.home-ask { font-family:var(--serif); font-size:1.9rem; color:var(--text);
+            margin:0; letter-spacing:0.02em; }
+.home-grid { width:100%; }
+.home-error { color:var(--text-muted); font-size:0.85rem; margin-top:1.4rem; }
+.home-meta { padding:1rem 2rem 1.4rem; text-align:right; }
 
 /* One turn at a time — a single GPU, not a policy. The composer says so rather
    than accepting a click and dropping it.

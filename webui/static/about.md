@@ -1,13 +1,13 @@
 # 这套系统是怎么搭的
 
-一个佛典检索问答界面。回答由本地 GPU 上的大模型生成，依据来自存在分布式存储里的语料库 —— 没有一次请求离开这台集群。
+deepwiki —— 多项目的 DeepWiki 式站点：首页列出若干项目卡片，点开一个项目就进入对话/检索界面。每个项目是一个 AgentProfile：自己的 brief、工具集、MCP 子集与工作目录；回答由本地 GPU 上的大模型生成，依据来自存在分布式存储里的语料库 —— 没有一次请求离开这台集群。
 
 ## 一次提问经过的地方
 
 ```
 浏览器
   │  SSE（断线可重连，只补差量）
-webui ──ACP──▶ hermes agent
+webui ──库内调用──▶ hermes agent（AIAgent，同进程）
   │                 │  MCP over HTTP
   │                 ▼
   │            memory-mcp ──▶ autumn（BM25 + 向量索引）
@@ -16,6 +16,16 @@ webui ──ACP──▶ hermes agent
                           │  权重经 FUSE 挂载读取
                         RTX 4090
 ```
+
+## 项目与 profile
+
+一个项目 = 一个 AgentProfile，声明在 hermes 的 config.yaml（`profiles:` 段）或环境变量 `DEEPWIKI_PROFILES` 里。profile 决定：
+
+- **system brief**：这个项目下 agent 的身份与职责；
+- **toolsets 与 MCP 子集**：佛法 agent 看不到代码索引工具，反之亦然；
+- **workspace**：agent 在 autumnfs 上自己的文件夹（终端 cwd 由 hermes 的 per-task 机制指向它），目录级隔离不靠 prompt 自觉。
+
+会话随发送携带 profile；换项目 = 换 agent 缓存签名 = 重建，复用端点切换的既有机制。profile 的数据（skills/docs/workspace）下沉在 autumnfs；hermes 的会话存储留在本地 PVC。
 
 ## 四个部件
 
@@ -51,7 +61,7 @@ ivf/{质心}/{向量}  → 向量倒排桶
 
 ### hermes + webui · 对话层
 
-hermes 是 agent 运行时，通过 ACP 协议以子进程方式驱动。webui 只做两件事：会话管理和对话框。
+hermes 是 agent 运行时，webui 以**库内方式**驱动它（同进程直接调用 `AIAgent`，不经子进程）。webui 只做三件事：项目卡片、会话管理和对话框。
 
 一个刻意的设计：**一轮对话属于服务端，不属于这个页面**。回答在服务端自己的任务里生成，写进一个带序号的缓冲区；浏览器只是订阅者。所以刷新页面、关掉标签页、换个窗口打开，那一轮都在继续，重连时只补上错过的部分。
 
