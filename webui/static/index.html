@@ -12,8 +12,13 @@
 <body>
 <div class="shell">
   <header>
-    <button id="new-session" class="btn" title="新建会话">＋ 新会话</button>
-    <a id="home-link" class="btn ghost" href="/" title="返回项目列表">项目</a>
+    <!-- One door, not two buttons: the home page is where sessions are
+         chosen and projects are picked, so the only permanent control here
+         is the way back to it. 新会话 lives there too — a new conversation
+         is a property of a project, and the project is chosen on the home
+         page. -->
+    <a id="home-link" class="btn ghost" href="/" title="返回首页 — 重新选择项目或会话">← 首页</a>
+    <span class="proj-name" id="proj-name"></span>
     <span class="spacer"></span>
     <div class="meta">
       <span id="build" title="本页加载的前端构建号 — 反馈问题时带上它">@@BUILD@@</span>
@@ -23,7 +28,11 @@
   <div class="grid">
     <section class="card sessions">
       <div class="card-head"><span class="dot"></span>会话<span class="count" id="sess-count"></span></div>
+      <!-- This project's conversations only: the sidebar is scoped to the
+           profile the URL names, because a conversation belongs to the
+           project it was opened under and a project page shows its own. -->
       <ul id="sessions"></ul>
+      <a class="new-sess" href="/">＋ 新会话（回首页选项目）</a>
     </section>
 
     <section class="card chat">

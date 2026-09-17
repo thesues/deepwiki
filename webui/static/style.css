@@ -249,6 +249,19 @@ header h1 em { color:var(--accent); font-style:italic; }
 /* ---------- architecture note ---------- */
 .btn.ghost { background:transparent; border-color:var(--border); color:var(--text-dim); }
 .btn.ghost:hover { color:var(--accent); border-color:var(--accent-dim); background:transparent; }
+
+/* The project this page serves, in the header: the page's own name, in the
+   serif, quiet — it identifies, it does not invite a click (the door back is
+   the 首页 button beside it). */
+.proj-name { font-family:var(--serif); font-size:1.05rem; color:var(--text); }
+
+/* The sidebar's new-conversation affordance: a quiet link to the home page,
+   where a new conversation is actually created (project first). At the tail
+   of the list it reads as "more than these". */
+.new-sess { display:block; padding:0.55rem 0.6rem; font-size:0.78rem;
+            color:var(--text-muted); text-decoration:none;
+            border-top:1px solid var(--border); }
+.new-sess:hover { color:var(--accent); }
 #about[hidden] { display:none; }
 #about { position:fixed; inset:0; z-index:50; display:flex; align-items:center;
          justify-content:center; padding:2rem 1rem;

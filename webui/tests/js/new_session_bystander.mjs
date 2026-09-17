@@ -115,7 +115,7 @@ function page() {
     const n = new Node_(tag); n.id = id || ""; n.className = cls || "";
     Object.assign(n._attrs, attrs); parent.appendChild(n); return n;
   };
-  mk("button", "new-session", "btn", body);
+  mk("button", "new-session", "btn", body);   // legacy: app.js no longer binds it (新会话 lives on the home page)
   mk("span", "sess-count", "", body);
   mk("ul", "sessions", "", body);
   const chat = mk("section", "", "card chat", body);
@@ -166,9 +166,9 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     calls.push({ path: u.pathname, query: Object.fromEntries(u.searchParams), body });
     switch (u.pathname) {
       case "/api/sessions":
-        return reply({ sessions: server.sessions, current: server.current, streaming: server.streaming, endpoints: server.endpoints });
+        return reply({ defaultProfile: "default", sessions: server.sessions, current: server.current, streaming: server.streaming, endpoints: server.endpoints });
       case "/api/status":
-        return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4" });
+        return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4", profiles: [{ key: "default", label: "默认" }], defaultProfile: "default" });
       case "/api/chat/start": return (server.startGate || Promise.resolve()).then(() => {
         const sid = body.new || !body.sessionId ? `new-${server.nextStream}` : body.sessionId;
         const stream = `s${server.nextStream++}`;
@@ -253,7 +253,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   const sidA = h.S().sessionId, streamA = h.S().streamId;
   h.push(streamA, { kind: "delta", text: "苦谛…", seq: 2, session: sidA });
 
-  h.$("#new-session").click();
+  h.run("newSession()");
   await settle();
   h.pick("mm2");
   h.type("hello mini");
@@ -273,7 +273,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   const h2 = harness();
   await settle();
   h2.type("A"); h2.$("#send").click(); await settle();
-  h2.$("#new-session").click(); await settle();
+  h2.run("newSession()"); await settle();
   h2.pick("mm2");
   h2.type("B");
   h2.$("#input").dispatch("keydown", { key: "Enter", shiftKey: false, isComposing: false, keyCode: 13 });
@@ -289,7 +289,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   await settle();
   h.pick("dsv4"); h.type("A"); h.$("#send").click(); await settle();
   const sidA = h.S().sessionId, streamA = h.S().streamId;
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.pick("mm2"); h.type("B"); h.$("#send").click(); await settle();
   const sidB = h.S().sessionId, streamB = h.S().streamId;
   assert.notStrictEqual(streamA, streamB);
@@ -308,7 +308,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   await settle();
   h.pick("dsv4"); h.type("A"); h.$("#send").click(); await settle();
   const sidA = h.S().sessionId, streamA = h.S().streamId;
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.push(streamA, { kind: "end", error: "boom", seq: 9, session: sidA });
   await settle();
   assert.ok(!h.$("#messages").querySelector(".msg.error"),
@@ -344,7 +344,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   const sidA = h.S().sessionId, streamA = h.S().streamId;
   h.push(streamA, { kind: "user", text: "hello A", seq: 1, session: sidA });
   h.push(streamA, { kind: "delta", text: "answer-A", seq: 2, session: sidA });
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.pick("mm2"); h.type("hello B"); h.$("#send").click(); await settle();
   const sidB = h.S().sessionId, streamB = h.S().streamId;
   h.push(streamB, { kind: "user", text: "hello B", seq: 1, session: sidB });
@@ -378,7 +378,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   assert.ok(text(h).includes("answer-A"), `reload after opening A: ${JSON.stringify(text(h))}`);
 
   // 新会话 then reload: the fresh view, not the last conversation.
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h = await reload(h);
   assert.ok(h.$(".chat").classList.contains("fresh") && !h.S().sessionId,
     "a reload after 新会话 reopened an old conversation");
@@ -401,7 +401,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
     `opening a conversation drew ${JSON.stringify(shown)} — history replays were dropped as foreign frames`);
 
   // 新会话, then back to the old conversation, then send: it continues THAT one.
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.$("#sessions").querySelector("li").onclick(); await settle(); await settle();
   h.type("follow-up"); h.$("#send").click(); await settle();
   const last = posts(h, "/api/chat/start").at(-1);
@@ -476,7 +476,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   const sid = h.S().sessionId, stream = h.S().streamId;
   h.push(stream, { kind: "approval", id: sid, title: "rm -rf /tmp/x", options: [], seq: 2, session: sid });
   assert.ok(h.S().awaitingPerm);
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.pick("mm2"); h.type("elsewhere"); h.$("#send").click(); await settle();
   assert.strictEqual(posts(h, "/api/chat/start").length, 2,
     `a pending approval in another conversation blocked this send: ${h.$("#run-status").textContent}`);
@@ -500,7 +500,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   const sid = h.S().sessionId, stream = h.S().streamId;
   h.push(stream, { kind: "user", text: "q1", seq: 1, session: sid });
   h.push(stream, { kind: "delta", text: "a1-final", seq: 2, session: sid });
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   // The turn ends server-side between two sidebar polls: this page never hears
   // it (its feed dropped), and S.streaming still says the session is live.
   h.sources.filter((es) => es.url.includes(`stream_id=${stream}&`)).forEach((es) => es.close());
@@ -532,7 +532,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   const h = harness(); await settle();
   h.type("A"); h.$("#send").click(); await settle();
   const sidA = h.S().sessionId, streamA = h.S().streamId;
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.pick("mm2"); h.type("B"); h.$("#send").click(); await settle();
   assert.ok(h.$("#pending"), "precondition: B shows its pending row");
   h.push(streamA, { kind: "end", error: null, seq: 5, session: sidA });
@@ -566,7 +566,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   const h2 = harness(); await settle();
   let rel2; h2.server.startGate = new Promise((r) => { rel2 = r; });
   h2.type("first"); h2.$("#send").click(); await settle();
-  h2.$("#new-session").click(); await settle();
+  h2.run("newSession()"); await settle();
   rel2(); await settle(); await settle();
   assert.ok(h2.S().pendingNew && !h2.S().sessionId && h2.$(".chat").classList.contains("fresh"),
     "新会话 during a send was overridden by the send's response");
@@ -599,7 +599,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   assert.strictEqual(h.$("#run-status").textContent, "就绪");
 
   // The live path still times a running tool and shows the pending row.
-  h.$("#new-session").click(); await settle();
+  h.run("newSession()"); await settle();
   h.type("live"); h.$("#send").click(); await settle();
   const sid = h.S().sessionId, stream = h.S().streamId;
   h.push(stream, { kind: "tool", id: "x#1", title: "terminal", status: "running", detail: "", detailFull: 0, seq: 2, session: sid });

@@ -103,6 +103,7 @@ const S = {
   // key off the URL and never changes it. Switching project = going back to
   // the home page and opening another card, a navigation, not a widget state.
   profile: (location.pathname.replace(/\/+$/, "").split("/").pop() || "").trim(),
+  defaultProfile: null,  // the server's first profile; sessions without a pin file under it,
   // (maxConcurrent/running were flat scalars from the single-endpoint days;
   // per-endpoint numbers live inside S.endpoints now.)
   // "a turn this view does not own is running, and the pool is full" — decided
@@ -971,7 +972,15 @@ function renderSessions() {
   // The reference webui does the same thing for the same reason
   // (`renderSessionListFromCache`).
   const ul = $("#sessions");
-  const rows = S.sessionRows || [];
+  // A project page lists ITS conversations only: each session belongs to the
+  // project it was opened under (recorded at chat/start), and a page that
+  // names /buda/ in its URL shows buda's. Sessions from before profiles —
+  // no recorded key — file under the default profile, which is what they
+  // served as. An EMPTY profile (the page opened at /) filters nothing —
+  // there is no project to be scoped to, so the list is everything.
+  const rows = S.profile
+    ? (S.sessionRows || []).filter((s) => (s.profile || S.defaultProfile) === S.profile)
+    : (S.sessionRows || []);
   ul.textContent = "";
   $("#sess-count").textContent = rows.length ? String(rows.length) : "";
   rows.forEach((s) => {
@@ -1039,6 +1048,9 @@ async function loadSessions() {
   Object.keys(was).forEach((id) => { if (!S.streaming[id]) HISTORY_CACHE.delete(id); });
   watchWhileOthersRun();
   S.sessionRows = j.sessions || [];
+  // The default profile rides every sessions poll, so the sidebar's filter
+  // is correct even before /api/status answers (a reload races them).
+  if (j.defaultProfile) S.defaultProfile = j.defaultProfile;
   if (j.endpoints) setEndpoints(j.endpoints, null);
   setBusy(S.busy);          // capacity changed under it; re-render the composer
   renderSessions();
@@ -1363,6 +1375,13 @@ async function boot() {
     // stale-key fallback the API applies — navigation instead of silence.
     const keys = new Set((j.profiles || []).map((p) => p.key));
     if (!keys.has(S.profile)) { location.replace("/"); return; }
+    S.defaultProfile = j.defaultProfile || (j.profiles || [])[0]?.key || null;
+    // The header says WHICH project this is — the page's own name, from the
+    // same list that validated the URL.
+    const p = (j.profiles || []).find((x) => x.key === S.profile);
+    const name = $("#proj-name");
+    if (name && p) name.textContent = p.label || p.key;
+    document.title = `${p ? p.label || p.key : S.profile} · deepwiki`;
     // The list of endpoints and the default are the server's to declare.
     setEndpoints(j.endpoints || [], j.defaultEndpoint || null);
   }).catch(() => {
@@ -1407,13 +1426,13 @@ async function boot() {
     if (e.key === "Escape" && !$("#about").hidden) $("#about").hidden = true;
   });
 
-  $("#new-session").onclick = newSession;
-  // Cmd/Ctrl+K from anywhere, including the composer -- the shortcut is useless
-  // if you have to leave the box you are typing in to reach it.
+  // 新会话 is a HOME-page action now: a conversation belongs to a project,
+  // and the project is chosen there. The key still works (Cmd/Ctrl+K) — it
+  // opens the home page, which is where the choice happens.
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      newSession();
+      location.href = "/";
     }
   });
   $("#send").onclick = (e) => {

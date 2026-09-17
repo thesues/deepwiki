@@ -26,6 +26,7 @@ from pathlib import Path
 from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint
 from profiles import AgentProfile, allowed_endpoint, build_profiles
+from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_stream
 from turns import Refused, TurnManager
 
@@ -43,6 +44,7 @@ def build_app(
     auth_pass: str = "",
     sessions: object | None = None,
     mcp: dict | None = None,
+    session_profiles: "SessionProfiles | None" = None,
 ) -> App:
     app = App(static_dir=static_dir, auth_user=auth_user, auth_pass=auth_pass)
     by_key = {e.key: e for e in endpoints}
@@ -56,6 +58,10 @@ def build_app(
     # Which conversation each BROWSER last opened. Per browser, not global:
     # shared, it leaked one person's position into another's page.
     last_session: dict[str, str] = {}
+    # Which PROJECT each conversation belongs to. Recorded at chat/start (the
+    # one moment the profile is known for certain), read by the sidebar so a
+    # project page lists only its own conversations.
+    session_profiles = session_profiles or SessionProfiles()
 
     def _endpoint(req: Request, session_hint: str = "") -> Endpoint:
         return by_key.get(req.json().get("endpoint") or req.query.get("endpoint", ""), default_ep)
@@ -125,6 +131,10 @@ def build_app(
             # the honest ones.
             return json_response(r.as_json(), status=409 if r.reason == "taken" else 429)
         last_session[req.client_id] = session_id
+        # The conversation is pinned to the project it was opened under — the
+        # card the reader clicked. Every later turn may omit `profile`; the
+        # pin is what the sidebar and the page title read.
+        session_profiles.record(session_id, profile.key)
         return json_response({
             "streamId": stream.stream_id,
             "sessionId": session_id,
@@ -179,6 +189,10 @@ def build_app(
         running = manager.running()
         for r in rows:
             r["is_streaming"] = r.get("id") in running
+            # The project each conversation belongs to. A session predating
+            # profiles has no entry and carries None — the sidebar files it
+            # under the default project, which is what it served as.
+            r["profile"] = session_profiles.get(r.get("id") or "")
         # A live turn's session row does not exist in the store until hermes
         # persists its first message — which happens when the TURN ends
         # (`_persist_session` sits on the exit paths of the conversation loop).
@@ -204,6 +218,10 @@ def build_app(
                 "preview": "回复中…",
                 "messageCount": 0,
                 "is_streaming": True,
+                # The pin was recorded at chat/start, before the store had a
+                # row — carry it here too, or the conversation vanished from
+                # its project's sidebar for the whole first turn.
+                "profile": session_profiles.get(sid),
             })
         return json_response({
             "sessions": rows,
@@ -288,6 +306,7 @@ def build_app(
         # already-gone id printed "not found" and exited 0. A second tab's
         # delete racing the first's must read as success — the goal is achieved.
         last_session.pop(req.client_id, None)
+        session_profiles.forget(sid)   # the conversation is gone; its pin goes too
         return json_response({"ok": True, "deleted": sid, "found": bool(deleted)})
 
     # ── approvals ──────────────────────────────────────────────────────────
