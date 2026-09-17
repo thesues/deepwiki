@@ -190,25 +190,17 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: HERMES_HOME, value: /opt/data }
-            # Match the model, not the agent. The server defaults to 4 because
-            # ACP can carry four conversations, and it argues that a fifth
-            # queueing at the model beats being refused at the door. On THIS
-            # deployment the models behind it are freetoken-l3 with
-            # `--max-running-requests 1` and freetoken-mm2 (H20) with 2, so
-            # "queueing at the model" is what a reader sees as a second
-            # conversation that says it is replying and then produces nothing
-            # for as long as the first one runs -- while its composer stays
-            # enabled, because the composer is gated on the server's limit and
-            # the server had room. Per-endpoint admission (DEEPWIKI_ENDPOINTS
-            # below) is the real gate; this env is only the fallback seed for
-            # a deploy that declares no endpoints, and 1 is the smallest
-            # honest number it could name.
-            - { name: MAX_CONCURRENT_TURNS, value: "1" }
-            # Every endpoint the picker offers, first one the default. The limit
-            # is per entry because the ceiling is the MODEL behind it: one
-            # global number can only be right for one of them, and it is the
-            # reason MAX_CONCURRENT_TURNS above could only ever describe
-            # freetoken-l3. Adding a provider is a line here — the webui's
+            # Admission is PER ENDPOINT, read from DEEPWIKI_ENDPOINTS below
+            # (each entry's maxConcurrent, checked against that endpoint's own
+            # live turns). There is no global knob: a global number could only
+            # ever be right for one of the models behind the list. The env
+            # MAX_CONCURRENT_TURNS that used to sit here named the fallback
+            # for a deploy that declares NO endpoints at all — this one always
+            # declares them, so the knob was dead weight and is gone.
+            # Every endpoint the picker offers, first one the default. The
+            # limit is per entry because the ceiling is the MODEL behind it: a
+            # global number could only ever be right for one of them. Adding a
+            # provider is a line here — the webui's
             # header picker reads this list from /api/status, and the agent
             # cache signature carries base_url and provider, so a session that
             # switches misses the cache and is rebuilt against the new one,
