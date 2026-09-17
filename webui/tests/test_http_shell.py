@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import mimetypes
 import json
 import sys
 import threading
@@ -234,6 +235,23 @@ def test_a_font_is_cached_for_a_year_and_everything_else_revalidates(server, tmp
     r = _get(base + "/static/vendor/fonts/dm-mono-400-latin.woff2")
     assert r.read() == b"wOF2stub"
     assert r.headers.get("Content-Type") == "font/woff2"
+    # And the type must NOT come from the platform's mime database. This
+    # shipped once: macOS answered `font/woff2` off /etc/apache2/mime.types,
+    # the slim image ships no such file and answered octet-stream, the cache
+    # branch below keys on `font/`, and the fonts silently went back to a
+    # revalidation per navigation in production while every test was green.
+    # Emptying the database is the ablation, in-process.
+    saved = mimetypes.guess_type
+    mimetypes.guess_type = lambda *a, **k: (None, None)
+    try:
+        r = _get(base + "/static/vendor/fonts/dm-mono-400-latin.woff2")
+        assert r.headers.get("Content-Type") == "font/woff2", (
+            "the woff2 type must be served from the app's own table, not from "
+            "a /etc/mime.types the runtime image does not install"
+        )
+        assert r.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+    finally:
+        mimetypes.guess_type = saved
     assert r.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
     # The code the fonts are served alongside must NOT be pinned that way: a
     # deploy's fixes have to reach a browser that already has the old bundle.

@@ -46,6 +46,28 @@ log = logging.getLogger("deepwiki.http")
 # them with `add_static("/static/", STATIC)`.
 STATIC_PREFIX = "/static/"
 
+# The media types this server actually serves, spelled out rather than asked
+# for. `mimetypes.guess_type` reads the PLATFORM's database — /etc/mime.types
+# and friends — and the slim image this runs in ships none of them
+# (`mimetypes.knownfiles` resolves to nothing there). So every .woff2 came back
+# `application/octet-stream` in the pod while the same call on a developer's
+# macOS returned `font/woff2` off /etc/apache2/mime.types: a bug that cannot
+# reproduce where it is written.
+#
+# The visible cost was not the type, it was the CACHE. The immutable branch in
+# `serve_static` keys on `font/`, so the fonts fell back to no-cache and went
+# back to costing a revalidation round trip each, per navigation — the exact
+# round trips self-hosting them was meant to remove. An asset server should not
+# take the contract it serves from a file it does not install.
+CONTENT_TYPES = {
+    ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
+    ".mjs": "application/javascript", ".json": "application/json",
+    ".md": "text/markdown", ".txt": "text/plain", ".svg": "image/svg+xml",
+    ".woff2": "font/woff2", ".woff": "font/woff",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+}
+
 # Tells one BROWSER from another. Not authentication — everyone here shares one
 # credential; this only separates two people's cursors and double-click
 # detection. A cookie rather than a header because `EventSource` cannot set
@@ -214,7 +236,9 @@ class App:
             body = target.read_bytes()
         except (OSError, ValueError):
             return None
-        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        ctype = (CONTENT_TYPES.get(target.suffix.lower())
+                 or mimetypes.guess_type(str(target))[0]
+                 or "application/octet-stream")
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
         # no-cache + ETag, not no-store: the app's JS carries the fixes the
