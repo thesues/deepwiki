@@ -218,7 +218,7 @@ spec:
                   "base_url":"http://freetoken-l3:1919/v1","maxConcurrent":1,
                   "context":62080},
                  {"key":"mm2","label":"MiniMax-M2.5","model":"minimax-m25-ftw",
-                  "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":2,
+                  "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":1,
                   "context":65536}]
             # The two model ids are the served names each engine reports on
             # /v1/models (the --model path's basename): dsv4-flash-ftw's pod was

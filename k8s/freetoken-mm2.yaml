@@ -171,18 +171,12 @@ spec:
               # family, and the serial NVFP4 expert build is the known hang.
               # No --hicache-*: MiniMax's MHAKVCache has no committed_pages for
               # the autumn L3 codec; the tier would refuse to build.
-              # --max-running-requests 2, not 1: this engine sits on an H20
-              # with 160Gi of host memory for its CPU-MoE workers — two
-              # concurrent decodes fit, where the 4090 behind freetoken-l3
-              # does not. The webui's per-endpoint admission reads the same
-              # number from DEEPWIKI_ENDPOINTS.maxConcurrent; keep the two in
-              # lockstep, the engine is the ceiling.
               exec ft serve \
                 --model /mnt/autumn/models/minimax-m25-ftw \
                 --host 0.0.0.0 --port 1919 \
                 --moe-backend hybrid \
                 --page-size 64 \
-                --max-running-requests 2 \
+                --max-running-requests 1 \
                 --memory-ratio 0.85 \
                 --kv-reserve-tokens 65536 \
                 --expert-load parallel \
