@@ -719,10 +719,25 @@ function apply(ev, from) {
       // the SAME message would render it twice. A reattach after reload draws
       // nothing first, so there the echo is exactly what paints it.
       finalizeSeg();
+      // A new prompt closes the previous turn's activity group. Without this,
+      // a REPLAYED multi-turn transcript funnels every later turn's tools into
+      // the FIRST turn's group -- that group sits after the first question, so
+      // the last question on screen looked like it had run nothing, while a
+      // wall of unrelated tool rows stacked up above it. (Live turns never hit
+      // this: endTurn already nulled S.activity before the next prompt.)
+      S.activity = null;
+      S.tools.clear();
       if (S.skipUserEcho) S.skipUserEcho = false;
       else addUserMsg(ev.text);
       break;
-    case "history_user": finalizeSeg(); addUserMsg(ev.text); break;
+    case "history_user":
+      finalizeSeg();
+      // Same closure as above: each replayed prompt starts a fresh activity
+      // group, so the tools that follow it render AFTER that prompt.
+      S.activity = null;
+      S.tools.clear();
+      addUserMsg(ev.text);
+      break;
     case "delta": ev.thought ? appendThought(ev.text) : appendToken(ev.text); break;
     case "tool": toolRow(ev.id, ev.title, ev.status, ev.detail, ev.detailFull, ev.duration); break;
     case "approval": showApproval(ev); break;
