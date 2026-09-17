@@ -36,6 +36,7 @@ import uuid
 from typing import Any, Callable
 
 from hermes_agent import AgentPool, Endpoint, history_for, run_turn
+from profiles import AgentProfile
 from turn_stream import EventSink, TurnStream
 
 log = logging.getLogger("deepwiki.turns")
@@ -190,6 +191,7 @@ class TurnManager:
         text: str,
         endpoint: Endpoint,
         client_id: str = "",
+        profile: AgentProfile | None = None,
     ) -> TurnStream:
         """Admit and launch one turn. Raises `Refused` if it cannot start."""
         with self._lock:
@@ -225,7 +227,10 @@ class TurnManager:
         # stream sees the question above the answer even if they arrive late.
         stream.emit("user", text=text)
 
-        self._turns.submit(f"turn-{stream.stream_id}", self._run_turn, stream, session_id, text, endpoint)
+        self._turns.submit(
+            f"turn-{stream.stream_id}", self._run_turn,
+            stream, session_id, text, endpoint, profile,
+        )
         return stream
 
     def _install_approval(self, stream: TurnStream) -> None:
@@ -365,11 +370,12 @@ class TurnManager:
         log.info("session %s rotated to %s mid-turn (stream %s)", old, new, stream.stream_id)
 
     def _run_turn(
-        self, stream: TurnStream, session_id: str, text: str, endpoint: Endpoint
+        self, stream: TurnStream, session_id: str, text: str,
+        endpoint: Endpoint, profile: AgentProfile | None = None,
     ) -> None:
         agent = None
         try:
-            agent = self._pool.acquire(session_id, endpoint)
+            agent = self._pool.acquire(session_id, endpoint, profile)
             self._pool.note_running(stream.stream_id, agent)
             self._install_approval(stream)
             # After the approval key is pinned: it stays the id the hook was
@@ -384,7 +390,17 @@ class TurnManager:
             # previous turn's callbacks, which captured a stream nobody reads.
             bind_callbacks(agent, EventSink(stream))
             history = self._history(session_id)
-            self._run(agent, session_id=session_id, user_message=text, history=history)
+            # The profile's brief, on every turn, for the same reason
+            # CHAT_DIRECTIVE is: hermes replays the system prompt verbatim to
+            # keep the upstream prompt cache warm, so a constant string costs
+            # nothing, and a first-turn-only injection would be missing from
+            # any session whose first turn predates it. `directive` is None
+            # for a profile that declares none — run_turn then falls back to
+            # CHAT_DIRECTIVE exactly as before.
+            self._run(
+                agent, session_id=session_id, user_message=text, history=history,
+                system_message=profile.directive if profile is not None else None,
+            )
             stream.finish()
         except Exception as e:  # noqa: BLE001
             # The reader must be told. A turn that dies silently leaves the

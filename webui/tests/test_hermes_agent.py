@@ -88,9 +88,10 @@ def test_endpoints_parse_in_order_with_the_first_as_default():
 
 
 class FakeAgent:
-    def __init__(self, session_id, ep):
+    def __init__(self, session_id, ep, profile=None):
         self.session_id = session_id
         self.ep = ep
+        self.profile = profile
         self.interrupted = 0
         self.stream_delta_callback = None
         self.tool_progress_callback = None
@@ -105,8 +106,8 @@ class FakeAgent:
 def _pool(monkeypatch, max_size=25):
     built = []
 
-    def fake_build(session_id, ep):
-        a = FakeAgent(session_id, ep)
+    def fake_build(session_id, ep, profile=None):
+        a = FakeAgent(session_id, ep, profile)
         built.append(a)
         return a
 

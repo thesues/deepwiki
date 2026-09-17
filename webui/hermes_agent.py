@@ -47,6 +47,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
+from profiles import AgentProfile, scope_agent_tools
+
 log = logging.getLogger("deepwiki.agent")
 
 
@@ -228,8 +230,8 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
 # ── the agent itself ────────────────────────────────────────────────────────
 
 
-def build_agent(session_id: str, ep: Endpoint) -> Any:
-    """Construct one `AIAgent` wired to `ep`.
+def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = None) -> Any:
+    """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
 
     The kwargs mirror what hermes' own ACP adapter passes, minus the parts that
     are about stdio being a JSON-RPC transport. `session_db` is handed in so the
@@ -238,7 +240,10 @@ def build_agent(session_id: str, ep: Endpoint) -> Any:
     Toolsets and MCP servers both come from hermes' config.yaml — the one file
     hermes' own CLI reads. `resolve_toolsets` runs hermes' own platform
     resolver over it, which also appends `mcp-<name>` for every enabled
-    server; the loop below is a belt-and-braces for the fallback paths.
+    server; the loop below is a belt-and-braces for the fallback paths. With a
+    profile, both lists are then trimmed to the profile's subset (and the
+    profile's workspace folder becomes the terminal cwd, registered against
+    the session id the same way ACP's session/load registers a project root).
     """
     from run_agent import AIAgent
 
@@ -263,6 +268,17 @@ def build_agent(session_id: str, ep: Endpoint) -> Any:
         t = f"mcp-{name}"
         if t not in toolsets:
             toolsets.append(t)
+
+    # The profile's slice of the identity. Kept here — at build time, not per
+    # turn — because the tool surface is a property of the built agent: a
+    # per-turn trim would leave a cached agent (built for the old identity)
+    # carrying tools its replacement dropped.
+    toolsets, mcp_servers = scope_agent_tools(profile, toolsets, mcp_servers)
+
+    if profile is not None and profile.workspace:
+        from profiles import register_workspace_cwd
+
+        register_workspace_cwd(session_id, profile.workspace)
 
     candidate = {
         "platform": "deepwiki",
@@ -296,21 +312,29 @@ class AgentPool:
         self._lock = threading.Lock()
         self._max = max(1, max_size)
 
-    def acquire(self, session_id: str, ep: Endpoint) -> Any:
-        """The agent for this (session, endpoint), built if the cache misses."""
-        sig = ep.signature()
+    def acquire(self, session_id: str, ep: Endpoint,
+                profile: AgentProfile | None = None) -> Any:
+        """The agent for this (session, endpoint, profile), built on a miss.
+
+        The profile key is part of the cache signature, reusing the endpoint
+        mechanism: switching a conversation between projects changes the
+        signature, the cached agent misses, and one carrying the right
+        identity is built. No separate 'switch profile' path to keep correct.
+        """
+        sig = (*ep.signature(), profile.key if profile is not None else "")
         with self._lock:
             hit = self._cache.get(session_id)
             if hit is not None and hit[1] == sig:
                 self._cache.move_to_end(session_id)
                 return hit[0]
-            # A signature change means the endpoint moved under this session.
-            # Drop the old agent rather than mutating it through `switch_model`:
-            # the object also carries the previous turn's callbacks, tool
-            # surface and reasoning config, and rebuilding is the same 1.3 s the
-            # cache exists to avoid paying twice, not a new cost.
+            # A signature change means the endpoint or the profile moved under
+            # this session. Drop the old agent rather than mutating it through
+            # `switch_model`: the object also carries the previous turn's
+            # callbacks, tool surface and reasoning config, and rebuilding is
+            # the same 1.3 s the cache exists to avoid paying twice, not a new
+            # cost.
             self._cache.pop(session_id, None)
-        agent = build_agent(session_id, ep)
+        agent = build_agent(session_id, ep, profile)
         with self._lock:
             self._cache[session_id] = (agent, sig)
             self._cache.move_to_end(session_id)

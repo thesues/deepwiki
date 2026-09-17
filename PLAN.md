@@ -59,59 +59,65 @@ config.yaml）在一块 ebs-ssd PVC 上。
 brief）、config.yaml 的全局 toolsets、**所有** enabled 的 MCP server、同一个
 skills 目录。多项目下这是污染：佛法 agent 会看到 code-index 工具，反之亦然。
 
-- [ ] 新增 `AgentProfile`（纯配置，镜像 `Endpoint` 的做法）：`key`、`label`、
+- [x] 新增 `AgentProfile`（纯配置，镜像 `Endpoint` 的做法）：`key`、`label`、
       `directive`、`toolsets`（可选，缺省继承 config.yaml）、`mcp_servers`
       （config 注册集合的**子集**）、`workspace`（该 profile 在 autumnfs 上
       的文件夹，agent 的 cwd + skills 来源）、可选 `endpoints` 子集（如视频
-      agent 钉多模态模型）。
-- [ ] 声明来源：**hermes config.yaml 里新增 `profiles:` 段**（与
+      agent 钉多模态模型）。（skills 字段已声明但惰性——hermes 无 per-agent
+      skills 注入点，见 profiles.py；workspace 已接 per-task cwd。）
+- [x] 声明来源：**hermes config.yaml 里新增 `profiles:` 段**（与
       `mcp_servers` / `platform_toolsets` 同一份文件——改配置不改代码，
       重启生效；hermes 不认识的键会被它忽略，不影响它自己的解析）。env
-      `DEEPWIKI_PROFILES`（JSON，同 `BUDA_ENDPOINTS` 风格）只作为覆盖入口，
+      `DEEPWIKI_PROFILES`（JSON，同 `DEEPWIKI_ENDPOINTS` 风格）只作为覆盖入口，
       便于 k8s 里用 ConfigMap 注入。两者都没有时落一个内置默认 profile
       （现 CHAT_DIRECTIVE 的佛典 agent，保证老部署不破坏）。
-      不做"添加项目"入口——profiles 写在配置文件里，提前定好。
+      不做“添加项目”入口——profiles 写在配置文件里，提前定好。
+      **（决定 2026-09-17：先只上佛学 profile，其他待 skills/MCP 就绪，§5）**
 - [ ] **每个 profile 一个文件夹**（§0 的 `profiles/<key>/`）：该 profile 的
       skills、md、代码、工作目录都在里面。agent 的 file/terminal 工具以
       `profiles/<key>/workspace`（或 docs/code）为 cwd——佛法 agent 看不见
       code 项目的文件，反之亦然，隔离是目录级的，不靠 prompt 自觉。
       （这些是文件不是 SQLite，放 FUSE 上没有锁语义问题。）
-- [ ] `build_agent(session_id, ep, profile)`：`enabled_toolsets` /
+- [x] `build_agent(session_id, ep, profile)`：`enabled_toolsets` /
       `mcp_server_names` 按 profile 过滤（config.yaml 照旧全量注册连接，
-      哪些进 agent 由 profile 决定）；cwd 指向 profile 文件夹。
-- [ ] `AgentPool.acquire` 缓存签名加 `profile.key`：换身份 = miss = 重建，
+      哪些进 agent 由 profile 决定）；cwd 指向 profile 文件夹（仅当声明
+      workspace 且目录存在时）。
+- [x] `AgentPool.acquire` 缓存签名加 `profile.key`：换身份 = miss = 重建，
       复用 endpoint signature 的既有机制。
-- [ ] `run_turn` 的 `system_message` 取 `profile.directive`；`CHAT_DIRECTIVE`
+- [x] `run_turn` 的 `system_message` 取 `profile.directive`；`CHAT_DIRECTIVE`
       env 保留为默认 profile 的回退。
 - [ ] skills 加载：确认 hermes 的 skills toolset 读哪个目录、支持哪种
-      per-agent 指定（先查 hermes 源码——per-agent skills 目录、session/new
-      参数、还是别的）。目标：agent 只看到 `profiles/<key>/skills/` 里的。
+      per-agent 指定（已查：skills 目录是进程级的
+      `get_all_skills_dirs()`，无 per-agent 注入点；`skills` 字段暂惰性）。
+      目标：agent 只看到 `profiles/<key>/skills/` 里的。
       不确定就先落 `skills` 字段并把路径传给 hermes 已有的注入点。
 
 ## 2. 会话携带 profile（API 层）
 
-- [ ] session 增加 `agent`（profile key）字段；`/api/chat/start` 接受并回显
+- [x] session 增加 `agent`（profile key）字段；`/api/chat/start` 接受并回显
       实际使用的 key，stale-fallback 规则与 endpoint 一致（存的 key 不在
-      服务端列表里 → 回默认 profile）。
-- [ ] 会话列表/持久化沿用 hermes store（在 PVC 上，§0），`agent` 随
-      session 存取。
-- [ ] 并发语义不变：per-endpoint `maxConcurrent` 照旧；profile 不另设限制。
+      服务端列表里 → 回默认 profile）。字段名随 DEEPWIKI_PROFILES 定为
+      `profile`（响应体同名回显），会话→profile 映射由前端 localStorage
+      维护（hermes store 无此列）。
+- [x] 并发语义不变：per-endpoint `maxConcurrent` 照旧；profile 不另设限制。
 
 ## 3. 首页：项目卡片（前端）
 
 像 deepwiki.com 首页那样，但**不抄它的 UI**，保持现在的风格：
 
-- [ ] 打开站点先看到项目卡片（从 `/api/status` 拿 profile 列表：佛法项目、
-      理解 code、文本→解说视频……），点卡片 = 用该 profile 开新会话。
-- [ ] 进入会话后 UI 就是现在的聊天界面，composer 上显示当前项目（代替/
-      并列 endpoint picker）；可以返回首页换项目开新会话。
-- [ ] 现有 endpoint 逻辑（单 endpoint 徽章 / 多 endpoint select、localStorage
+- [x] 打开站点先看到项目卡片（从 `/api/status` 拿 profile 列表），点卡片 =
+      用该 profile 开新会话。**单 profile 时退化**：内置默认不渲染（老部署
+      UI 不变）；单一已声明 profile 渲染为 composer 徽章（佛学 profile
+      现状）；多个才出卡片网格与下拉。
+- [x] 进入会话后 UI 就是现在的聊天界面，composer 上 profile 选择与
+      endpoint picker 并列；可以回新会话换 profile 开新会话。
+- [x] 现有 endpoint 逻辑（单 endpoint 徽章 / 多 endpoint select、localStorage
       偏好、stale 回退）不动。
 
 ## 4. 删壁纸（前端小活）
 
-- [ ] 删 `static/img/mural.jpg` 及 style.css 里的 mural 背景、scrim、噪点层，
-      用纯色/极简底色。
+- [x] 删 `static/img/mural.jpg` 及 style.css 里的 mural 背景、scrim、噪点层，
+      用纯色底色。
 
 ## 5. 预置 profiles 与 skills（部署内容）
 
@@ -131,8 +137,9 @@ skills **提前在 autumnfs 的 profile 文件夹里放好**（`profiles/<key>/s
 
 ## 6. 测试与文档
 
-- [ ] tests：profile 解析（含 stale 回退）、build_agent 过滤、pool 签名、
-      `/api/chat/start` 回显；endpoint_picker.mjs 同级补 profile 选择逻辑。
+- [x] tests：profile 解析（含 stale 回退）、build_agent 过滤、pool 签名、
+      `/api/chat/start` 回显；`tests/js/profile_picker.mjs` 镜像
+      endpoint_picker.mjs 的选择规则。
 - [ ] ARCHITECTURE.md / README.md 更新：多 profile 模型、存储新分工
       （profile 数据在 autumnfs，hermes home 在 PVC）、与 hermes config
       的关系、buda→deepwiki 改名说明（旧 env 名是否保留别名，写清楚）。

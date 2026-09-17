@@ -29,7 +29,7 @@ class FakeAgent:
 
 
 def _mgr(monkeypatch, run=None, history=None):
-    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep: FakeAgent())
+    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep, profile=None: FakeAgent())
     pool = ha.AgentPool()
     return TurnManager(
         pool,
@@ -481,7 +481,7 @@ class _RotatingAgent(FakeAgent):
 def _rotating_mgr(monkeypatch, run, history=None):
     built = []
 
-    def build(session_id, ep):
+    def build(session_id, ep, profile=None):
         a = _RotatingAgent(session_id)
         built.append(a)
         return a

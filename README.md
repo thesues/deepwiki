@@ -29,7 +29,11 @@ keep them in autumn and read them through a FUSE mount.
 **Retrieval** — `memory-mcp` (an autumn tool) indexes a document corpus stored in
 autumn and exposes it over MCP and HTTP.
 
-**Chat** — `webui` is a hermes front end: session management and a chat box. It
+**Chat** — `webui` is a hermes front end, now positioned as **deepwiki**: a
+multi-project DeepWiki-style site. The homepage lists project cards; each
+project is an `AgentProfile` (its own brief, toolsets, MCP subset and
+workspace folder), declared in hermes' config.yaml (`profiles:`) or the
+`DEEPWIKI_PROFILES` env. Session management and a chat box otherwise. It
 reaches retrieval through `memory-mcp`'s **HTTP** MCP transport rather than
 spawning it, so it holds no autumn credential and is the one workload here NOT
 bound by the WIRE lockstep below. See `webui/ARCHITECTURE.md`.

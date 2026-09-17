@@ -281,7 +281,18 @@ spec:
             #                       dispatched to is retired;
             #   the platform integrations (slack/discord/feishu/…) cost tokens
             #   in every request's tool list and none of them are wired up.
-            - { name: HERMES_ACP_TOOLSETS, value: "file,terminal,todo,memory,skills,search,web,session_search,clarify" }
+            - { name: HERMES_ACP_TOOLSETS, value: "skills" }
+            # The toolset POLICY per project (PLAN §5's division of labour):
+            #   buda  — skills ONLY. Everything the scripture agent does —
+            #           retrieval, corpus reading — a skill initiates, and the
+            #           skill calls the MCP (memory-mcp) tools; the agent
+            #           itself never sees raw file/terminal surface.
+            #           mcp-<name> toolsets are appended by build_agent for
+            #           every enabled server, so skills→MCP stays reachable
+            #           and this seed cannot drop it.
+            #   code  — file ONLY (when that profile lands).
+            # This env is the FIRST-BOOT seed for platform_toolsets.cli; from
+            # then on the file on the PVC owns the list — edit it there.
             # `terminal` is IN the list above — the allowlist was widened once
             # it was six entries and the agent had no way to reach anything
             # this cluster offers. It stays watched, though: with a shell in
@@ -315,6 +326,15 @@ spec:
                 - 回答时给出经名与原文引文，并标出出处（文件 › 标题路径 › 行号）。
                 - 语料库里没有的，直说没有；可以补充常识背景，但要注明那不是来自语料库。
                 - 简明作答，通常几段以内。除非明确要求，不要写长文、不要综述式铺陈。
+            # The project cards. ONE profile today — the scripture agent this
+            # deployment already is; the others (code understanding, explainer
+            # video) wait until their skills and MCP sources exist (PLAN §5).
+            # `directive` is omitted, so the profile inherits CHAT_DIRECTIVE:
+            # the agent is byte-for-byte what it was before profiles existed,
+            # and the single card renders as a composer badge, not a picker.
+            - name: DEEPWIKI_PROFILES
+              value: |
+                [{"key":"buda","label":"佛典检索"}]
             # Single-user HTTP Basic, currently OFF: the `hermes-webui-auth`
             # secret does not exist, `optional: true` leaves both unset, and an
             # empty AUTH_USER bypasses the check on every path. Kept wired so

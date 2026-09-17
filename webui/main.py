@@ -31,6 +31,7 @@ sys.path.insert(0, str(HERE))
 from app_routes import build_app  # noqa: E402
 from hermes_agent import AgentPool, load_endpoints, load_endpoints_env  # noqa: E402
 from http_shell import serve  # noqa: E402
+from profiles import load_profiles  # noqa: E402
 from turns import TurnManager  # noqa: E402
 
 log = logging.getLogger("deepwiki")
@@ -84,6 +85,33 @@ def main() -> None:
     log.info(
         "endpoints: %s",
         ", ".join(f"{e.key}={e.model}@{e.base_url} (<={e.max_concurrent})" for e in endpoints),
+    )
+
+    # The project cards. hermes' config.yaml is the standing source — a
+    # `profiles:` section in the SAME file that owns mcp_servers and
+    # platform_toolsets, so editing a profile is a config edit + restart,
+    # never a code change. DEEPWIKI_PROFILES (JSON list) is the override entry
+    # for a k8s ConfigMap. Neither present: one built-in default profile, the
+    # pre-profile behaviour exactly.
+    try:
+        from hermes_cli.config import load_config
+
+        cfg_profiles = (load_config() or {}).get("profiles")
+    except Exception:  # noqa: BLE001 -- no hermes config, the env still works
+        log.debug("could not read config.yaml for profiles", exc_info=True)
+        cfg_profiles = None
+    profiles = load_profiles(
+        os.environ.get("DEEPWIKI_PROFILES", ""),
+        cfg_profiles,
+        default_directive=None,   # the built-in default falls back to CHAT_DIRECTIVE
+    )
+    log.info(
+        "profiles: %s",
+        " | ".join(
+            f"{p.key} (mcp={','.join(p.mcp_servers or ['*'])}"
+            f", workspace={p.workspace or '-'})"
+            for p in profiles
+        ),
     )
 
     # Point hermes at the retrieval server before any agent is built: the MCP
@@ -178,6 +206,7 @@ def main() -> None:
     app = build_app(
         manager=manager,
         endpoints=endpoints,
+        profiles=profiles,
         static_dir=HERE / "static",
         index_html=HERE / "static" / "index.html",
         auth_user=os.environ.get("AUTH_USER", ""),
