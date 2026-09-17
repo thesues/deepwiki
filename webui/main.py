@@ -132,6 +132,24 @@ def main() -> None:
             )
         except Exception as e:  # noqa: BLE001
             log.error("could not point hermes at %s: %s", mcp_url, e)
+    # The other corpora. One memory-mcp instance serves ONE corpus (its --docs
+    # / --root), so a second project's index is a second instance on its own
+    # port — declared here as NAME=URL pairs, the same ensure_mcp_server path
+    # as the primary. A profile then narrows the agent to the server its
+    # corpus lives on (profiles.py scope_agent_tools rule 1).
+    for spec in os.environ.get("MEMORY_MCP_EXTRA", "").split(","):
+        spec = spec.strip()
+        if not spec or "=" not in spec:
+            continue
+        name, url = (s.strip() for s in spec.split("=", 1))
+        if not name or not url:
+            continue
+        try:
+            from hermes_config import ensure_mcp_server
+
+            ensure_mcp_server(hermes_cfg, name, url)
+        except Exception as e:  # noqa: BLE001
+            log.error("could not point hermes at %s (%s): %s", name, url, e)
 
     # The toolsets live in the SAME config file, under `platform_toolsets.cli`
     # — the key hermes' own CLI reads. Seed it only if the file does not have

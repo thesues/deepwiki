@@ -231,14 +231,16 @@ def scope_agent_tools(
 
     `global_toolsets` is the process-wide resolution — hermes' own resolver
     output with `mcp-<name>` appended for every enabled server, exactly what
-    build_agent computes today. Two rules on top:
+    build_agent computes today. Three rules on top:
 
     * a profile that names `mcp_servers` gets ONLY those servers, and the
       `mcp-<name>` toolsets of the others come OFF the list — leaving them on
       would hand the agent tools whose server is not connected to it, which
       reads as a working tool that always fails;
     * a profile that names `toolsets` replaces the platform list outright
-      (the MCP reconciliation still runs on top of the replacement).
+      (the MCP reconciliation still runs on top of the replacement);
+    * a profile that keeps `terminal` gets `clarify` too, whether it asked
+      for it or not — see the comment on rule 3 below.
     """
     toolsets = list(global_toolsets)
     servers = list(enabled_servers)
@@ -263,6 +265,13 @@ def scope_agent_tools(
             t = f"mcp-{name}"
             if t not in toolsets:
                 toolsets.append(t)
+    # Rule 3 — terminal implies clarify. Applied AFTER the replacement so it
+    # holds for the profile's own list too, and only when the profile actually
+    # carries terminal: adding clarify to a profile that cannot run anything
+    # would just be a question box on a turn that needs none.
+    if profile is not None and "terminal" in toolsets and "clarify" not in toolsets:
+        toolsets.append("clarify")
+        log.info("profile %s: terminal without clarify; clarify added", profile.key)
     return toolsets, servers
 
 

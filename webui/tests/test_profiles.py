@@ -184,6 +184,40 @@ def test_a_toolset_list_and_an_mcp_subset_compose():
     assert servers == ["memory"]
 
 
+# ── terminal implies clarify ────────────────────────────────────────────────
+
+
+def test_terminal_without_clarify_gets_it_added():
+    """A shell without a question-gate is the one surface where a misread
+    request does damage before anyone sees it. The pairing is a policy of
+    this UI, so scope_agent_tools enforces it rather than trusting every
+    declaration to remember."""
+    p = pr.build_profiles([{"key": "ops", "toolsets": ["terminal", "file"]}])[0]
+    toolsets, _ = pr.scope_agent_tools(p, *_global())
+    assert "clarify" in toolsets
+
+
+def test_terminal_with_clarify_is_left_alone():
+    p = pr.build_profiles([{"key": "ops", "toolsets": ["terminal", "clarify"]}])[0]
+    toolsets, _ = pr.scope_agent_tools(p, *_global())
+    assert toolsets.count("clarify") == 1
+
+
+def test_no_terminal_adds_no_clarify():
+    """The rule is an implication, not an addition: a profile that cannot run
+    anything gains nothing from a question box."""
+    p = pr.build_profiles([{"key": "buda", "toolsets": ["skills"]}])[0]
+    toolsets, _ = pr.scope_agent_tools(p, *_global())
+    assert "clarify" not in toolsets
+
+
+def test_the_global_list_with_terminal_is_untouched_when_no_profile():
+    """The rule trims PROFILES. The process-wide default (no profile) is the
+    operator's own declaration — not this function's to edit."""
+    toolsets, _ = pr.scope_agent_tools(None, ["terminal", "file"], [])
+    assert toolsets == ["terminal", "file"]
+
+
 # ── the workspace registration ──────────────────────────────────────────────
 
 

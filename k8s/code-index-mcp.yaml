@@ -1,0 +1,125 @@
+# code-index-mcp — memory-mcp over a CODE repo, the second corpus.
+#
+# The buda corpus lives in `fs/docs/buda/` and is served by the `memory-mcp`
+# deployment (k8s/memory-mcp.yaml) on :5100. A code repo needs its own
+# instance: one memory-mcp serves ONE store (its --root / --docs), and the
+# index it builds is keyed by tenant/agent — mixing a scripture corpus and a
+# source tree in one agent would pollute both corpora's BM25 statistics.
+#
+# Corpus: github.com/journeymidnight/autumn-rs, cloned --depth 1, tarred, and
+# uploaded to `fs/code/autumn-rs.tar.gz` (7.7 MB, 24 lanes). The tarball — not
+# a live clone — is deliberate:
+#   * the pod image carries no git, and adding it to the autumn-rs image for
+#     one init step bloats every other consumer of that image;
+#   * a pinned tarball is reproducible: the index is built from exactly the
+#     commit the tar holds, and re-indexing a newer upstream is a re-upload,
+#     visible in git, not a silent drift on some pod restart;
+#   * egress from this cluster to github is not a thing to bet a startup on.
+#
+# The code indexer (tree-sitter) speaks RUST only — `indexer.rs` hardcodes
+# `tree_sitter_rust`. That is exactly right for this repo; a Python repo would
+# fall back to `--docs` (markdown/plain-text ingest) alone.
+#
+# The repo's own docs/ ride along via --docs, so prose (ops.md, CLAUDE.md) is
+# searchable through search_docs while symbols go through search_code.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-index-mcp
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: code-index-mcp }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: code-index-mcp }
+  ports:
+    - { name: http, port: 5101, targetPort: 5101 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-index-mcp
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: code-index-mcp }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: code-index-mcp }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: code-index-mcp }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+
+      initContainers:
+        # Unpack the pinned tarball into the shared emptyDir. autumnfs get (the
+        # CLI, no FUSE mount) is enough — one file, read once at startup.
+        - name: unpack
+          image: IMAGE_AUTUMN_RS
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              M="$(getent hosts autumn-manager | awk '{print $1}'):9001"
+              autumnfs --manager "$M" --credential-file /etc/autumn/cred/fs.cred --transport tcp \
+                get /code/autumn-rs.tar.gz /repo/autumn-rs.tar.gz
+              mkdir -p /repo/src
+              tar xzf /repo/autumn-rs.tar.gz -C /repo/src
+              rm /repo/autumn-rs.tar.gz
+              echo "unpacked:"; ls /repo/src | head -5
+          volumeMounts:
+            - { name: cred, mountPath: /etc/autumn/cred, readOnly: true }
+            - { name: repo, mountPath: /repo }
+          resources:
+            requests: { cpu: "500m", memory: 1Gi }
+            limits:   { cpu: "2", memory: 2Gi }
+
+      containers:
+        - name: code-index-mcp
+          image: IMAGE_AUTUMN_RS
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              M="$(getent hosts autumn-manager | awk '{print $1}'):9001"
+              # No FUSE mount here: the corpus came in through the init
+              # container, and the INDEX this builds lives in mem/ (the
+              # manager), not in fs/. The credential file is the tenant
+              # principal, same as the buda instance but for its own tenant.
+              exec memory-mcp "$M" \
+                --root /repo/src \
+                --docs /repo/src/docs \
+                --tenant code \
+                --agent autumn-rs \
+                --embed-url http://llama-embed:8080 \
+                --embed-model bge-m3 \
+                --credential-file /etc/autumn/cred/mem.cred \
+                --host 0.0.0.0 --port 5101
+          ports:
+            - { name: http, containerPort: 5101 }
+          volumeMounts:
+            - { name: cred, mountPath: /etc/autumn/cred, readOnly: true }
+            - { name: repo, mountPath: /repo, readOnly: true }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+          startupProbe:
+            # First boot indexes the whole tree (tree-sitter over ~200 .rs
+            # files + BGE-M3 embeddings for every symbol) before the listener
+            # binds. Generous for the same reason memory-mcp's is: too small
+            # costs an infinite restart loop, too large costs one slow failure.
+            httpGet: { path: /config, port: 5101 }
+            periodSeconds: 15
+            failureThreshold: 120     # 120 x 15s = 30 min
+          readinessProbe:
+            httpGet: { path: /config, port: 5101 }
+            periodSeconds: 15
+
+      volumes:
+        - name: cred
+          secret: { secretName: autumn-credential }
+        - name: repo
+          emptyDir:
+            # The unpacked tree (~90 MB) plus the tarball in flight.
+            sizeLimit: 1Gi

@@ -326,15 +326,37 @@ spec:
                 - 回答时给出经名与原文引文，并标出出处（文件 › 标题路径 › 行号）。
                 - 语料库里没有的，直说没有；可以补充常识背景，但要注明那不是来自语料库。
                 - 简明作答，通常几段以内。除非明确要求，不要写长文、不要综述式铺陈。
-            # The project cards. ONE profile today — the scripture agent this
-            # deployment already is; the others (code understanding, explainer
-            # video) wait until their skills and MCP sources exist (PLAN §5).
-            # `directive` is omitted, so the profile inherits CHAT_DIRECTIVE:
-            # the agent is byte-for-byte what it was before profiles existed,
-            # and the single card renders as a composer badge, not a picker.
+            # The project cards. Three projects:
+            #   buda            — the scripture agent. skills ONLY: everything
+            #                     it does a skill initiates, and the skill calls
+            #                     the MCP (memory) tools. NO terminal — observed
+            #                     in production it reached for sed on the corpus
+            #                     instead of calling retrieval; without a shell
+            #                     it cannot take that shortcut.
+            #   code-autumn-rs  — code understanding for github.com/journeymidnight/
+            #                     autumn-rs. clarify ONLY: reading the code goes
+            #                     through the code-index MCP server (the
+            #                     tree-sitter index over the pinned tarball,
+            #                     k8s/code-index-mcp.yaml) — search_code /
+            #                     get_symbol / document_outline. NO file tools:
+            #                     a raw file surface lets the agent bypass the
+            #                     index (and read a tree that may not exist on
+            #                     this pod); the index IS the interface, the
+            #                     same discipline the buda profile applies to
+            #                     its corpus. NO workspace: there is no local
+            #                     tree for a terminal to cd into, and this pod
+            #                     deliberately does not mount autumnfs.
+            # directive is omitted everywhere: each profile inherits
+            # CHAT_DIRECTIVE until a project earns its own brief.
             - name: DEEPWIKI_PROFILES
               value: |
-                [{"key":"buda","label":"佛典检索"}]
+                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"]},
+                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["clarify"],"mcp_servers":["code-index"]}]
+            # The second corpus's MCP server (k8s/code-index-mcp.yaml), as
+            # NAME=URL pairs — the same ensure_mcp_server path as the primary,
+            # then narrowed per profile by scope_agent_tools.
+            - name: MEMORY_MCP_EXTRA
+              value: "code-index=http://code-index-mcp:5101/mcp"
             # Single-user HTTP Basic, currently OFF: the `hermes-webui-auth`
             # secret does not exist, `optional: true` leaves both unset, and an
             # empty AUTH_USER bypasses the check on every path. Kept wired so
