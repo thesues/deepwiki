@@ -4,9 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>deepwiki</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <script>
 /* Same pre-paint theme apply as the chat page. */
@@ -17,7 +14,17 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
 <div class="shell home-shell">
   <header class="home-head">
     <h1>deep<em>wiki</em></h1>
-    <button id="theme-toggle" class="btn ghost home-theme" title="切换亮色/暗色主题" aria-label="切换主题">☀</button>
+    <button id="theme-toggle" class="theme-toggle" type="button" title="切换到亮色主题" aria-label="切换主题">
+      <!-- Both icons are always in the DOM; [data-theme] picks which is up
+           (style.css .theme-toggle), so the switch needs no script at all. -->
+      <svg class="t-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.1"/>
+        <path d="M12 2.6v2.1M12 19.3v2.1M4.2 4.2l1.5 1.5M18.3 18.3l1.5 1.5M2.6 12h2.1M19.3 12h2.1M4.2 19.8l1.5-1.5M18.3 5.7l1.5-1.5"/>
+      </svg>
+      <svg class="t-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20.5 14.9A8.6 8.6 0 0 1 9.1 3.5a8.6 8.6 0 1 0 11.4 11.4Z"/>
+      </svg>
+    </button>
   </header>
   <main class="home-main">
     <p class="home-ask">选择一个项目</p>
@@ -26,8 +33,8 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
   </main>
   <div class="meta home-meta"><span id="build" title="本页加载的前端构建号">@@BUILD@@</span></div>
 </div>
-<script src="/static/vendor/marked.min.js"></script>
-<script src="/static/vendor/purify.min.js"></script>
+<!-- No marked/purify here: this page renders no model markdown, and both
+     scripts loaded BEFORE home.js, i.e. in front of the fetches. -->
 <script src="/static/home.js"></script>
 </body>
 </html>

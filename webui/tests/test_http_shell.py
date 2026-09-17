@@ -211,6 +211,35 @@ def test_static_files_are_served_under_the_static_prefix(server, tmp_path):
     assert _get(base + "/static/vendor/marked.min.js").read() == b"//marked"
 
 
+def test_a_font_is_cached_for_a_year_and_everything_else_revalidates(server, tmp_path):
+    """The one exception to no-cache, and the reason it exists.
+
+    no-cache means a REVALIDATION round trip per file per navigation. For the
+    ten woff2 files the two display faces are subset into, that is ten
+    conditional requests in front of every first paint — the cost the Google
+    Fonts <link> used to charge, re-hosted. A font file is immutable at its
+    name by convention here (style.css says so where it declares the faces:
+    replace a face by ADDING a file, never by overwriting one), so it can be
+    handed out for a year.
+
+    Ablation: drop the font branch from `serve_static` and this goes red while
+    the no-cache contract above stays green.
+    """
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "fonts").mkdir()
+    (tmp_path / "vendor" / "fonts" / "dm-mono-400-latin.woff2").write_bytes(b"wOF2stub")
+    (tmp_path / "style.css").write_text("body{}")
+    base = server(_app(tmp_static=tmp_path))
+
+    r = _get(base + "/static/vendor/fonts/dm-mono-400-latin.woff2")
+    assert r.read() == b"wOF2stub"
+    assert r.headers.get("Content-Type") == "font/woff2"
+    assert r.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+    # The code the fonts are served alongside must NOT be pinned that way: a
+    # deploy's fixes have to reach a browser that already has the old bundle.
+    assert _get(base + "/static/style.css").headers.get("Cache-Control") == "no-cache"
+
+
 def test_a_file_outside_the_static_prefix_is_not_served(server, tmp_path):
     """Only `/static/` reaches the directory. A bare `/app.js` is not an alias
     for it — one file, one URL, so a cache header or a CDN rule written for the

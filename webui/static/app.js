@@ -1429,13 +1429,11 @@ async function boot() {
 
   // 新会话 is a per-project action: it creates a fresh conversation INSIDE
   // the project this page serves (the send carries S.profile, so the pin is
-  // right). Both the header button and the sidebar's tail link do the same
-  // thing. The key still works (Cmd/Ctrl+K).
-  const newSess = () => { newSession(); };
+  // right). ONE control, in the header — the sidebar used to carry a second
+  // ＋ 新会话 at the tail of the session list, two inches from this one and
+  // doing exactly the same thing. The key still works (Cmd/Ctrl+K).
   const nsBtn = $("#new-session");
-  if (nsBtn) nsBtn.onclick = newSess;
-  const nsSide = $("#new-session-side");
-  if (nsSide) nsSide.onclick = newSess;
+  if (nsBtn) nsBtn.onclick = () => { newSession(); };
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
@@ -1443,22 +1441,31 @@ async function boot() {
     }
   });
 
-  // Theme toggle. Dark is the original look and the default; light is the
-  // same layout with a daylight palette (style.css [data-theme="light"]).
-  // Persisted per browser; applied before first paint via the inline script
-  // in <head> so a light reader never sees a dark flash.
+  // Theme toggle — deepwiki's icon button. Dark is the original look and the
+  // default; light is the same layout with a daylight palette (style.css
+  // [data-theme="light"]). Persisted per browser; applied before first paint
+  // via the inline script in <head> so a light reader never sees a dark flash.
+  //
+  // WHICH icon is up is CSS's business (both sun and moon are in the markup,
+  // [data-theme] picks one). This is the whole of the behaviour: flip the
+  // attribute, arm the cross-fade for the length of the switch, persist.
   const themeBtn = $("#theme-toggle");
   if (themeBtn) {
     const paint = () => {
       const light = document.documentElement.dataset.theme === "light";
-      themeBtn.textContent = light ? "☾" : "☀";   // the theme a click GOES to
       themeBtn.title = light ? "切换到暗色主题" : "切换到亮色主题";
     };
+    let settle = 0;
     themeBtn.onclick = () => {
-      const light = document.documentElement.dataset.theme === "light";
-      const next = light ? "dark" : "light";
-      if (next === "dark") delete document.documentElement.dataset.theme;
-      else document.documentElement.dataset.theme = "light";
+      const root = document.documentElement;
+      const next = root.dataset.theme === "light" ? "dark" : "light";
+      // The transition is armed only around the switch — left standing, it
+      // makes every hover and the streaming caret lag (style.css .theming).
+      root.classList.add("theming");
+      clearTimeout(settle);
+      settle = setTimeout(() => root.classList.remove("theming"), 380);
+      if (next === "dark") delete root.dataset.theme;
+      else root.dataset.theme = "light";
       try { localStorage.setItem(LS_THEME, next); } catch (_) {}
       paint();
     };

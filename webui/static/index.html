@@ -4,9 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>deepwiki</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <script>
 /* Apply the saved theme BEFORE first paint — a light reader must not see a
@@ -18,19 +15,30 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
 <body>
 <div class="shell">
   <header>
-    <!-- One door, not two buttons: the home page is where sessions are
-         chosen and projects are picked, so the only permanent control here
-         is the way back to it. 新会话 lives there too — a new conversation
-         is a property of a project, and the project is chosen on the home
-         page. -->
+    <!-- One way back (首页, where projects are picked) and ONE 新会话, which
+         opens a conversation inside the project this page already serves.
+         The sidebar used to carry a second ＋ 新会话 at the tail of the
+         session list: the same action, two inches away, wearing the shape of
+         a list row. The theme toggle sits last, at the far right, the way
+         deepwiki places it. -->
     <a id="home-link" class="btn ghost" href="/" title="返回首页 — 重新选择项目或会话">← 首页</a>
     <span class="proj-name" id="proj-name"></span>
     <span class="spacer"></span>
     <button id="new-session" class="btn" title="在这个项目里新建会话">＋ 新会话</button>
-    <button id="theme-toggle" class="btn ghost" title="切换亮色/暗色主题" aria-label="切换主题">☀</button>
     <div class="meta">
       <span id="build" title="本页加载的前端构建号 — 反馈问题时带上它">@@BUILD@@</span>
     </div>
+    <button id="theme-toggle" class="theme-toggle" type="button" title="切换到亮色主题" aria-label="切换主题">
+      <!-- Both icons are always in the DOM; [data-theme] picks which is up
+           (style.css .theme-toggle), so the switch needs no script at all. -->
+      <svg class="t-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.1"/>
+        <path d="M12 2.6v2.1M12 19.3v2.1M4.2 4.2l1.5 1.5M18.3 18.3l1.5 1.5M2.6 12h2.1M19.3 12h2.1M4.2 19.8l1.5-1.5M18.3 5.7l1.5-1.5"/>
+      </svg>
+      <svg class="t-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20.5 14.9A8.6 8.6 0 0 1 9.1 3.5a8.6 8.6 0 1 0 11.4 11.4Z"/>
+      </svg>
+    </button>
   </header>
 
   <div class="grid">
@@ -40,7 +48,6 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
            profile the URL names, because a conversation belongs to the
            project it was opened under and a project page shows its own. -->
       <ul id="sessions"></ul>
-      <button class="new-sess" id="new-session-side" title="在这个项目里新建会话">＋ 新会话</button>
     </section>
 
     <section class="card chat">

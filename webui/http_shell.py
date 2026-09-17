@@ -224,10 +224,20 @@ class App:
         # looked like it did nothing. no-cache revalidates every load; the
         # content hash makes the revalidation a 304 unless the file changed.
         etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
+        # The fonts are the exception, and they are the reason this branch
+        # exists: no-cache means a REVALIDATION round trip per file per
+        # navigation, which for ten woff2 files is ten of them in front of
+        # the first paint of every page. A font file is immutable at its name
+        # by convention here (style.css says so where it declares them), so it
+        # is safe to hand out for a year and never ask again.
+        if ctype.startswith("font/"):
+            cache = "public, max-age=31536000, immutable"
+        else:
+            cache = "no-cache"
         if req.headers.get("If-None-Match") == etag:
-            return Response(304, [("ETag", etag), ("Cache-Control", "no-cache")])
+            return Response(304, [("ETag", etag), ("Cache-Control", cache)])
         return Response(200, [("Content-Type", ctype), ("ETag", etag),
-                              ("Cache-Control", "no-cache")], body)
+                              ("Cache-Control", cache)], body)
 
 
 class _Handler(BaseHTTPRequestHandler):

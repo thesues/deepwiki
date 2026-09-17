@@ -7,6 +7,51 @@
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ---------- the two display faces, SELF-HOSTED ---------- */
+/* These used to come from fonts.googleapis.com via a <link> in the <head> of
+   both pages. That link cost ~0.9s on the network this UI is actually read
+   from (measured), and it was the single largest part of "选择一个项目 takes a
+   second to appear": a stylesheet in <head> blocks first paint AND blocks the
+   classic <script> at the end of <body>, so home.js — with it every fetch the
+   page makes — did not start until Google answered. Two hops, in series,
+   before the first byte of our own data was asked for.
+   The files are the same woff2 Google serves (latin + latin-ext subsets, which
+   is all these faces are used for — CJK deliberately falls back to PingFang,
+   see --prose below). ~110KB total, served from the pod, cached for a year.
+   A font is immutable at its name here: REPLACE a face by adding a file under
+   a new name, never by overwriting one of these. */
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:300; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-300-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:300; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-300-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-400-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-400-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-500-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'DM Mono'; font-style:normal; font-weight:500; font-display:swap;
+  src:url('/static/vendor/fonts/dm-mono-500-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Instrument Serif'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/instrument-serif-400-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'Instrument Serif'; font-style:normal; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/instrument-serif-400-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Instrument Serif'; font-style:italic; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/instrument-serif-italic-latin.woff2') format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'Instrument Serif'; font-style:italic; font-weight:400; font-display:swap;
+  src:url('/static/vendor/fonts/instrument-serif-italic-latin-ext.woff2') format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+
+
 :root {
   --bg:#0b0a09; --surface:#221e18; --surface-raised:#2d2820;
   --border:#3a342b; --border-active:#5a5145;
@@ -271,19 +316,51 @@ header h1 em { color:var(--accent); font-style:italic; }
    the 首页 button beside it). */
 .proj-name { font-family:var(--serif); font-size:1.05rem; color:var(--text); }
 
-/* The sidebar's new-conversation affordance: a quiet link to the home page,
-   where a new conversation is actually created (project first). At the tail
-   of the list it reads as "more than these". */
-.new-sess { display:block; width:100%; padding:0.55rem 0.6rem; font-size:0.78rem;
-            color:var(--text-muted); text-decoration:none; background:none;
-            border:0; border-top:1px solid var(--border); cursor:pointer;
-            font-family:var(--sans); text-align:left; }
-.new-sess:hover { color:var(--accent); }
+/* ---------- the theme toggle, deepwiki.com's shape ---------- */
+/* Not a button with a border and a glyph in it — an ICON, alone, at the far
+   right of the header, the way deepwiki does it. A control that is present on
+   every page and pressed once a week should not carry the same visual weight
+   as 发送. So: no border, no fill, muted stroke, and only a round hover halo
+   to say it is pressable.
+   The SWITCH is CSS, not script: both icons live in the DOM and
+   [data-theme] on <html> decides which one is up, so they cross-fade and
+   counter-rotate on the same 0.3s the palette itself takes to change (see
+   html.theming below). The script's whole job is to flip that one attribute.
+   Which icon shows the SUN is deliberate: sun in the dark theme, moon in the
+   light one — the icon names where a click GOES, not where you are. That is
+   deepwiki's choice too, and it is the one that makes the button readable as
+   an action rather than a status light. */
+.theme-toggle { position:relative; width:2rem; height:2rem; flex:none;
+                display:inline-flex; align-items:center; justify-content:center;
+                align-self:center; padding:0; border:0; border-radius:50%;
+                background:none; color:var(--text-muted); cursor:pointer;
+                transition:color .15s var(--ease), background .15s var(--ease); }
+.theme-toggle:hover { color:var(--text); background:var(--surface-raised); }
+.theme-toggle svg { position:absolute; width:1.15rem; height:1.15rem;
+                    fill:none; stroke:currentColor; stroke-width:1.7;
+                    stroke-linecap:round; stroke-linejoin:round;
+                    transition:opacity .2s var(--ease), transform .3s var(--ease); }
+.theme-toggle .t-moon { opacity:0; transform:rotate(-80deg) scale(.55); }
+.theme-toggle .t-sun  { opacity:1; transform:rotate(0) scale(1); }
+[data-theme="light"] .theme-toggle .t-sun  { opacity:0; transform:rotate(80deg) scale(.55); }
+[data-theme="light"] .theme-toggle .t-moon { opacity:1; transform:rotate(0) scale(1); }
 
-/* The theme toggle on the home page sits beside the logo, not on a far edge:
-   the home header is a title, not a toolbar. */
-.home-head { display:flex; align-items:baseline; gap:1rem; }
-.home-theme { padding:0.25rem 0.6rem; font-size:0.85rem; }
+/* The palette CROSS-FADES rather than snapping. deepwiki's switch reads as one
+   surface changing its light; a hard swap of every colour in one frame reads
+   as a page reload, and on a dark→light flip it is a flash in the face.
+   The transition is added for the length of the switch and removed again —
+   NOT left on permanently: a standing `transition: background-color` on every
+   element makes the streaming caret, the session hover and the activity
+   disclosure all lag behind the pointer. `.theming` is set by the click and
+   cleared on transitionend/timeout. */
+html.theming, html.theming * {
+  transition:background-color .3s var(--ease), border-color .3s var(--ease),
+             color .3s var(--ease), box-shadow .3s var(--ease);
+}
+
+/* The home page's header is a title, not a toolbar: logo left, toggle hard
+   right, nothing between them. */
+.home-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
 #about[hidden] { display:none; }
 #about { position:fixed; inset:0; z-index:50; display:flex; align-items:center;
          justify-content:center; padding:2rem 1rem;

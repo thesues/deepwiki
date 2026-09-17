@@ -401,3 +401,93 @@ def test_a_failed_tool_shows_its_reason_without_a_click():
     script = Path(__file__).parent / "js" / "tool_detail_visibility.mjs"
     r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr[-400:]
+
+
+def test_the_theme_toggle_switches_on_the_attribute_and_leaves_the_icons_alone():
+    """Pressing the toggle, in node. deepwiki's button is an icon, and which
+    icon is up is now CSS's business — both live in the markup and
+    `[data-theme]` picks one. The script's whole job is that one attribute,
+    plus arming the palette cross-fade for the length of the switch.
+
+    Two things here are easy to break and invisible in review: a
+    `textContent = "☀"` (the old design) would delete the two <svg> children
+    it writes over, and the two pages carry the block twice — app.js and
+    home.js are separate bundles — so one can be fixed while the other is not.
+
+    Skipped rather than failed without node: this pins client behaviour, and a
+    missing runtime is not a broken client.
+    """
+    import shutil, subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    script = Path(__file__).parent / "js" / "theme_toggle.mjs"
+    r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-800:]
+
+
+def test_the_pages_fetch_nothing_from_the_internet():
+    """Every byte the two pages need comes from the pod.
+
+    This was not a policy, it was a measured second: the Google Fonts
+    <link> in <head> cost ~0.9s on the network this UI is read from, and a
+    stylesheet in <head> blocks first paint AND the classic <script> at the
+    end of <body> — so `home.js` had not yet ASKED for /api/status when the
+    reader was already looking at an empty page. "选择一个项目 takes a second
+    to load" was two serial round trips to fonts.googleapis.com in front of
+    our own.
+
+    Ablation: put the <link> back and this goes red. The faces themselves are
+    in static/vendor/fonts and declared in style.css.
+    """
+    root = Path(__file__).resolve().parents[1]
+    static = root / "static"
+
+    def code_only(src: str) -> str:
+        """Comments are where the removed URLs are NAMED, and naming the thing
+        you removed is how the next reader learns not to re-add it. Strip
+        block, line and HTML comments, then look at what the browser acts on."""
+        src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+        src = re.sub(r"<!--.*?-->", " ", src, flags=re.S)
+        return re.sub(r"^\s*//.*$", " ", src, flags=re.M)
+
+    for name in ("index.html", "home.html", "style.css", "app.js", "home.js"):
+        src = code_only((static / name).read_text())
+        for host in ("fonts.googleapis.com", "fonts.gstatic.com", "cdn.jsdelivr.net",
+                     "unpkg.com", "cdnjs.cloudflare.com"):
+            assert host not in src, (
+                f"{name} reaches {host}; this pod has no egress and the reader's "
+                f"browser pays the latency in front of the first paint"
+            )
+    # The faces are actually there — a @font-face pointing at nothing is the
+    # same blank page with none of the waiting.
+    declared = {
+        m for m in re.findall(r"/static/(vendor/fonts/[\w.-]+\.woff2)", (static / "style.css").read_text())
+    }
+    assert declared, "style.css declares no self-hosted faces"
+    for rel in declared:
+        assert (static / rel).is_file(), f"style.css points at a missing font: {rel}"
+
+
+def test_there_is_exactly_one_new_conversation_button():
+    """新会话 was on screen twice — in the header and again at the tail of the
+    session list, two inches apart, doing the same thing. The sidebar's copy
+    also sat inside a list of conversations, where a bordered row at the
+    bottom reads like one of them.
+
+    Ablation: re-add #new-session-side to index.html and this goes red.
+    """
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "static" / "index.html").read_text()
+    js = (root / "static" / "app.js").read_text()
+    # Comments discuss the removed button on purpose — that is how the next
+    # reader learns not to put it back. Count the markup.
+    markup = re.sub(r"<!--.*?-->", " ", html, flags=re.S)
+    assert markup.count("＋ 新会话") == 1, (
+        "the label appears once because there is one control; the sidebar's "
+        "copy carried the same string"
+    )
+    assert len(re.findall(r"<button[^>]*new-session", markup)) == 1
+    assert "new-session-side" not in html, "the sidebar's duplicate is back in the markup"
+    assert "new-session-side" not in js, "app.js still binds the sidebar's duplicate"
+    assert 'id="new-session"' in html, "the header's 新会话 must stay — it is the only one"
