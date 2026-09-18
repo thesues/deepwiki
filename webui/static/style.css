@@ -243,10 +243,15 @@ header h1 em { color:var(--accent); font-style:italic; }
    when the source will not parse — the reader should not have to relearn where
    the boundary is. `svg` is sized by mermaid; the box only has to let a wide
    flowchart scroll instead of pushing the bubble out of the column. */
+/* Scrolls in BOTH directions and is capped in height: these diagrams run to a
+   few thousand pixels each way, and a figure that tall pushes the rest of the
+   answer out of reach. Inside the box the drawing keeps its own size (see
+   sizeToContent) — fitting it to the column is what made the labels
+   unreadable. */
 .mermaid-figure { background:var(--surface-raised); border:1px solid var(--border);
                   border-radius:var(--radius); padding:0.7rem 0.85rem; margin:0.6rem 0;
-                  overflow-x:auto; text-align:center; }
-.mermaid-figure svg { max-width:100%; height:auto; }
+                  overflow:auto; max-height:70vh; }
+.mermaid-figure svg { display:block; }
 /* The source stayed put because mermaid refused it; mark it and say so. */
 .md pre.mermaid-failed { border-color:var(--accent-dim); }
 .mermaid-error { color:var(--text-dim); font-size:0.78rem; margin:-0.3rem 0 0.6rem; }

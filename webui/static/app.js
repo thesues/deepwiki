@@ -101,11 +101,33 @@ function loadMermaid() {
       // DOMPurify sanitises the markdown around it.
       securityLevel: "strict",
       theme: mermaidTheme(),
-      fontFamily: "inherit",
+      // SVG <text> labels, not HTML ones, and this is not cosmetic. mermaid
+      // sizes an HTML label by measuring a real element it appends to the
+      // document — where OUR stylesheet applies. The label's <p> is a block,
+      // so it measures the full body width, and every node comes out that
+      // wide: one 33-node flowchart laid out at 17482×48834 instead of
+      // 2332×3537, which is what the same source gives in a stylesheet-free
+      // iframe. Squeezed back into the column it was an unreadable grey smear.
+      // `<br/>` still breaks lines — mermaid splits SVG labels into tspans.
+      flowchart: { htmlLabels: false },
     });
     return m;
   });
   return mermaidReady;
+}
+
+// Draw at the size the diagram wants and let the box scroll, rather than
+// fitting the width. mermaid emits `width="100%"`, which on a 2332px-wide
+// flowchart in a 760px column is a 0.31 scale — the lines survive, the labels
+// do not. A reader can scroll; a reader cannot un-shrink 8px text.
+function sizeToContent(fig) {
+  const svg = fig.querySelector("svg");
+  if (!svg) return;
+  const vb = (svg.getAttribute("viewBox") || "").split(/[ ,]+/).map(Number);
+  if (vb.length !== 4 || !vb[2]) return;
+  svg.setAttribute("width", vb[2]);
+  svg.setAttribute("height", vb[3]);
+  svg.style.maxWidth = "none";
 }
 
 let mermaidSeq = 0;
@@ -145,6 +167,7 @@ async function renderMermaid(root) {
     const fig = el("div", "mermaid-figure");
     fig.dataset.src = src;   // kept so a theme switch can redraw it
     fig.innerHTML = svg;
+    sizeToContent(fig);
     pre.replaceWith(fig);
   }
   scroll();
@@ -171,12 +194,13 @@ async function restyleMermaid() {
   if (!m) return;
   m.initialize({
     startOnLoad: false, securityLevel: "strict",
-    theme: mermaidTheme(), fontFamily: "inherit",
+    theme: mermaidTheme(), flowchart: { htmlLabels: false },
   });
   for (const fig of figs) {
     try {
       const { svg } = await m.render(`mmd-${++mermaidSeq}`, fig.dataset.src);
       fig.innerHTML = svg;
+      sizeToContent(fig);
     } catch (_) { /* keep the last good drawing */ }
   }
 }
