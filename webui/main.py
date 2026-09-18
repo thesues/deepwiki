@@ -186,9 +186,14 @@ def main() -> None:
     # seed-only, because a compression: mapping in the file is the operator's
     # choice, exactly like platform_toolsets.
     try:
-        from hermes_config import ensure_compression_model
+        from hermes_config import ensure_compression_model, ensure_compression_timeout
 
         ensure_compression_model(hermes_cfg, load_endpoints(load_endpoints_env()))
+        # Independently of the above, which stops as soon as the file names a
+        # compression model — as this deployment's does. A failed compression
+        # with no deadline cost twelve minutes of a conversation showing
+        # 回复中… and produced nothing; see the function's note.
+        ensure_compression_timeout(hermes_cfg)
     except Exception as e:  # noqa: BLE001
         log.error("could not seed auxiliary.compression: %s", e)
 

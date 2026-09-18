@@ -23,6 +23,7 @@ seeds, not sources.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger("webui.config")
@@ -196,6 +197,9 @@ def resolve_toolsets(cfg: dict | None) -> list[str]:
 
 # ── auxiliary compression model ─────────────────────────────────────────────
 
+# How long one compression may take before hermes gives up on it.
+COMPRESSION_TIMEOUT_S = int(os.environ.get("DEEPWIKI_COMPRESSION_TIMEOUT_S", "240"))
+
 
 def _compression_keys(model: str, base_url: str, context_length: int) -> list[str]:
     # provider: custom is load-bearing, not decoration: the resolver honours a
@@ -209,6 +213,63 @@ def _compression_keys(model: str, base_url: str, context_length: int) -> list[st
         f"    base_url: {base_url}",
         f"    context_length: {context_length}",
     ]
+
+
+def ensure_compression_timeout(config_path: Path, seconds: int | None = None) -> bool:
+    """Give `auxiliary.compression` a deadline IF it has none. Returns True if
+    the file changed.
+
+    Separate from `ensure_compression_model`, and deliberately so. That one
+    stops at the first sign the operator owns the block — which the live
+    config does — so a deadline added there would never reach a deployment
+    that already names a compression model. A timeout is not an identity
+    choice: adding one where there is none overrides nobody, and an existing
+    value is left exactly alone.
+
+    Why it matters. Unset, the default let ONE failed compression cost twelve
+    minutes of a conversation showing 回复中… :
+
+        02:57:24 compression started, 35,279 tokens
+        03:03:26 Request timed out          (~360 s)
+        03:09:27 Request timed out again    (~360 s, the one retry)
+        03:09:27 all fallbacks exhausted -> a placeholder marker
+
+    and because the summary never landed, 26 messages stayed 26 and the window
+    was still full: the turn grew, tried again, and nothing on screen moved.
+    The engine is not the problem — the same box summarises 14K tokens in 26 s
+    — but it generates at ~16 tok/s, so a long summary over a full window
+    lands on that deadline and tips over. 240 s fits a healthy compression and
+    caps a failed one at a third of what it cost. The real defence is spending
+    less of the window in the first place (see tool_budget); a deadline only
+    keeps the failure cheap when that is not enough.
+    """
+    want = int(seconds if seconds is not None else COMPRESSION_TIMEOUT_S)
+    if not config_path.exists():
+        return False
+    lines = config_path.read_text().splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == "auxiliary:"), None)
+    if start is None:
+        return False
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].strip() and not lines[i][0].isspace():
+            end = i
+            break
+    block = lines[start:end]
+    comp = next((i for i, ln in enumerate(block) if ln.strip() == "compression:"), None)
+    if comp is None:
+        return False
+    stop = len(block)
+    for i in range(comp + 1, len(block)):
+        if block[i].strip() and len(block[i]) - len(block[i].lstrip()) < 4:
+            stop = i
+            break
+    if any(block[i].strip().startswith("timeout:") for i in range(comp + 1, stop)):
+        return False                      # the operator's, or already seeded
+    block.insert(stop, f"    timeout: {want}")
+    _write(config_path, [*lines[:start], *block, *lines[end:]])
+    log.info("hermes config: seeded auxiliary.compression.timeout -> %ss", want)
+    return True
 
 
 def ensure_compression_model(config_path: Path, endpoints, min_context: int | None = None) -> bool:
