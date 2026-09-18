@@ -118,6 +118,13 @@ function loadMermaid() {
       // makes every later flowchart-only call look like it worked.
       htmlLabels: false,
       flowchart: { htmlLabels: false },
+      // Measure with the font we will actually PAINT with. SVG <text>
+      // inherits font-family from the page, while mermaid sizes every node by
+      // measuring the label itself — hand it `inherit` (a string it treats as
+      // a font name) or leave it on its own default and the two disagree, so
+      // labels render wider than the boxes drawn for them and get clipped at
+      // the svg's edge.
+      fontFamily: getComputedStyle(document.body).fontFamily,
     });
     return m;
   });
@@ -204,6 +211,7 @@ async function restyleMermaid() {
     startOnLoad: false, securityLevel: "strict",
     theme: mermaidTheme(),
     htmlLabels: false, flowchart: { htmlLabels: false },
+    fontFamily: getComputedStyle(document.body).fontFamily,
   });
   for (const fig of figs) {
     try {
