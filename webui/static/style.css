@@ -237,6 +237,19 @@ header h1 em { color:var(--accent); font-style:italic; }
 .md pre { background:var(--surface-raised); border:1px solid var(--border); border-radius:var(--radius);
           padding:0.7rem 0.85rem; overflow-x:auto; margin:0.6rem 0; }
 .md pre code { background:none; border:0; padding:0; font-size:0.8rem; line-height:1.55; }
+
+/* A rendered mermaid diagram replaces its own <pre>. Same frame as a code
+   block, because that is what it was a moment ago and what it falls back to
+   when the source will not parse — the reader should not have to relearn where
+   the boundary is. `svg` is sized by mermaid; the box only has to let a wide
+   flowchart scroll instead of pushing the bubble out of the column. */
+.mermaid-figure { background:var(--surface-raised); border:1px solid var(--border);
+                  border-radius:var(--radius); padding:0.7rem 0.85rem; margin:0.6rem 0;
+                  overflow-x:auto; text-align:center; }
+.mermaid-figure svg { max-width:100%; height:auto; }
+/* The source stayed put because mermaid refused it; mark it and say so. */
+.md pre.mermaid-failed { border-color:var(--accent-dim); }
+.mermaid-error { color:var(--text-dim); font-size:0.78rem; margin:-0.3rem 0 0.6rem; }
 .md blockquote { border-left:2px solid var(--accent-dim); padding-left:0.8rem;
                  color:var(--text-dim); margin:0.6rem 0; }
 .md table { border-collapse:collapse; margin:0.6rem 0; font-size:0.8rem; display:block; overflow-x:auto; }

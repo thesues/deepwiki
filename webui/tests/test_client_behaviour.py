@@ -63,6 +63,23 @@ def test_the_client_renders_a_loaded_transcript_in_full():
     r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr[-400:]
 
+def test_the_activity_row_sits_above_the_answer():
+    """Reported from the UI: 7 tool rows UNDER a finished answer.
+
+    The disclosure was appended where it was created, so its position was the
+    event order. Two orders put the answer first — a replayed assistant message
+    carrying both text and tool_calls (its text is emitted before its own
+    calls), and a live turn that answers then keeps calling tools — and both
+    read as the conclusion on top of the reasoning.
+    """
+    import shutil, subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    script = Path(__file__).parent / "js" / "activity_above_answer.mjs"
+    r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-400:]
+
 def test_the_prompt_is_painted_once():
     """The prompt showed up twice in the transcript.
 

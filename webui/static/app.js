@@ -70,6 +70,117 @@ const renderMD = (src) => {
   return box.innerHTML;
 };
 
+/* ---------- mermaid ---------- */
+// The code-understanding profile asks the model for diagrams in so many words
+// ("被要求画流程图/架构图时，直接用 mermaid 给出")， so they arrive on this app's
+// hot path — and until now they were shown as their own source, which is the
+// one thing a diagram must not be.
+//
+// Loaded on FIRST USE rather than with the page. The bundle is 3.4 MB, larger
+// than everything else this app serves put together, and most conversations
+// never contain a diagram; the homepage was taken from 820 ms to 28 ms by
+// keeping work off the first paint and this would hand it all back.
+const mermaidTheme = () =>
+  document.documentElement.dataset.theme === "light" ? "default" : "dark";
+
+let mermaidReady = null;
+function loadMermaid() {
+  if (mermaidReady) return mermaidReady;
+  mermaidReady = new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = "/static/vendor/mermaid.min.js";
+    tag.onload = () => resolve(window.mermaid);
+    tag.onerror = () => reject(new Error("mermaid.min.js"));
+    document.head.appendChild(tag);
+  }).then((m) => {
+    m.initialize({
+      startOnLoad: false,        // we call render ourselves, on finished text
+      // The diagram is written by a model reading a corpus, which is not a
+      // trusted author: `strict` escapes label HTML and leaves click handlers
+      // off. Everything else here already treats model output that way —
+      // DOMPurify sanitises the markdown around it.
+      securityLevel: "strict",
+      theme: mermaidTheme(),
+      fontFamily: "inherit",
+    });
+    return m;
+  });
+  return mermaidReady;
+}
+
+let mermaidSeq = 0;
+// Render every ```mermaid block under `root`, in place.
+//
+// Called from finalizeSeg only, never from the streaming render: a fence that
+// is still arriving is a parse error, and re-drawing on every frame would burn
+// the diagram down and rebuild it sixty times a second. Streaming shows the
+// source; it becomes a picture when the answer is complete.
+async function renderMermaid(root) {
+  if (!root) return;
+  const blocks = [...root.querySelectorAll("pre > code.language-mermaid")];
+  if (!blocks.length) return;
+  let m;
+  try {
+    m = await loadMermaid();
+  } catch (_) {
+    return;   // no bundle: the source stays on screen, which is the fallback
+  }
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (!pre || !pre.isConnected) continue;
+    const src = code.textContent || "";
+    let svg;
+    try {
+      ({ svg } = await m.render(`mmd-${++mermaidSeq}`, src));
+    } catch (e) {
+      // A diagram the model wrote wrong must not eat the answer around it.
+      // Keep the source exactly where it was and say why it is still source.
+      pre.classList.add("mermaid-failed");
+      if (!pre.nextElementSibling?.classList.contains("mermaid-error")) {
+        const note = el("div", "mermaid-error", `图表语法有误：${e?.message || e}`);
+        pre.after(note);
+      }
+      continue;
+    }
+    const fig = el("div", "mermaid-figure");
+    fig.dataset.src = src;   // kept so a theme switch can redraw it
+    fig.innerHTML = svg;
+    pre.replaceWith(fig);
+  }
+  scroll();
+}
+
+// mermaid bakes its colours into the SVG at render time, so a theme switch has
+// to redraw rather than restyle. Only diagrams already on screen, and only if
+// the bundle was ever loaded — this must not pull 3.4 MB for a theme click.
+// Hung off the attribute, not off the toggle's click. That click handler is
+// duplicated verbatim in home.js and a test holds the two byte-identical
+// (tests/js/theme_toggle.mjs) — the homepage has no diagrams and should not
+// carry a call to this. Watching `data-theme` also covers anything else that
+// ever changes it, including the pre-paint script in <head>.
+if (typeof MutationObserver === "function") {
+  new MutationObserver(() => restyleMermaid()).observe(
+    document.documentElement, { attributes: true, attributeFilter: ["data-theme"] },
+  );
+}
+
+async function restyleMermaid() {
+  const figs = [...document.querySelectorAll(".mermaid-figure[data-src]")];
+  if (!figs.length || !mermaidReady) return;
+  const m = await mermaidReady.catch(() => null);
+  if (!m) return;
+  m.initialize({
+    startOnLoad: false, securityLevel: "strict",
+    theme: mermaidTheme(), fontFamily: "inherit",
+  });
+  for (const fig of figs) {
+    try {
+      const { svg } = await m.render(`mmd-${++mermaidSeq}`, fig.dataset.src);
+      fig.innerHTML = svg;
+    } catch (_) { /* keep the last good drawing */ }
+  }
+}
+
 const S = {
   streamId: null,
   lastSeq: 0,
@@ -87,6 +198,9 @@ const S = {
   skipUserEcho: false,   // we drew this turn's prompt optimistically
   activity: null,        // the current turn's one activity disclosure
   actIndex: 0,           // its position in the transcript, for the open-state key
+  turnTop: null,         // this turn's FIRST answer bubble, so the activity
+                         // disclosure can be put in front of it — see
+                         // activityGroup. Cleared wherever a turn begins.
   sessionId: null,
   switching: null,      // a history read in flight; sending must wait for it
   viewGen: 0,           // bumped whenever the view changes (openSession/newSession);
@@ -425,7 +539,10 @@ function finalizeSeg() {
   // and a loaded session -- where every token arrives in one synchronous
   // forEach and the only render is the deferred one -- showed an empty bubble
   // where the whole answer should be.
-  if (seg.kind === "out") seg.body.innerHTML = renderMD(seg.text);
+  if (seg.kind === "out") {
+    seg.body.innerHTML = renderMD(seg.text);
+    renderMermaid(seg.body);   // async on purpose: the text is already on screen
+  }
   S.seg = null;
   if (seg.kind === "think") { activitySummary(); return; }
   if (!seg.text.trim()) { seg.body.closest(".msg").remove(); return; }
@@ -457,7 +574,19 @@ function activityGroup() {
   };
   card.append(head, body);
   wrap.appendChild(card);
-  $("#messages").appendChild(wrap);
+  // The work goes ABOVE the answer, always — a fixed shape the reader can rely
+  // on, not wherever the first tool event happened to land.
+  //
+  // This row used to be appended where it was created, which is faithful to
+  // the event order and reads wrong whenever the answer comes first. Two ways
+  // that happens, both seen in this store: a replayed assistant message that
+  // carries BOTH text and tool_calls emits its text before its own calls
+  // (hermes_session_api.history), and a live turn can answer and then keep
+  // calling tools. Either way the reader got the conclusion, then the
+  // reasoning under it.
+  const top = S.turnTop && document.body.contains(S.turnTop) ? S.turnTop : null;
+  if (top) $("#messages").insertBefore(wrap, top);
+  else $("#messages").appendChild(wrap);
   S.activity = { wrap, card, head, caret, label, body, think: null, tools: 0 };
   scroll();
   return S.activity;
@@ -485,6 +614,10 @@ function newOutputSeg() {
   clearPending();      // tokens are their own proof of life
   const body = addMsg("bot", "");
   body.classList.add("streaming", "md");
+  // The first answer bubble of this turn is where a later activity row slots
+  // in above. Only the first: a turn that answers, tools again and answers
+  // again still keeps ONE group, at the top of the whole turn.
+  if (!S.turnTop) S.turnTop = body.closest(".msg");
   S.seg = { kind: "out", body, text: "", refs: null };
 }
 
@@ -744,7 +877,7 @@ function apply(ev, from) {
       // the last question on screen looked like it had run nothing, while a
       // wall of unrelated tool rows stacked up above it. (Live turns never hit
       // this: endTurn already nulled S.activity before the next prompt.)
-      S.activity = null;
+      S.activity = null; S.turnTop = null;
       S.tools.clear();
       if (S.skipUserEcho) S.skipUserEcho = false;
       else addUserMsg(ev.text);
@@ -753,7 +886,7 @@ function apply(ev, from) {
       finalizeSeg();
       // Same closure as above: each replayed prompt starts a fresh activity
       // group, so the tools that follow it render AFTER that prompt.
-      S.activity = null;
+      S.activity = null; S.turnTop = null;
       S.tools.clear();
       addUserMsg(ev.text);
       break;
@@ -857,7 +990,7 @@ function endTurn(error, owner, from) {
   if (shown) {
     clearPending();         // only ours: a foreign end took this view's 思考中 row
     finalizeSeg();
-    S.activity = null;      // the next turn opens its own group
+    S.activity = null; S.turnTop = null;   // the next turn opens its own group
     setBusy(false);
     S.tools.clear();
     S.awaitingPerm = false;
@@ -1140,7 +1273,7 @@ async function openSession(id) {
   // actually says something. Telling someone to "wait or stop the current
   // reply" just to LOOK at another conversation was the whole complaint.
   $("#messages").textContent = "";
-  S.tools.clear(); S.seg = null; S.activity = null; S.actIndex = 0; S.sessionId = id;
+  S.tools.clear(); S.seg = null; S.activity = null; S.turnTop = null; S.actIndex = 0; S.sessionId = id;
 
   // Paint what we already have BEFORE asking the server, then refresh from the
   // store. The request moves nothing — sessions are addressed by id now, so a
@@ -1273,7 +1406,7 @@ async function newSession() {
   // stops, because `apply` now checks who each event belongs to. Detaching or
   // calling `endTurn` here would abandon a live reply.
   $("#messages").textContent = "";
-  S.seg = null; S.tools.clear(); S.activity = null; S.actIndex = 0; S.sessionId = null;
+  S.seg = null; S.tools.clear(); S.activity = null; S.turnTop = null; S.actIndex = 0; S.sessionId = null;
   S.streamId = null;        // the left conversation's turn is no longer the focus
   rememberView(null);      // a reload now opens on 新的对话, as the screen does
   showFresh();
@@ -1301,7 +1434,7 @@ async function send() {
   input.value = ""; input.style.height = "auto";
   addMsg("user", text);
   S.seg = null;
-  S.activity = null;
+  S.activity = null; S.turnTop = null;
   S.skipUserEcho = true;
   const gen = S.viewGen;    // the view this send was typed into
   let j;
