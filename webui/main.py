@@ -194,12 +194,6 @@ def main() -> None:
         # with no deadline cost twelve minutes of a conversation showing
         # 回复中… and produced nothing; see the function's note.
         ensure_compression_timeout(hermes_cfg)
-        # And the two knobs this deployment owns rather than seeds: the retry
-        # count that multiplies every deadline, and the point at which
-        # compression fires. See ensure_agent_tuning for the measurements.
-        from hermes_config import ensure_agent_tuning
-
-        ensure_agent_tuning(hermes_cfg)
     except Exception as e:  # noqa: BLE001
         log.error("could not seed auxiliary.compression: %s", e)
 

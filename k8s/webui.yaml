@@ -107,6 +107,22 @@ spec:
                   "${LLM_CONTEXT_LENGTH:-54000}" || true
               fi
 
+              # ATTEMPTS, not retries: hermes loops
+              # `while retry_count < max_retries`, so the 3 its config ships
+              # means three tries of every API call. One failed context
+              # compression measured 723 s of a conversation showing 回复中…
+              # — three attempts at the configured 120 s timeout, then
+              # hermes' own retry of the whole call. 2 keeps one retry, which
+              # is what recovers a transient reset, and halves the worst case.
+              #
+              # Here rather than in the app: this is the same kind of decision
+              # as the model.* lines above, and `hermes config set` already
+              # owns that job. It was briefly a Python helper in
+              # hermes_config.py, which meant a code change and an image
+              # build to move a number that belongs in the manifest.
+              hermes config set agent.api_max_retries \
+                "${HERMES_API_MAX_RETRIES:-2}" || true
+
               # The skills ship in the IMAGE and are synced into HERMES_HOME
               # at every start, rather than being copied into the PVC once by hand.
               # HERMES_HOME is a PVC, so a hand-copy would survive -- and would
