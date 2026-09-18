@@ -123,6 +123,17 @@ spec:
               hermes config set agent.api_max_retries \
                 "${HERMES_API_MAX_RETRIES:-2}" || true
 
+              # And how long ONE compression attempt may take. hermes' setup
+              # wizard writes 120 here, and 120 is too short for this engine:
+              # a full window is ~35K of prefill plus a summary generated at
+              # ~16 tok/s, so ~180 s. Measured — a small compression finished
+              # in 115 s (25 messages -> 14) and the next, larger one timed
+              # out. 240 gives a healthy compression room to land; with the
+              # retry count above, a hopeless one still ends in two attempts
+              # instead of six.
+              hermes config set auxiliary.compression.timeout \
+                "${HERMES_COMPRESSION_TIMEOUT:-240}" || true
+
               # The skills ship in the IMAGE and are synced into HERMES_HOME
               # at every start, rather than being copied into the PVC once by hand.
               # HERMES_HOME is a PVC, so a hand-copy would survive -- and would
