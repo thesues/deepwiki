@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: E402
 
 import hermes_agent as ha  # noqa: E402
-import profiles as pr  # noqa: E402
+import profiles as pr
+import session_profiles as sp  # noqa: E402
 from app_routes import build_app  # noqa: E402
 from http_shell import serve  # noqa: E402
 from turns import TurnManager  # noqa: E402
@@ -85,6 +86,9 @@ def app_server(monkeypatch, tmp_path):
         index_html=tmp_path / "index.html",
         sessions=state["sessions"],
         mcp={"name": "memory", "url": "http://mcp"},
+        # Pinned into tmp_path: the default lands in HERMES_HOME, so without
+        # this the suite writes its pins into the developer's real ~/.hermes.
+        session_profiles=sp.SessionProfiles(tmp_path / "session_profiles.json"),
     )
     srv = serve(app, "127.0.0.1", 0)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
@@ -115,6 +119,16 @@ def _drain(stream, timeout=3.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end and stream.running:
         time.sleep(0.005)
+
+
+def _wait_idle(mgr, timeout=3.0):
+    """Let every running turn finish. The manager refuses a second turn in a
+    conversation that is still replying, so a test that sends twice to the
+    same session has to wait between them."""
+    for sid in list(mgr.running().values()):
+        st = mgr.stream(sid)
+        if st is not None:
+            _drain(st, timeout)
 
 
 # ── sending ─────────────────────────────────────────────────────────────────
@@ -491,3 +505,166 @@ def test_list_sessions_zero_message_root_resolves_through_the_chain(monkeypatch)
     monkeypatch.setattr(hsa, "_db", lambda: FakeDB())
     rows = hsa.list_sessions(limit=100, include_empty=False)
     assert len(rows) == 1 and rows[0]["id"] == "tip" and rows[0]["messageCount"] == 9
+
+
+# ── the project a conversation belongs to ───────────────────────────────────
+
+
+def test_the_project_mark_is_read_only_in_its_two_part_form():
+    """`deepwiki:<key>`, never a bare source.
+
+    The mark rides on `agent.platform`, which hermes writes into
+    `sessions.source`. That column already held values from before the mark
+    existed — and one of them is "buda", this app's platform name before the
+    deepwiki repositioning, which is ALSO a profile key today. Reading a bare
+    source as a project would hand every pre-mark session to that project by
+    coincidence, and the coincidence would look like the feature working.
+    """
+    buda = pr.build_profiles([{"key": "buda"}])[0]
+    assert ha.session_mark(buda) == "deepwiki:buda"
+    assert ha.session_mark(None) == "deepwiki"
+    assert ha.profile_of_source("deepwiki:buda") == "buda"
+    assert ha.profile_of_source("deepwiki:code-autumn-rs") == "code-autumn-rs"
+    for bare in ("deepwiki", "buda", "cli", "tool", "", None, "deepwiki:"):
+        assert ha.profile_of_source(bare) is None, f"{bare!r} must not read as a project"
+
+
+def test_a_compressed_conversation_keeps_its_project(app_server):
+    """The bug this moved the mark down for, in the shape it shipped.
+
+    Context compression ROTATES the session id: the old row ends with
+    end_reason='compression' and the conversation continues under a new one.
+    The sidebar lists each chain under its TIP. A pin recorded in the side
+    table at chat/start is keyed by the id the conversation STARTED with, so
+    after a compression it points at a dead row — and the tip, having no pin,
+    filed under the DEFAULT project. In production a buda conversation had
+    already lost its project this way; it only looked right because buda also
+    happened to be the default.
+
+    hermes stamps `agent.platform` onto the compression child too
+    (`agent/conversation_compression.py`), so the mark is on the tip without
+    anyone carrying it there. Here the tip carries the mark and NO pin.
+
+    Ablation: read `profile` from the side table first and this goes red.
+    """
+    base, _, state = app_server
+    state["sessions"].rows = [
+        {"id": "tip-after-compression", "title": "六道", "source": "deepwiki:video",
+         "messageCount": 9, "lastActive": 0},
+    ]
+    j = _get(base, "/api/sessions")
+    row = next(r for r in j["sessions"] if r["id"] == "tip-after-compression")
+    assert row["profile"] == "video", (
+        "the tip of a compression chain must file under the project its own "
+        "row is marked with, not under the default"
+    )
+
+
+def test_an_unmarked_row_still_falls_back_to_the_pin(app_server):
+    """Rows written before the mark keep working.
+
+    The mark only appears on sessions whose next turn has run under the new
+    code. Everything already in the store carries a bare source and a pin in
+    the side table, and must keep filing where it always did.
+    """
+    base, _, state = app_server
+    state["sessions"].rows = [
+        {"id": "old-one", "title": "旧会话", "source": "deepwiki",
+         "messageCount": 3, "lastActive": 0},
+    ]
+    # As chat/start recorded it, before the mark existed.
+    _, started = _post(base, "/api/chat/start",
+                       {"text": "hi", "sessionId": "old-one", "profile": "video"})
+    assert started["profile"] == "video"
+    j = _get(base, "/api/sessions")
+    row = next(r for r in j["sessions"] if r["id"] == "old-one")
+    assert row["profile"] == "video", "an unmarked row still reads its pin"
+
+
+def test_a_send_from_another_projects_page_cannot_move_the_conversation(app_server):
+    """The corruption path, closed.
+
+    The page carries its project in its URL and the composer sends it. A page
+    can legitimately be SHOWING a conversation that belongs elsewhere — the
+    view was restored per browser, so opening /video/ could reopen the buda
+    conversation last read. Pressing 发送 there did two things, both silent:
+    answered the turn with the wrong project's agent (its MCP servers, not the
+    corpus this conversation had been talking to), and re-pinned the
+    conversation to the sending page's project on the way through, because
+    `record()` overwrites.
+
+    Which project answers is the CONVERSATION's property. Asserted where it
+    matters — the profile handed to the agent, not just the echo.
+
+    Ablation: resolve the profile from the request body and this goes red.
+    """
+    base, mgr, state = app_server
+    seen = []
+    real = ha.AgentPool.acquire
+    ha.AgentPool.acquire = lambda self, sid, ep, profile=None: (
+        seen.append((sid, profile.key if profile else None)) or real(self, sid, ep, profile))
+    try:
+        # Born under buda, from buda's page.
+        _, first = _post(base, "/api/chat/start", {"text": "六道是什么", "profile": "buda"})
+        sid = first["sessionId"]
+        assert first["profile"] == "buda"
+        _wait_idle(mgr)
+        # The same conversation, now sent from the video project's page.
+        _, second = _post(base, "/api/chat/start",
+                          {"text": "继续", "sessionId": sid, "profile": "video"})
+        assert second["profile"] == "buda", (
+            "the echo must name the conversation's own project, so the page "
+            "that sent it does not go on believing it moved"
+        )
+        _wait_idle(mgr)
+        assert seen[-1] == (sid, "buda"), (
+            "the AGENT must be built for the conversation's project; answering "
+            "with video's tool surface is the real damage, not the label"
+        )
+    finally:
+        ha.AgentPool.acquire = real
+
+
+def test_a_new_conversation_still_takes_the_page_it_was_started_from(app_server):
+    """The other half: `profile` in the request decides a NEW conversation.
+
+    Without this the rule above would collapse into "everything is the default
+    project" — the resolver returns None for an id the store has never seen,
+    and a new conversation is exactly that.
+    """
+    base, mgr, _ = app_server
+    _, j = _post(base, "/api/chat/start", {"text": "hi", "profile": "video", "new": True})
+    assert j["profile"] == "video"
+    _wait_idle(mgr)
+
+
+def test_a_pin_stranded_by_compression_is_walked_forward(app_server, monkeypatch):
+    """The production casualty, repaired at read time.
+
+    A buda conversation was compressed before the mark existed:
+    `session_profiles.json` holds `<root> -> buda`, the store lists the chain
+    under a different id, and nothing connects them — so it filed under the
+    default project. It only LOOKED right because buda was also the default;
+    reorder DEEPWIKI_PROFILES and every such conversation moves at once.
+
+    No migration: the pin is walked forward through the store's own resume
+    resolver, and the mark takes over for good on the conversation's next turn.
+    """
+    base, mgr, state = app_server
+    fake = state["sessions"]
+    fake.tips = {"root-id": "tip-id"}
+    fake.resolve_tip = lambda sid: fake.tips.get(sid, sid)
+    # The chain, as the sidebar sees it: the tip, unmarked, under a new id.
+    fake.rows = [{"id": "tip-id", "title": "六道", "source": "deepwiki",
+                  "messageCount": 12, "lastActive": 0}]
+    # The pin, as chat/start wrote it under the id the conversation started with.
+    _, j = _post(base, "/api/chat/start",
+                 {"text": "hi", "sessionId": "root-id", "profile": "video"})
+    assert j["profile"] == "video"
+    _wait_idle(mgr)
+
+    rows = _get(base, "/api/sessions")["sessions"]
+    row = next(r for r in rows if r["id"] == "tip-id")
+    assert row["profile"] == "video", (
+        "the pin belongs to the chain, not to the id it was written under"
+    )

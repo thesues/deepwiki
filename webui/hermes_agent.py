@@ -230,6 +230,39 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
 # ── the agent itself ────────────────────────────────────────────────────────
 
 
+PLATFORM = "deepwiki"          # this app's name in hermes' `source` column
+MARK_SEP = ":"                 # PLATFORM + MARK_SEP + profile.key
+
+
+def session_mark(profile: AgentProfile | None) -> str:
+    """The value hermes stores in `sessions.source` for this project's agent.
+
+    `deepwiki:<key>` with a profile, bare `deepwiki` without one. The bare
+    form is also what every row written before this change carries, which is
+    why `profile_of_source` reads only the two-part form.
+    """
+    key = (profile.key if profile is not None else "").strip()
+    return f"{PLATFORM}{MARK_SEP}{key}" if key else PLATFORM
+
+
+def profile_of_source(source: str | None) -> str | None:
+    """The project a session row belongs to, or None if it carries no mark.
+
+    None is not "no project" — it is "this row predates the mark", and the
+    caller decides the fallback (the retired side table, then the default
+    project). A bare "deepwiki", or the older "buda" this app used as its
+    platform name before the repositioning, both answer None: "buda" is now
+    also a profile key, and reading it as one would hand every pre-mark
+    session to that project by coincidence.
+    """
+    s = (source or "").strip()
+    head, sep, key = s.partition(MARK_SEP)
+    if not sep or head != PLATFORM:
+        return None
+    key = key.strip()
+    return key or None
+
+
 def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = None) -> Any:
     """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
 
@@ -281,7 +314,33 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         register_workspace_cwd(session_id, profile.workspace)
 
     candidate = {
-        "platform": "deepwiki",
+        # The PROJECT MARK, and the reason it rides on `platform` rather than
+        # in a table of our own.
+        #
+        # hermes writes `agent.platform` into `sessions.source` in two places:
+        # when the agent first persists a conversation (`run_agent.py`) and
+        # when CONTEXT COMPRESSION forks a child session
+        # (`agent/conversation_compression.py`). Compression ROTATES the
+        # session id — the old row ends with end_reason='compression' and the
+        # conversation continues under a new id — and that is exactly what a
+        # side table keyed by the starting id cannot survive: the pin stays on
+        # the dead root while the sidebar lists the chain under its tip, and
+        # the conversation silently files under the DEFAULT project. That had
+        # already happened in production to a buda conversation.
+        #
+        # Put the mark on the agent and the chain carries it: every row the
+        # conversation's own agent creates, including every compression child,
+        # is stamped by the same value. One writer, at the bottom, and
+        # everything above just reads it.
+        #
+        # The prefix is kept so the value is still recognisably this app's
+        # (hermes filters on `source`, e.g. exclude_sources=["tool"]), and so
+        # the marked form is UNAMBIGUOUS: rows written before this carry a
+        # bare "deepwiki" — or "buda", which was this app's platform name
+        # before the repositioning and is now also a profile KEY. Only the
+        # two-part form is read as a project; a bare source means "unmarked"
+        # and falls back. See session_mark().
+        "platform": session_mark(profile),
         "model": ep.model,
         "provider": ep.provider,
         "base_url": ep.base_url,

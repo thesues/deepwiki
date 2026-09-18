@@ -23,7 +23,7 @@ const el = (tag, cls, text) => {
   return n;
 };
 
-const LS_VIEW = "hermes.view";      // the conversation on screen; a reload reopens it
+const LS_VIEW = "hermes.view";      // PER PROJECT — see viewKey(); a reload reopens it
 const LS_OPEN = "hermes.open";      // which activity groups the reader had open
 const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessions start on
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
@@ -131,14 +131,31 @@ const S = {
 // nothing, and highlighted a row over an empty transcript. Reopening the
 // session repaints from the store and replays a live turn from the top, which
 // is the path a sidebar click already takes.
+// SCOPED TO THE PROJECT, because the page is. One key per browser meant the
+// conversation last read ANYWHERE came back on whichever project page opened
+// next: the header said 代码理解·autumn-rs, the sidebar (correctly filtered)
+// was empty, and the transcript was a 佛典 conversation. Reported from
+// production with a screenshot. The server no longer lets a send from that
+// screen re-pin the conversation, but the screen should not happen.
+function viewKey() { return S.profile ? `${LS_VIEW}.${S.profile}` : LS_VIEW; }
 function rememberView(sid) {
   try {
-    if (sid) localStorage.setItem(LS_VIEW, sid);
-    else localStorage.removeItem(LS_VIEW);
+    if (sid) localStorage.setItem(viewKey(), sid);
+    else localStorage.removeItem(viewKey());
   } catch (_) { /* private mode: a reload opens on 新的对话 */ }
 }
 function recallView() {
-  try { return localStorage.getItem(LS_VIEW); } catch (_) { return null; }
+  try { return localStorage.getItem(viewKey()); } catch (_) { return null; }
+}
+// Does this conversation belong on THIS page? The sidebar's filter, as a
+// predicate, so "what this page may show" has one definition instead of two —
+// the drift between them is what put another project's transcript on screen:
+// the recall checked the UNFILTERED row list, the sidebar filtered at render.
+function belongsHere(id) {
+  if (!S.profile) return true;                 // no project: the page shows everything
+  const row = (S.sessionRows || []).find((r) => r.id === id);
+  if (!row) return false;                      // unknown here is not ours to open
+  return (row.profile || S.defaultProfile) === S.profile;
 }
 
 /* ---------- chrome ---------- */
@@ -1408,7 +1425,11 @@ async function boot() {
   if (gen !== S.viewGen) {
     // The reader already chose — the sidebar rendered during the await and
     // they clicked a row or 新会话. Reopening the saved view would override it.
-  } else if (view && ((S.sessionRows || []).some((r) => r.id === view) || S.streaming[view])) {
+  } else if (view && belongsHere(view)) {
+    // `belongsHere` covers a LIVE turn too: /api/sessions synthesizes a row
+    // for a conversation whose first turn has not persisted yet, carrying the
+    // project it was started under — so a running turn in another project no
+    // longer drags its transcript onto this page either.
     openSession(view);
   } else {
     // Nothing to reopen: this IS a fresh conversation, so say so rather than

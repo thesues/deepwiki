@@ -117,6 +117,13 @@ def list_sessions(limit: int, include_empty: bool) -> list[dict]:
             title = _provisional_title(r.get("preview") or "")
         out.append({
             "id": r.get("id"),
+            # The row's own project mark, carried up verbatim. `source` is
+            # where hermes stores `agent.platform`, and the webui writes the
+            # project into it (hermes_agent.session_mark) precisely so that
+            # the answer survives a compression id rotation: the projection
+            # above hands back the TIP of a chain, and the tip was written by
+            # the same agent as its root. The route turns it into `profile`.
+            "source": r.get("source") or "",
             "title": title,
             "titleProvisional": not (r.get("title") or "").strip(),
             "preview": r.get("preview") or "",
@@ -124,6 +131,23 @@ def list_sessions(limit: int, include_empty: bool) -> list[dict]:
             "messageCount": r.get("message_count") or 0,
         })
     return out
+
+
+def resolve_tip(session_id: str) -> str:
+    """The id a conversation is listed under today, given an id it once had.
+
+    Compression rotates the id; `list_sessions` projects each chain onto its
+    tip. `resolve_resume_session_id` is hermes' own forward walk, and the
+    sidebar's fallback for pre-mark sessions uses it to ask "which row is this
+    old pin talking about now?". Returns the input unchanged when the chain
+    has not moved, which is the common case.
+    """
+    if not session_id:
+        return ""
+    try:
+        return _db().resolve_resume_session_id(session_id) or session_id
+    except Exception:  # noqa: BLE001 -- an unwalkable chain is just an unmarked row
+        return session_id
 
 
 def _tool_calls(raw) -> list[dict]:

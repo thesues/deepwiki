@@ -86,6 +86,19 @@ class SessionProfiles:
         with self._lock:
             return self._load().get(session_id)
 
+    def keys(self) -> list[str]:
+        """Every session id that was ever pinned here.
+
+        For the pre-mark fallback only: a conversation that was compressed
+        before the project mark existed has its pin stranded on the id it
+        STARTED with, while the sidebar lists the chain under its tip. The
+        route walks these forward through the store to find which of them
+        resolves to the row it is filing. A snapshot, so the caller can
+        iterate without holding the lock.
+        """
+        with self._lock:
+            return list(self._load())
+
     def forget(self, session_id: str) -> None:
         """The conversation is gone; its row in the mapping should go too."""
         if not session_id:

@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 
 from http_shell import App, Request, Response, Streaming, json_response
-from hermes_agent import Endpoint
+from hermes_agent import Endpoint, profile_of_source
 from profiles import AgentProfile, allowed_endpoint, build_profiles
 from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_stream
@@ -105,14 +105,31 @@ def build_app(
         if not text:
             return json_response({"error": "empty message"}, status=400)
         session_id = (body.get("sessionId") or "").strip()
-        if body.get("new") or not session_id:
+        is_new = bool(body.get("new") or not session_id)
+        if is_new:
             # A conversation is created by hermes on its first turn; there is
             # nothing to allocate here, and pre-creating one is what used to
             # fill the store with titleless ghosts.
             import secrets
 
             session_id = secrets.token_hex(8)
-        profile = _profile_of(body)
+        # WHICH PROJECT ANSWERS is the CONVERSATION's property, not the
+        # sending page's. The page carries the project off its own URL, and a
+        # page can legitimately be showing a conversation that belongs to
+        # another one — the view is restored per browser, so landing on
+        # /code-autumn-rs/ could reopen the buda conversation last read. A
+        # send from there used to do two things, both wrong: answer the turn
+        # with code-autumn-rs' agent (its MCP servers, not the corpus this
+        # conversation has been talking to), and re-pin the conversation to
+        # code-autumn-rs on the way through, moving it out of its own project
+        # for good. `record()` overwrites, so the move was silent.
+        #
+        # An EXISTING conversation is therefore resolved from itself; the
+        # request's `profile` only decides a NEW one. The client scopes its
+        # view recall too, so the two disagree far less often now — but the
+        # rule belongs here, where the agent is actually chosen.
+        owner = "" if is_new else (_profile_of_session(session_id) or "")
+        profile = by_profile.get(owner, default_profile) if owner else _profile_of(body)
         # The profile may pin its endpoints (a video project needs the
         # multimodal model). The pin redirects, never errors — see
         # allowed_endpoint — and the echo below carries the endpoint actually
@@ -176,6 +193,63 @@ def build_app(
     def _cancel(req: Request) -> Response:
         return json_response({"ok": manager.cancel(req.json().get("streamId", ""))})
 
+    def _pins_by_tip() -> dict[str, str]:
+        """{ id the sidebar lists : project }, for PRE-MARK conversations only.
+
+        The side table is keyed by the id a conversation STARTED with, and
+        compression rotates that id — so after a compression the pin points at
+        a dead row while the sidebar lists the chain under its tip. This walks
+        each pin FORWARD through the store (`resolve_resume_session_id`, which
+        is the direction hermes offers) and files it under the id it resolves
+        to today.
+
+        Built ONCE per request, not once per row: it is a fixed, shrinking set
+        — every conversation that takes a turn under the current code gets the
+        mark and stops needing this — but a per-row walk would still be one
+        store call per pin per row on every sidebar poll.
+        """
+        if sessions is None:
+            return {}
+        out: dict[str, str] = {}
+        for pinned_id in session_profiles.keys():
+            key = session_profiles.get(pinned_id)
+            if not key:
+                continue
+            out.setdefault(pinned_id, key)
+            try:
+                tip = sessions.resolve_tip(pinned_id)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 -- a store that cannot walk is not a 500
+                log.debug("could not resolve lineage for %s", pinned_id, exc_info=True)
+                break
+            if tip and tip != pinned_id:
+                out[tip] = key
+        return out
+
+    def _profile_of_session(session_id: str, source: str | None = None,
+                            pins: dict[str, str] | None = None) -> str | None:
+        """Which project a conversation belongs to. ONE definition.
+
+        Read in this order, most authoritative first:
+
+        1. THE ROW'S OWN MARK. hermes stores `agent.platform` in
+           `sessions.source`, and the agent stamps the project into it
+           (hermes_agent.session_mark). This is the answer that survives
+           CONTEXT COMPRESSION: compression forks a child session under a new
+           id, stamping it from the same agent, so the tip of a chain carries
+           the same mark as its root.
+        2. THE RETIRED SIDE TABLE, resolved through the chain — see
+           `_pins_by_tip`. For rows written before the mark existed.
+
+        None means "no answer" — the caller files it under the default
+        project, which is what an unmarked session served as.
+        """
+        key = profile_of_source(source)
+        if key:
+            return key
+        if pins is None:
+            pins = _pins_by_tip()
+        return pins.get(session_id)
+
     # ── sessions (store reads; the agent is never moved) ───────────────────
 
     @app.route("GET", "/api/sessions")
@@ -187,12 +261,10 @@ def build_app(
             except Exception:  # noqa: BLE001 -- an unreadable sidebar must not 500 the app
                 log.exception("could not list sessions")
         running = manager.running()
+        pins = _pins_by_tip()
         for r in rows:
             r["is_streaming"] = r.get("id") in running
-            # The project each conversation belongs to. A session predating
-            # profiles has no entry and carries None — the sidebar files it
-            # under the default project, which is what it served as.
-            r["profile"] = session_profiles.get(r.get("id") or "")
+            r["profile"] = _profile_of_session(r.get("id") or "", r.get("source"), pins)
         # A live turn's session row does not exist in the store until hermes
         # persists its first message — which happens when the TURN ends
         # (`_persist_session` sits on the exit paths of the conversation loop).
@@ -218,10 +290,12 @@ def build_app(
                 "preview": "回复中…",
                 "messageCount": 0,
                 "is_streaming": True,
-                # The pin was recorded at chat/start, before the store had a
-                # row — carry it here too, or the conversation vanished from
-                # its project's sidebar for the whole first turn.
-                "profile": session_profiles.get(sid),
+                # No store row yet (hermes persists at the END of the turn),
+                # so the mark does not exist either — the pin recorded at
+                # chat/start is all there is for the length of the first
+                # turn, and without it the conversation vanishes from its
+                # project's sidebar for exactly that long.
+                "profile": _profile_of_session(sid, None, pins),
             })
         return json_response({
             "sessions": rows,
