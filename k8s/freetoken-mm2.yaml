@@ -99,7 +99,7 @@ spec:
         # Lift autumn-fuse at deploy time, not build time — same WIRE-lockstep
         # argument as freetoken-l3.yaml, which has the full story.
         - name: fusebin
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:633a4832de031848b34d971902c5aaac37be5f90
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:aef13927e85e200ad314ff5ddaed926e442d6c75
           command: ["sh","-c","cp /usr/local/bin/autumn-fuse /fusebin/ && chmod +x /fusebin/autumn-fuse"]
           volumeMounts:
             - { name: fusebin, mountPath: /fusebin }
