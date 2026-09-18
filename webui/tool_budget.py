@@ -64,6 +64,63 @@ def _trim_body(hit: dict) -> bool:
     return False
 
 
+def _parse(result: str):
+    """The hit list inside a tool result, or None.
+
+    Not just `json.loads`: what arrives here is whatever hermes made of the
+    MCP reply, and that is not always the bare document the server sent. It
+    joins multiple content blocks with newlines, and when a server returns
+    `structuredContent` alongside the text it wraps both in
+    `{"result": …, "structuredContent": …}` (tools/mcp_tool.py). A shape this
+    does not recognise is not a crisis — it falls back to the plain cut — but
+    it IS worth knowing about, because the structural trim is the one that
+    keeps the result parseable, so an unrecognised shape is logged with its
+    head rather than silently degrading.
+    """
+    for candidate in (result, result.strip()):
+        try:
+            doc = json.loads(candidate)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(doc, dict):
+            # hermes' content+structuredContent wrapper: the hits are inside.
+            for key in ("result", "structuredContent", "content"):
+                inner = doc.get(key)
+                if isinstance(inner, list):
+                    return inner
+                if isinstance(inner, str):
+                    try:
+                        nested = json.loads(inner)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if isinstance(nested, list):
+                        return nested
+            return None
+        return doc if isinstance(doc, list) else None
+
+    # Several content blocks, joined with newlines: N documents, not one. Take
+    # each line that is a hit list and concatenate them — spanning from the
+    # first '[' to the last ']' would instead produce a string that is two
+    # arrays and parses as neither.
+    merged: list = []
+    for line in result.splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            part = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(part, list) and all(isinstance(h, dict) for h in part):
+            merged.extend(part)
+    if merged:
+        return merged
+
+    log.info("tool result is not a shape the trimmer knows (%d chars); head=%r",
+             len(result), result[:160])
+    return None
+
+
 def shrink(tool_name: str, result):
     """Bound one tool result. Anything not a long string is returned as-is.
 
@@ -76,10 +133,7 @@ def shrink(tool_name: str, result):
         return result
 
     before = len(result)
-    try:
-        doc = json.loads(result)
-    except Exception:  # noqa: BLE001 -- not JSON: fall through to the plain cut
-        doc = None
+    doc = _parse(result)
 
     if isinstance(doc, list) and doc and all(isinstance(h, dict) for h in doc):
         cut = sum(_trim_body(h) for h in doc)

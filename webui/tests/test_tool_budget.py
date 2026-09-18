@@ -78,3 +78,38 @@ def test_install_is_not_fatal_without_hermes():
     """No ceiling beats no chat: a hermes that moves the middleware registry
     must cost the ceiling, not the server."""
     assert tb.install() in (True, False)
+
+
+def test_the_hermes_wrapper_shapes_are_recognised():
+    """What arrives here is what HERMES made of the MCP reply, not what the
+    server sent. It joins multiple content blocks with newlines, and wraps
+    text + structuredContent in an object when a server returns both
+    (tools/mcp_tool.py). Missing those shapes does not fail loudly — it
+    silently falls back to the blunt cut, which leaves the model holding
+    truncated JSON. That is how this shipped the first time.
+    """
+    hits = _hits(17396, 485, 400)
+    arr = json.dumps(hits)
+
+    # 1. the bare array
+    assert tb._parse(arr) is not None
+    # 2. hermes' content+structuredContent wrapper, text side
+    assert tb._parse(json.dumps({"result": arr, "structuredContent": None})) is not None
+    # 3. same wrapper, structured side already decoded
+    assert tb._parse(json.dumps({"result": "", "structuredContent": hits})) is not None
+    # 4. two content blocks joined with a newline: no longer one document
+    assert tb._parse(arr + "\n" + json.dumps(_hits(100))) is not None
+    # 5. genuinely not a hit list
+    assert tb._parse("total 12\ndrwxr-xr-x 4 root root") is None
+
+
+def test_a_wrapped_result_is_trimmed_structurally_not_chopped():
+    """The point of recognising the wrapper: the trim stays structural, so
+    what the model receives still parses."""
+    out = tb.shrink("search_code",
+                    json.dumps({"result": json.dumps(_hits(17396, 485)),
+                                "structuredContent": None}))
+    body = out.split("\n…")[0]
+    doc = json.loads(body)
+    assert isinstance(doc, list) and len(doc) == 2
+    assert len(doc[0]["source"]) < 2000 and doc[1]["source"] == "x" * 485
