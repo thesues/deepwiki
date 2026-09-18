@@ -116,15 +116,83 @@ spec:
             - |
               set -euo pipefail
 
-              # Pin CUDA to the GPU the device plugin actually allocated. This
-              # container is privileged, so every /dev/nvidia* on the node is
-              # visible and CUDA would otherwise pick index 0 — which is
-              # freetoken-l3's card, not this pod's allocation.
-              case "${NVIDIA_VISIBLE_DEVICES:-}" in
-                ""|all|void|none) echo "GPU: no specific allocation, leaving CUDA to choose" ;;
-                *) export CUDA_VISIBLE_DEVICES="$NVIDIA_VISIBLE_DEVICES"
-                   echo "GPU: pinned to allocated device(s) $CUDA_VISIBLE_DEVICES" ;;
-              esac
+              # Pin CUDA to a card that is ACTUALLY FREE, and verify it.
+              #
+              # This container is privileged, so every /dev/nvidia* on the node
+              # is visible and CUDA would otherwise pick index 0. The previous
+              # version trusted the device plugin's allocation for that, and on
+              # this node the allocation is NOT the truth: other privileged
+              # workloads take GPUs without going through the plugin, so the
+              # plugin still counts those cards free and hands them out. It
+              # handed this pod index 0 while a 4-way tensor-parallel job held
+              # 79 GiB of it, and the engine died two minutes later on
+              #
+              #   AssertionError: cache budget too small: minimum plan
+              #   (moe=512 slots, kv=1024 pages) needs 20726153216 B >
+              #   budget 8110794342 B
+              #
+              # then exited 0 ("Backend worker is gone; stopping the API
+              # server"), so kubelet restarted it into a three-hour crash loop
+              # whose only symptom upstream was hermes answering `503 model is
+              # still loading`.
+              #
+              # The budget is free VRAM x --memory-ratio, so the failure is
+              # arithmetic: neither raising memory-ratio nor lowering
+              # kv-reserve-tokens conjures 19.3 GiB out of a card with 10 left.
+              # The only fix is a card with room, and the only way to know
+              # which card that is, is to LOOK.
+              #
+              # The plugin's allocation still wins when it is genuinely free —
+              # that is the right answer in a well-behaved cluster and keeps
+              # the accounting honest. Otherwise take the emptiest card and say
+              # loudly that the plugin was wrong. Pin by UUID, not index: an
+              # index is positional and this pod does not control it.
+              MIN_FREE_MIB=61440          # 60 GiB. This engine is sized for a
+                                          # whole H20: ~12.6 GiB of weights,
+                                          # 15.5 GiB of KV at 65536 tokens, and
+                                          # the MoE cache the assertion above is
+                                          # about. A card with less than this is
+                                          # somebody else's.
+              CHOSEN=""
+              pick_gpu() {
+                want="${NVIDIA_VISIBLE_DEVICES:-}"
+                best_uuid=""; best_free=0
+                while IFS=, read -r idx uuid free; do
+                  idx="${idx// /}"; uuid="${uuid// /}"; free="${free// /}"
+                  [ -n "$uuid" ] || continue
+                  echo "GPU: candidate index=$idx uuid=$uuid free=${free}MiB"
+                  case "$want" in
+                    ""|all|void|none) ;;
+                    *) if { [ "$want" = "$idx" ] || [ "$want" = "$uuid" ]; } \
+                          && [ "$free" -ge "$MIN_FREE_MIB" ]; then
+                         echo "GPU: the plugin's allocation ($want) is free; using it"
+                         CHOSEN="$uuid"
+                         return 0
+                       fi ;;
+                  esac
+                  if [ "$free" -gt "$best_free" ]; then best_free="$free"; best_uuid="$uuid"; fi
+                done < <(nvidia-smi --query-gpu=index,uuid,memory.free \
+                                    --format=csv,noheader,nounits)
+                if [ -n "$best_uuid" ] && [ "$best_free" -ge "$MIN_FREE_MIB" ]; then
+                  echo "GPU: WARNING the plugin allocated '${want:-<none>}', which does not have"
+                  echo "GPU: ${MIN_FREE_MIB}MiB free — a privileged neighbour is on it outside the"
+                  echo "GPU: plugin's accounting. Falling back to the emptiest card."
+                  CHOSEN="$best_uuid"
+                  return 0
+                fi
+                return 1
+              }
+              if ! pick_gpu; then
+                # Fail FAST and legibly. The alternative is what happened: two
+                # minutes of weight loading, an assertion deep in the engine,
+                # exit 0, and a crash loop that reads as "model is still
+                # loading" to everything upstream.
+                echo "GPU: no card on this node has ${MIN_FREE_MIB}MiB free; refusing to start." >&2
+                nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv >&2 || true
+                exit 1
+              fi
+              export CUDA_VISIBLE_DEVICES="$CHOSEN"
+              echo "GPU: pinned to $CUDA_VISIBLE_DEVICES"
 
               # autumn's Rust client parses a SocketAddr — IP literals only.
               M="$(getent hosts autumn-manager | awk '{print $1}'):9001"

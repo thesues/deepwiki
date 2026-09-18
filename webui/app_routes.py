@@ -319,10 +319,21 @@ def build_app(
         if not sid or sessions is None:
             return json_response({"events": []})
         try:
-            return json_response({"events": sessions.history(sid, limit=400)})  # type: ignore[attr-defined]
+            events = sessions.history(sid, limit=400)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             log.exception("could not read history for %s", sid)
             return json_response({"events": [], "error": "could not read this conversation"})
+        # A turn that DIED belongs in the transcript too. hermes persists the
+        # prompt and — having produced nothing — no answer, so without this the
+        # conversation reopens as a question followed by silence: identical to
+        # a reply this app lost, and nothing on screen says the engine refused.
+        # The failure is the webui's own knowledge (the agent raised, no
+        # message was ever written), so the webui appends it, last, where the
+        # answer would have been.
+        err = manager.last_error(sid)
+        if err and not manager.live_for(sid):
+            events = list(events) + [{"kind": "error", "text": err.get("text", "")}]
+        return json_response({"events": events})
 
     @app.route("POST", "/api/session/open")
     def _open(req: Request) -> Response:

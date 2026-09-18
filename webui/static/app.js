@@ -765,6 +765,12 @@ function apply(ev, from) {
       finalizeSeg(); addMsg("note", "审批超时，本次操作已取消");
       break;
     case "note": finalizeSeg(); addMsg("note", ev.text); break;
+    // A turn that died, replayed with the transcript. The live path reports a
+    // failure through `end`, which only reaches whoever was watching; this is
+    // the same failure for the reader who reloaded or was elsewhere, and
+    // without it the conversation reads as a question the app silently
+    // dropped rather than one the engine refused.
+    case "error": finalizeSeg(); addMsg("error", `⚠ ${ev.text}`); break;
     case "gap": finalizeSeg(); addMsg("note", "（断线期间有部分输出未能保留）"); break;
     case "end": endTurn(ev.error, ev.session, from); break;
   }

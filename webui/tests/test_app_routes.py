@@ -668,3 +668,65 @@ def test_a_pin_stranded_by_compression_is_walked_forward(app_server, monkeypatch
     assert row["profile"] == "video", (
         "the pin belongs to the chain, not to the id it was written under"
     )
+
+
+def test_a_failed_turn_is_still_there_after_a_reload(app_server):
+    """A turn that dies must not read as a reply this app lost.
+
+    The failure is reported on the stream, which is memory: it reaches only a
+    reader who is watching at that moment. hermes persists the prompt and —
+    the turn having produced nothing — no answer, so reloading showed a
+    question followed by silence and a 就绪 status. In production mm2
+    crash-looped for three hours answering `503 model is still loading` and
+    the webui showed a blank transcript with no hint that anything was wrong.
+
+    Ablation: drop the `last_error` append from /api/session/history and this
+    goes red while the live path stays green.
+    """
+    base, mgr, state = app_server
+
+    def boom(agent, **kw):
+        raise RuntimeError("HTTP 503: model is still loading")
+
+    mgr._run = boom
+    _, j = _post(base, "/api/chat/start", {"text": "web 搜索 银河", "profile": "buda"})
+    sid = j["sessionId"]
+    _wait_idle(mgr)
+
+    # The reader reloads: the transcript comes from the store, not the stream.
+    state["sessions"].rows = [{"id": sid, "title": "web 搜索 银河", "source": "deepwiki:buda",
+                               "messageCount": 1, "lastActive": 0}]
+    events = _get(base, f"/api/session/history?id={sid}")["events"]
+    assert any(e.get("kind") == "error" and "503" in e.get("text", "") for e in events), (
+        f"the failure must survive the stream that reported it; got {events}"
+    )
+
+
+def test_a_retry_clears_the_previous_failure(app_server):
+    """The ghost must not outlive the conversation's next attempt.
+
+    A stale error hanging above a working reply is its own bug report — the
+    reader cannot tell which turn it belongs to.
+    """
+    base, mgr, state = app_server
+
+    def boom(agent, **kw):
+        raise RuntimeError("HTTP 503: model is still loading")
+
+    real = mgr._run
+    mgr._run = boom
+    _, j = _post(base, "/api/chat/start", {"text": "一", "profile": "buda"})
+    sid = j["sessionId"]
+    _wait_idle(mgr)
+    state["sessions"].rows = [{"id": sid, "title": "一", "source": "deepwiki:buda",
+                               "messageCount": 1, "lastActive": 0}]
+    assert any(e.get("kind") == "error"
+               for e in _get(base, f"/api/session/history?id={sid}")["events"])
+
+    mgr._run = real                      # the engine comes back
+    _post(base, "/api/chat/start", {"text": "二", "sessionId": sid})
+    _wait_idle(mgr)
+    events = _get(base, f"/api/session/history?id={sid}")["events"]
+    assert not any(e.get("kind") == "error" for e in events), (
+        f"a successful retry must clear the previous failure; got {events}"
+    )

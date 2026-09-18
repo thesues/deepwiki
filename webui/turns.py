@@ -32,6 +32,7 @@ import queue
 import secrets
 import os
 import threading
+import time
 import uuid
 from typing import Any, Callable
 
@@ -144,6 +145,22 @@ class TurnManager:
         # from a global is how a busy session's spinner lands on an idle one.
         self._live: dict[str, TurnStream] = {}
         self._streams: dict[str, TurnStream] = {}
+        # WHY THE LAST FAILURE OUTLIVES ITS STREAM.
+        #
+        # A turn that dies tells its reader through the stream — and the stream
+        # is in memory, so that telling reaches only a reader who is watching
+        # at that moment. Reload, or be looking at another conversation, and
+        # the failure is gone: hermes persists the prompt and nothing else, so
+        # the conversation reopens as a question with no answer and a 就绪
+        # status, which reads as the app losing the reply rather than the
+        # engine refusing it. Production: mm2 crash-looped for three hours
+        # answering `503 model is still loading`, and the webui showed a blank
+        # transcript with no hint that anything had gone wrong.
+        #
+        # Keyed by SESSION, not by stream, because that is what the reader
+        # comes back to. Cleared when that conversation's next turn starts —
+        # a successful retry must not leave a stale ghost above it.
+        self._last_error: dict[str, dict] = {}
 
     # ── queries ────────────────────────────────────────────────────────────
 
@@ -216,6 +233,9 @@ class TurnManager:
                     running=running,
                     maxConcurrent=endpoint.max_concurrent,
                 )
+            # This conversation is being tried again; whatever went wrong last
+            # time is no longer what the reader needs to see.
+            self._last_error.pop(session_id, None)
             stream = TurnStream(secrets.token_hex(8), session_id, client_id)
             # Which endpoint this turn is on, so the per-endpoint count above can
             # be taken without reaching back into the agent.
@@ -406,10 +426,27 @@ class TurnManager:
             # The reader must be told. A turn that dies silently leaves the
             # composer locked and the spinner running until EventSource gives up.
             log.exception("turn %s failed", stream.stream_id)
-            stream.finish(error=str(e) or e.__class__.__name__)
+            msg = str(e) or e.__class__.__name__
+            stream.finish(error=msg)
+            # Outlive the stream, so a reader who was not watching still finds
+            # out. Bounded: one entry per session that failed, oldest dropped.
+            with self._lock:
+                self._last_error[session_id] = {"text": msg, "at": time.time()}
+                while len(self._last_error) > 200:
+                    self._last_error.pop(next(iter(self._last_error)))
         finally:
             self._release_approval(stream)
             self._pool.clear_running(stream.stream_id)
+
+    def last_error(self, session_id: str) -> dict | None:
+        """How this conversation's most recent turn failed, if it did.
+
+        Read when the transcript is loaded, so the failure is part of what the
+        reader comes back to rather than something only a live watcher saw.
+        None once the conversation has been tried again.
+        """
+        with self._lock:
+            return self._last_error.get(session_id)
 
     # ── stopping ───────────────────────────────────────────────────────────
 
