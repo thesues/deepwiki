@@ -114,6 +114,14 @@ def main() -> None:
         ),
     )
 
+    # Before any agent is built: a tool result goes into the model's context
+    # whole, and hermes caps nothing. One corpus search can spend a fifth of
+    # the window on a single symbol's body — see tool_budget for the measured
+    # numbers and why trimming each hit beats lowering `k`.
+    from tool_budget import install as install_tool_ceiling
+
+    install_tool_ceiling()
+
     # Point hermes at the retrieval server before any agent is built: the MCP
     # list is read when an agent is constructed, so writing it afterwards would
     # leave the first conversation of every restart without retrieval. Loud but

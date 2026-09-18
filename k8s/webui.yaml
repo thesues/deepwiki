@@ -353,15 +353,14 @@ spec:
             # because its brief forbids answering without a citation it could
             # not possibly find.
             #
-            # The code brief also BOUNDS RETRIEVAL, which is a context
-            # problem, not a taste one. Measured against this index:
-            # search_code returns ~17.5 KB with no `k`, ~42.7 KB at k=20 —
-            # 4.4K and 10.7K tokens. dsv4-flash's ceiling is 62080 for prompt
-            # AND generation together (LLM_CONTEXT_LENGTH 54000), and hermes
-            # puts tool results into the context whole: it has no output cap.
-            # Six default searches exhaust the window on their own, and then
-            # every turn is compression — which rotates the session id and
-            # loses accuracy — rather than an answer.
+            # The size of a search is now bounded in CODE, not asked for
+            # here: webui/tool_budget.py trims each hit's body before the
+            # result reaches the model (26.9 KB -> 6.3 KB on this index, with
+            # every hit kept). An earlier version of this brief asked for
+            # k=3, which is the wrong lever and is gone: the median hit is
+            # ~485 chars and the cost is a long tail of enormous symbols, so
+            # k=1 can still land on a 17 KB function while a low k throws away
+            # the cheap, relevant hits.
             #
             # buda is the one profile that legitimately inherits
             # CHAT_DIRECTIVE: that brief was written for it.
@@ -369,7 +368,7 @@ spec:
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"]},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"],
-                  "directive":"你是 autumn-rs（Rust 分布式存储）代码库的阅读助手，依据已索引的代码回答。\n- 先想清楚要找什么再检索。search_code 传 k=3（最多 5），够用就停下来作答。\n- 找到一个符号后，用 get_symbol / find_callers / find_callees 顺着调用关系看，不要反复发起宽泛的 search_code：每次检索都要占掉上下文，重复检索会让这轮对话无法收尾。\n- 引用代码时给出文件路径与符号名。索引里没有的，直说没有，不要猜。\n- 被要求画流程图/架构图时，直接用 mermaid 或文字给出，不要为了画图再去检索。\n- 简明作答，通常几段以内。"},
+                  "directive":"你是 autumn-rs（Rust 分布式存储）代码库的阅读助手，依据已索引的代码回答。\n- 先想清楚要找什么再检索，够用就停下来作答。\n- search_code 的结果会按长度裁剪：命中列表是完整的，但过长的函数体只给开头。需要完整实现时，对该命中的 id 用 get_symbol，不要用再搜一次的方式去拿。\n- 顺着 get_symbol / find_callers / find_callees 的调用关系看，比反复发起宽泛的 search_code 有效得多；重复检索会占满上下文，让这轮对话无法收尾。\n- 引用代码时给出文件路径与符号名。索引里没有的，直说没有，不要猜。\n- 被要求画流程图/架构图时，直接用 mermaid 或文字给出，不要为了画图再去检索。\n- 简明作答，通常几段以内。"},
                  {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"],
                   "directive":"你是一个通用助手。按需使用工具，不确定的地方直说，不要编造。简明作答。"}]
             # The second corpus's MCP server (k8s/code-index-mcp.yaml), as
