@@ -33,6 +33,48 @@ from turns import Refused, TurnManager
 log = logging.getLogger("deepwiki.routes")
 
 
+def _lineage_ids(db, sid: str) -> list[str]:
+    """Every session row belonging to one conversation, `sid` included.
+
+    A conversation is not a row. Compression rotates the session id and links
+    the new row to the old one through `sessions.parent_session_id`, so a long
+    chat is a CHAIN — one live example ran seven links deep. The sidebar shows
+    only the tip (`project_compression_tips=True`), and `delete_session`
+    removes exactly one row and orphans its children, so deleting the tip
+    promoted the parent and put a row back on screen with the same title, the
+    same project and a smaller message count. It reads as "the delete did not
+    work"; the delete worked, on one seventh of the conversation.
+
+    Walk UP to the root, then DOWN over every descendant, so a chain that
+    forked (two compressions off one parent) is collected whole.
+
+    `_conn` is private, and is used because the public surface only walks
+    FORWARD — `get_compression_tip` / `resolve_resume_session_id` take you to
+    the tip, and there is nothing that goes back to the root. If hermes ever
+    publishes a lineage accessor, this is the one caller to move over.
+    """
+    rows = db._conn.execute(
+        """
+        WITH RECURSIVE up(id, parent) AS (
+            SELECT id, parent_session_id FROM sessions WHERE id = ?
+          UNION
+            SELECT s.id, s.parent_session_id FROM sessions s JOIN up ON s.id = up.parent
+        ),
+        down(id) AS (
+            SELECT id FROM up WHERE parent IS NULL
+          UNION
+            SELECT s.id FROM sessions s JOIN down ON s.parent_session_id = down.id
+        )
+        SELECT id FROM down
+        """,
+        (sid,),
+    ).fetchall()
+    ids = [r[0] for r in rows]
+    # A row the walk cannot see — no `sessions` row yet, a schema without the
+    # column — must still be deletable on its own.
+    return ids if sid in ids else [sid, *ids]
+
+
 def build_app(
     *,
     manager: TurnManager,
@@ -371,28 +413,40 @@ def build_app(
         sid = (req.json().get("sessionId") or "").strip()
         if not sid:
             return json_response({"error": "sessionId is required"}, status=400)
+        try:
+            from hermes_agent import _Db, hermes_home
+
+            ids = _lineage_ids(_Db.get(), sid)
+        except Exception:  # noqa: BLE001 -- an unreadable chain still deletes its tip
+            log.exception("could not resolve the lineage of %s", sid)
+            ids = [sid]
         # Deleting a conversation that is mid-reply would leave the turn
         # writing into a store row that no longer exists. `running()` is
-        # session_id -> stream_id for exactly the turns still going.
-        if sid in manager.running():
+        # session_id -> stream_id for exactly the turns still going, and the
+        # live turn may be writing into ANY link of the chain — compression
+        # rotates the id underneath it, so the running id is often not the one
+        # the sidebar showed and the user clicked.
+        running = manager.running()
+        if any(i in running for i in ids):
             return json_response(
                 {"error": "这个会话正在回复中，先停止再删除"}, status=409,
             )
         try:
-            from hermes_agent import _Db, hermes_home
-
-            deleted = _Db.get().delete_session(
-                sid, sessions_dir=hermes_home() / "sessions"
+            deleted = _Db.get().delete_sessions(
+                ids, sessions_dir=hermes_home() / "sessions"
             )
         except Exception as e:  # noqa: BLE001 -- a failed delete must answer, not 500
-            log.exception("could not delete session %s", sid)
+            log.exception("could not delete session %s (chain %s)", sid, ids)
             return json_response({"error": f"删除失败: {e}"}, status=502)
         # Idempotent, like the CLI it replaced: `hermes sessions delete` on an
         # already-gone id printed "not found" and exited 0. A second tab's
         # delete racing the first's must read as success — the goal is achieved.
         last_session.pop(req.client_id, None)
-        session_profiles.forget(sid)   # the conversation is gone; its pin goes too
-        return json_response({"ok": True, "deleted": sid, "found": bool(deleted)})
+        for i in ids:
+            session_profiles.forget(i)   # the conversation is gone; its pins go too
+        return json_response(
+            {"ok": True, "deleted": sid, "found": bool(deleted), "rows": len(ids)}
+        )
 
     # ── approvals ──────────────────────────────────────────────────────────
     #

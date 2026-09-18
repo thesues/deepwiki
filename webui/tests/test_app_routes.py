@@ -350,29 +350,46 @@ def test_status_advertises_the_endpoints_the_client_can_pick(app_server):
 
 
 class FakeDb:
-    """The slice of SessionDB the delete route touches."""
+    """The slice of SessionDB the delete route touches.
 
-    def __init__(self, deleted=True, error=None):
+    Backed by a real in-memory sqlite carrying the one column the lineage walk
+    reads, so the recursive query in `_lineage_ids` runs for real instead of
+    being mocked away — it is the part of this route that is easy to get wrong,
+    and getting it wrong is invisible (the delete still returns ok, it just
+    leaves the rest of the conversation behind).
+    """
+
+    def __init__(self, deleted=True, error=None, chain=(("s-old", None),)):
+        import sqlite3
         self.deleted = deleted
         self.error = error
         self.calls = []
+        # The route runs on a request thread, not the one that built this
+        # object. The real SessionDB opens its connection the same way —
+        # verified against the live store — and a same-thread fake would fail
+        # the walk, fall into the route's except, and "pass" by deleting one row.
+        self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT)"
+        )
+        self._conn.executemany("INSERT INTO sessions VALUES (?, ?)", chain)
 
-    def delete_session(self, sid, sessions_dir=None):
-        self.calls.append((sid, sessions_dir))
+    def delete_sessions(self, ids, sessions_dir=None):
+        self.calls.append((list(ids), sessions_dir))
         if self.error:
             raise self.error
-        return self.deleted
+        return len(ids) if self.deleted else 0
 
 
 def test_delete_runs_in_process_against_session_db(app_server, monkeypatch):
-    """The delete must reach `SessionDB.delete_session` — the same method the
-    CLI subprocess ran — with the sessions dir, and report ok."""
+    """The delete must reach `SessionDB` — the same store the CLI subprocess
+    wrote to — with the sessions dir, and report ok."""
     base, _, state = app_server
     fake = FakeDb(deleted=True)
     monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: fake)}))
     code, body = _post(base, "/api/session/delete", {"sessionId": "s-old"})
     assert (code, body["ok"]) == (200, True)
-    assert fake.calls and fake.calls[0][0] == "s-old"
+    assert fake.calls and fake.calls[0][0] == ["s-old"]
     assert fake.calls[0][1] is not None   # transcripts dir passed through
 
 
@@ -383,6 +400,64 @@ def test_delete_is_idempotent_when_the_row_is_already_gone(app_server, monkeypat
     monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: FakeDb(deleted=False))}))
     code, body = _post(base, "/api/session/delete", {"sessionId": "s-old"})
     assert (code, body["ok"], body["found"]) == (200, True, False)
+
+
+def test_delete_takes_the_whole_compression_chain(app_server, monkeypatch):
+    """Reported as "this session cannot be deleted".
+
+    A conversation is not a row. Compression rotates the session id and links
+    the new row to the old through `sessions.parent_session_id`, and the
+    sidebar shows only the tip — so deleting the tip promoted its parent and
+    put a row back on screen with the same title, the same project and a
+    smaller message count. One live chain was seven links deep: seven deletes,
+    each of which looked like it had failed.
+    """
+    base, _, state = app_server
+    chain = [("root", None), ("mid", "root"), ("tip", "mid")]
+    fake = FakeDb(deleted=True, chain=chain)
+    monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: fake)}))
+    code, body = _post(base, "/api/session/delete", {"sessionId": "tip"})
+    assert (code, body["ok"]) == (200, True)
+    assert sorted(fake.calls[0][0]) == ["mid", "root", "tip"]
+    assert body["rows"] == 3
+
+
+def test_delete_from_the_middle_of_a_chain_still_takes_all_of_it(app_server, monkeypatch):
+    """The id the client sends is whatever the sidebar showed, and after a
+    compression that is not always the tip. Walking up to the root first is
+    what makes the answer the same from any link."""
+    base, _, state = app_server
+    fake = FakeDb(deleted=True, chain=[("root", None), ("mid", "root"), ("tip", "mid")])
+    monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: fake)}))
+    code, body = _post(base, "/api/session/delete", {"sessionId": "mid"})
+    assert code == 200
+    assert sorted(fake.calls[0][0]) == ["mid", "root", "tip"]
+
+
+def test_delete_refuses_when_any_link_of_the_chain_is_mid_reply(app_server, monkeypatch):
+    """`running()` is keyed by the id the TURN holds, and compression rotates
+    that id underneath a live turn — so the running link is routinely not the
+    one the reader clicked. Checking only the clicked id would delete the rows
+    a turn is still writing into."""
+    base, mgr, state = app_server
+    monkeypatch.setattr(type(mgr), "running", lambda self: {"tip": "stream-x"})
+    fake = FakeDb(chain=[("root", None), ("mid", "root"), ("tip", "mid")])
+    monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: fake)}))
+    code, body = _post(base, "/api/session/delete", {"sessionId": "root"})
+    assert code == 409
+    assert "先停止再删除" in body["error"]
+    assert not fake.calls
+
+
+def test_delete_of_an_unknown_id_still_deletes_that_id(app_server, monkeypatch):
+    """A row the walk cannot see — no `sessions` row yet — must still be
+    deletable on its own rather than resolving to nothing."""
+    base, _, state = app_server
+    fake = FakeDb(deleted=False, chain=[("other", None)])
+    monkeypatch.setattr(ha, "_Db", type("_Db", (), {"get": staticmethod(lambda: fake)}))
+    code, body = _post(base, "/api/session/delete", {"sessionId": "ghost"})
+    assert (code, body["ok"], body["found"]) == (200, True, False)
+    assert fake.calls[0][0] == ["ghost"]
 
 
 def test_delete_refuses_a_session_that_is_mid_reply(app_server, monkeypatch):
