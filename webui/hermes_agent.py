@@ -79,6 +79,10 @@ AGENT_CACHE_MAX = max(1, int(
     os.environ.get("DEEPWIKI_AGENT_CACHE_MAX", os.environ.get("BUDA_AGENT_CACHE_MAX", "25"))
 ))
 
+# How many tool-calling rounds one turn may take before hermes stops it. Its
+# own default is 90; see the note where this is passed in build_agent.
+MAX_TOOL_ITERATIONS = max(1, int(os.environ.get("DEEPWIKI_MAX_TOOL_ITERATIONS", "20")))
+
 
 class _Db:
     """`SessionDB`, opened once. Import is lazy so this module can be imported
@@ -350,6 +354,16 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         "session_db": _Db.get(),
         "enabled_toolsets": toolsets or None,
         "mcp_server_names": mcp_servers or None,
+        # A CEILING ON THE TOOL LOOP, because a turn must end where someone is
+        # watching it. hermes defaults to 90 iterations; at the ~25 s an
+        # iteration costs on these engines that is over half an hour of a
+        # conversation showing 回复中… and producing nothing. Observed, not
+        # feared: a code question ran 30+ searches with `out` steady at ~200
+        # tokens a call — every reply a tool call, never prose — and was still
+        # going when it was killed. Bounding it does not make the model answer,
+        # but it converts an unbounded grind into a turn that ENDS and says it
+        # hit the ceiling, which is a thing a reader can act on.
+        "max_iterations": MAX_TOOL_ITERATIONS,
     }
     return AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
 
