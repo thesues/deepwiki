@@ -109,6 +109,14 @@ function loadMermaid() {
       // 2332×3537, which is what the same source gives in a stylesheet-free
       // iframe. Squeezed back into the column it was an unreadable grey smear.
       // `<br/>` still breaks lines — mermaid splits SVG labels into tspans.
+      //
+      // BOTH keys, and the TOP-LEVEL one is the one that works. Setting only
+      // `flowchart.htmlLabels` changes nothing in mermaid 11 — measured on the
+      // live page: flowchart-only kept the foreignObject and the 17443x48754
+      // layout, top-level alone gave 2332x3537. Config is also sticky across
+      // `initialize` calls, so an experiment that sets the top-level flag once
+      // makes every later flowchart-only call look like it worked.
+      htmlLabels: false,
       flowchart: { htmlLabels: false },
     });
     return m;
@@ -194,7 +202,8 @@ async function restyleMermaid() {
   if (!m) return;
   m.initialize({
     startOnLoad: false, securityLevel: "strict",
-    theme: mermaidTheme(), flowchart: { htmlLabels: false },
+    theme: mermaidTheme(),
+    htmlLabels: false, flowchart: { htmlLabels: false },
   });
   for (const fig of figs) {
     try {
