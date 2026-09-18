@@ -362,12 +362,30 @@ spec:
             # k=1 can still land on a 17 KB function while a low k throws away
             # the cheap, relevant hits.
             #
+            # code-autumn-rs is PINNED TO mm2, and that is a measurement, not
+            # a preference. The same question ("写数据的流程，用 mermaid 画个
+            # 流程图"), same tools, same ceiling, same brief:
+            #
+            #   dsv4-flash  30+ tool calls, `out` steady at ~200 tokens a call
+            #               — every reply a tool call, never prose — still
+            #               going when it was killed, twice.
+            #   mm2         15 iterations, 28 tool calls, then an answer:
+            #               bind_key -> resolve_key -> the 64 KiB branch to
+            #               MSG_BATCH_PUT vs MSG_PUT_BULK -> partition_loop,
+            #               as a mermaid flowchart.
+            #
+            # It is not that dsv4-flash is slow at this; it does not converge.
+            # The cost of the pin: mm2 admits ONE turn at a time, so two people
+            # reading code queue. That is the right trade against an answer
+            # that never arrives — and `allowed_endpoint` redirects rather than
+            # refusing, so a stale `endpoint` in a client is not an error.
+            #
             # buda is the one profile that legitimately inherits
             # CHAT_DIRECTIVE: that brief was written for it.
             - name: DEEPWIKI_PROFILES
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"]},
-                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"],
+                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"],"endpoints":["mm2"],
                   "directive":"你是 autumn-rs（Rust 分布式存储）代码库的阅读助手，依据已索引的代码回答。\n- 先想清楚要找什么再检索，够用就停下来作答。\n- search_code 的结果会按长度裁剪：命中列表是完整的，但过长的函数体只给开头。需要完整实现时，对该命中的 id 用 get_symbol，不要用再搜一次的方式去拿。\n- 顺着 get_symbol / find_callers / find_callees 的调用关系看，比反复发起宽泛的 search_code 有效得多；重复检索会占满上下文，让这轮对话无法收尾。\n- 引用代码时给出文件路径与符号名。索引里没有的，直说没有，不要猜。\n- 被要求画流程图/架构图时，直接用 mermaid 或文字给出，不要为了画图再去检索。\n- 简明作答，通常几段以内。"},
                  {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"],
                   "directive":"你是一个通用助手。按需使用工具，不确定的地方直说，不要编造。简明作答。"}]

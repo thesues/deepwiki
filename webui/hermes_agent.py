@@ -81,7 +81,17 @@ AGENT_CACHE_MAX = max(1, int(
 
 # How many tool-calling rounds one turn may take before hermes stops it. Its
 # own default is 90; see the note where this is passed in build_agent.
-MAX_TOOL_ITERATIONS = max(1, int(os.environ.get("DEEPWIKI_MAX_TOOL_ITERATIONS", "20")))
+#
+# 40, and the number is measured, not chosen for roundness. The one run that
+# ANSWERED this corpus's hardest question so far — "写数据的流程，用 mermaid
+# 画个流程图", on mm2 — took 15 iterations and 28 tool calls. A ceiling of 20
+# was the first value here and it is too tight: five iterations of headroom
+# over a known-good run means a slightly harder question gets cut off just
+# before it answers, and the reader is told the agent gave up on something it
+# could have finished. A ceiling exists to end a grind, not to clip a working
+# answer, so it belongs well above the working case: 40 still bounds the worst
+# case at ~13 minutes instead of the 37 that 90 allows.
+MAX_TOOL_ITERATIONS = max(1, int(os.environ.get("DEEPWIKI_MAX_TOOL_ITERATIONS", "40")))
 
 
 class _Db:
