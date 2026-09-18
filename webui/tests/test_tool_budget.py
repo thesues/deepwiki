@@ -31,12 +31,15 @@ def test_the_giant_hit_is_trimmed_and_the_others_survive():
     and still admit the giant one; trimming BODIES bounds the worst case and
     keeps the list of what was found.
     """
-    raw = json.dumps(_hits(17396, 485, 400, 223))
+    raw = json.dumps(_hits(17396, 150, 120, 80))
     out = tb.shrink("search_code", raw)
     doc = json.loads(out)
     assert len(doc) == 4, "every hit must survive; the list is what the model reasons over"
-    assert len(doc[0]["source"]) < 2000, "the giant body must be cut"
-    assert doc[1]["source"] == "x" * 485, "a small body must not be touched"
+    assert len(doc[0]["source"]) < tb.MAX_SOURCE_CHARS + 200, "the giant body must be cut"
+    assert doc[1]["source"] == "x" * 150, (
+        "a body already under the cap must not be touched — at 200 chars that is "
+        "a signature, which is what a shortlist entry is for"
+    )
     assert "get_symbol" in doc[0]["source"], (
         "a trim must name the tool that fetches the rest, or the model just searches again"
     )
@@ -107,12 +110,13 @@ def test_a_wrapped_result_is_trimmed_structurally_not_chopped():
     """The point of recognising the wrapper: the trim stays structural, so
     what the model receives still parses."""
     out = tb.shrink("search_code",
-                    json.dumps({"result": json.dumps(_hits(17396, 485)),
+                    json.dumps({"result": json.dumps(_hits(17396, 150)),
                                 "structuredContent": None}))
     body = out.split("\n…")[0]
     doc = json.loads(body)
     assert isinstance(doc, list) and len(doc) == 2
-    assert len(doc[0]["source"]) < 2000 and doc[1]["source"] == "x" * 485
+    assert len(doc[0]["source"]) < tb.MAX_SOURCE_CHARS + 200
+    assert doc[1]["source"] == "x" * 150
 
 
 def test_a_wave_of_calls_shares_one_budget():

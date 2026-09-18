@@ -38,8 +38,10 @@ from collections import OrderedDict
 
 log = logging.getLogger("deepwiki.tool_budget")
 
-# The whole result, after trimming. ~1K tokens.
-MAX_RESULT_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_CHARS", "4000"))
+# The whole result, after trimming. Sized to hold a FULL shortlist of trimmed
+# hits — 8 of them cost ~3,200 chars at the body cap below — because dropping
+# hits loses the one thing the result is for.
+MAX_RESULT_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_CHARS", "3500"))
 
 # WHAT ONE WAVE OF TOOL CALLS MAY SPEND, ALL RESULTS TOGETHER.
 #
@@ -54,10 +56,23 @@ MAX_RESULT_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_CHARS", "4000"))
 # tool call produced by one model response carries the same one
 # (agent/tool_executor.py). So the budget is per wave, exactly, with no
 # guessing from timestamps.
-MAX_WAVE_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_WAVE_CHARS", "12000"))
-# One hit's body. Enough for a signature and the shape of a function; the rest
-# is one get_symbol away.
-MAX_SOURCE_CHARS = int(os.environ.get("DEEPWIKI_MAX_HIT_SOURCE_CHARS", "900"))
+MAX_WAVE_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_WAVE_CHARS", "8000"))
+# One hit's body: A SIGNATURE, NOT A SNIPPET.
+#
+# A search result answers "where do I look", and `get_symbol` answers "what
+# does it say". 900 characters was still shipping code, and the measurement
+# says what that buys — the same 8-hit result from this index, by body cap:
+#
+#     cap    whole result        the first 200 chars of a hit are, in practice:
+#       0    1,712 ch (~428 tok)   pub async fn ingest_path(
+#     200    3,183 ch (~795 tok)       store: &MemoryStore, emb: Option<&Embedder>,
+#     400    4,504 ch (~1.1K tok)      root: &Path,
+#     900    6,563 ch (~1.6K tok)  ) -> Result<(usize, usize, usize)> {
+#
+# 200 characters is the whole signature, which is what a caller judges
+# relevance on; the 700 after it are the body it did not ask for. Halving the
+# result costs nothing it was using.
+MAX_SOURCE_CHARS = int(os.environ.get("DEEPWIKI_MAX_HIT_SOURCE_CHARS", "200"))
 
 # The field the corpus tools return a symbol's body in, and the id that fetches
 # it whole.
