@@ -245,6 +245,16 @@ spec:
             # a key inline still works and is still a bad idea: anyone who can
             # read this Deployment can read the key.
             #
+            # `maxConcurrent` on a hosted endpoint is a FLOOR, not a
+            # measurement: Ark's real per-account limit is not published here,
+            # 64 is what it is known to be at least, and the two local
+            # entries stay at 1 because those are single-GPU engines running
+            # `--max-running-requests 1`. Raising it is not free — the turn
+            # pool is sized to the SUM and its daemon threads are started
+            # eagerly (turns.py `_TurnPool`), so this list now spawns 66 at
+            # boot. They idle on a queue and cost no CPU; the number is worth
+            # knowing before someone adds a fourth hosted model.
+            #
             # `context` is the WINDOW and `max_tokens` is what one answer may
             # produce. They are different numbers and neither implies the
             # other: doubao-seed-evolving takes 1M in and writes at most 128K.
@@ -261,7 +271,7 @@ spec:
                   "context":65536},
                  {"key":"doubao","label":"Doubao-Seed","model":"doubao-seed-evolving",
                   "base_url":"https://ark.cn-beijing.volces.com/api/v3",
-                  "api_key_env":"ARK_API_KEY","maxConcurrent":4,
+                  "api_key_env":"ARK_API_KEY","maxConcurrent":64,
                   "context":1048576,"max_tokens":131072}]
             # The two model ids are the served names each engine reports on
             # /v1/models (the --model path's basename): dsv4-flash-ftw's pod was
