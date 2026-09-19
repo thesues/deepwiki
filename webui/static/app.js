@@ -62,11 +62,79 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
     node.setAttribute("rel", "noopener noreferrer");
   }
 });
+// A diagram the agent drew lands at /artifacts/<name>.html, and the answer is
+// supposed to end with a link to it. The first one that actually worked came
+// back as `/artifacts/autumn-rs-architecture.html` in a CODE SPAN — the path,
+// correct, and not clickable. Telling the model to write a link is worth
+// doing and is not worth relying on: the path has one form, this end can
+// recognise it, and then it does not matter which shape the model chose.
+//
+// Code spans and bare text only. Anything already inside an <a> is left
+// alone, and so is a <pre> block — a path quoted inside a command is being
+// shown, not offered.
+// Both spellings, because the model has two true ones to choose from: the
+// URL the reader needs, and the filesystem path it just wrote to. The first
+// delivery said `/opt/data/artifacts/autumn-rs-architecture.html` — correct,
+// and not a link. Nested segments are allowed: a diagram lands in the
+// session's own directory, so the path carries one.
+const ARTIFACT_RE = /(?:\/opt\/data)?\/artifacts\/(?:[\w.-]+\/)*[\w.-]+\.(?:html|svg|png)/;
+const ARTIFACT_PATH = new RegExp(`^${ARTIFACT_RE.source}$`);
+const artifactHref = (p) => p.replace(/^\/opt\/data/, "");
+const artifactLabel = (p) => artifactHref(p).split("/").pop();
+// New-tab + no opener, set HERE and not by the DOMPurify hook that does it
+// for every other link: these anchors are built after sanitize returns, so
+// that hook never sees them. Measured by a target that came back empty.
+const artifactAnchor = (path) => {
+  const a = document.createElement("a");
+  a.href = artifactHref(path);
+  a.textContent = artifactLabel(path);
+  a.className = "artifact-link";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+};
+const linkifyArtifacts = (root) => {
+  for (const code of [...root.querySelectorAll("code")]) {
+    const text = code.textContent.trim();
+    if (!ARTIFACT_PATH.test(text)) continue;
+    if (code.closest("a, pre")) continue;
+    code.replaceWith(artifactAnchor(text));
+  }
+  // Plain childNodes recursion rather than a TreeWalker: this same function
+  // runs under the tests' hand-built DOM, which has no NodeFilter, and the
+  // walk is four lines either way.
+  const hits = [];
+  const collect = (node) => {
+    for (const child of [...(node.childNodes || [])]) {
+      if (child.nodeType === 3) {
+        if (ARTIFACT_RE.test(child.nodeValue || "")) hits.push(child);
+      } else if (child.nodeType === 1 && !/^(A|PRE|CODE)$/.test(child.tagName)) {
+        collect(child);
+      }
+    }
+  };
+  collect(root);
+  for (const n of hits) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    const re = new RegExp(ARTIFACT_RE.source, "g");
+    for (let m = re.exec(n.nodeValue); m; m = re.exec(n.nodeValue)) {
+      frag.append(n.nodeValue.slice(last, m.index));
+      frag.append(artifactAnchor(m[0]));
+      last = m.index + m[0].length;
+    }
+    frag.append(n.nodeValue.slice(last));
+    n.replaceWith(frag);
+  }
+  return root;
+};
+
 const renderMD = (src) => {
   const box = document.createElement("div");
   box.innerHTML = DOMPurify.sanitize(
     marked.parse(src || "", { gfm: true, breaks: true }),
   );
+  linkifyArtifacts(box);
   return box.innerHTML;
 };
 

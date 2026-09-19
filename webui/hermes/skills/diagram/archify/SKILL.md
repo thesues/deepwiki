@@ -21,17 +21,37 @@ know, and every one of them has cost a retry when guessed:
    commands as `cd /opt/data/skills/diagram/archify && node bin/archify.mjs …`
    or spell the path out; `node bin/archify.mjs` alone will not find itself.
 
-2. **Where the diagram goes.** Write the candidate JSON and the delivered
-   HTML under `/opt/data/artifacts/`. Nothing else is served, and nothing
-   there is cleaned up for you — name files so a reader can tell them apart,
-   e.g. `fuse-read-path.architecture.html`.
+2. **Where the diagram goes: right where you are standing.** Your terminal
+   starts in `/opt/data/artifacts/<this session>/`, a directory that belongs
+   to this conversation alone. Write the candidate JSON and the delivered
+   HTML there with plain relative names — `read-path.architecture.json`,
+   `read-path.architecture.html`.
 
-3. **How the reader opens it.** End your answer with a plain markdown link to
-   `/artifacts/<filename>`, which the web UI serves in a new tab:
+   It is per-session because the names are not unique: two conversations
+   asked for "the autumn-rs architecture" would pick the same filename, and
+   the second delivery would replace the first — leaving the older
+   transcript's link serving a picture nobody in it drew.
+
+   Do not write to `/opt/data/artifacts/` itself, and do not invent a path
+   somewhere else: the web UI serves that tree and nothing besides.
+
+3. **How the reader opens it.** The URL is your working directory with
+   `/opt/data` taken off the front. Get it exactly, do not reconstruct it:
+
+   ```bash
+   echo "${PWD#/opt/data}/read-path.architecture.html"
+   # -> /artifacts/20260919_203612_ab12cd/read-path.architecture.html
+   ```
+
+   End your answer with a markdown LINK to that path:
 
    ```
-   [autumn-fuse 读路径架构图](/artifacts/fuse-read-path.architecture.html)
+   [autumn-rs 读路径架构图](/artifacts/20260919_203612_ab12cd/read-path.architecture.html)
    ```
+
+   A markdown link, not `a code span` — the first delivery that worked came
+   back as the bare path in backticks, which renders as text a reader cannot
+   press. (The UI now turns such a path into a link anyway; write the link.)
 
    Do NOT paste the HTML, the SVG, or the JSON into the answer. The artifact
    is 700-800 KB; the chat window is not where it goes, which is the whole

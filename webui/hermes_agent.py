@@ -277,6 +277,11 @@ def profile_of_source(source: str | None) -> str | None:
     return key or None
 
 
+def _artifacts_root() -> Path:
+    """`HERMES_HOME/artifacts`, the one directory the web UI serves."""
+    return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
+
+
 def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = None) -> Any:
     """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
 
@@ -322,10 +327,36 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     # carrying tools its replacement dropped.
     toolsets, mcp_servers = scope_agent_tools(profile, toolsets, mcp_servers)
 
+    # Where this session's terminal starts, and the reason it is per-session.
+    #
+    # A drawn diagram is written by a shell command to a path the model chose,
+    # and two conversations asking for "the autumn-rs architecture" choose the
+    # same name. The second write then replaces the first, and the link in the
+    # older transcript quietly starts serving someone else's picture — the
+    # failure has no error and no moment you could have caught it.
+    #
+    # hermes' per-task override takes `cwd` and nothing else (no env keys:
+    # tools/terminal_tool.py register_task_env_overrides supports
+    # modal_image / docker_image / cwd), so the session id has to arrive as
+    # the working directory itself. It doubles as the answer to "where do I
+    # put this": the relative path the model types lands in its own folder,
+    # and the URL is that folder minus /opt/data.
+    #
+    # A profile that declares a workspace keeps it — that one is a corpus root
+    # and belongs to the project, not to the conversation.
     if profile is not None and profile.workspace:
         from profiles import register_workspace_cwd
 
         register_workspace_cwd(session_id, profile.workspace)
+    else:
+        from profiles import register_workspace_cwd
+
+        session_dir = _artifacts_root() / session_id
+        try:
+            session_dir.mkdir(parents=True, exist_ok=True)
+            register_workspace_cwd(session_id, str(session_dir))
+        except OSError as e:  # noqa: BLE001 -- a turn without a scratch dir still runs
+            log.error("could not create %s: %s", session_dir, e)
 
     candidate = {
         # The PROJECT MARK, and the reason it rides on `platform` rather than
