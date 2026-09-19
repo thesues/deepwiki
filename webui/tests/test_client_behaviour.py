@@ -12,8 +12,10 @@ import asyncio
 import json
 import re
 import sys
+import types
 from pathlib import Path
 import pytest
+import yaml
 from aiohttp import web
 
 def turn(app, sid: str | None = None) -> asyncio.Task:
@@ -641,3 +643,62 @@ def test_an_empty_keep_list_prunes_nothing(tmp_path):
     ensure_mcp_server(cfg, "memory", "http://a/mcp")
     assert prune_mcp_servers(cfg, []) == []
     assert "memory" in yaml.safe_load(cfg.read_text())["mcp_servers"]
+
+
+# ── main() actually assembles ───────────────────────────────────────────────
+
+def test_main_gets_all_the_way_to_serving(tmp_path, monkeypatch):
+    """Run the REAL main() with the network ends stubbed.
+
+    Every piece main() wires had unit tests of its own and all of them passed
+    while the app could not start: `servers = mcp_servers_from_env()` at the
+    top of the function was rebound 80 lines below to the config's
+    `mcp_servers` MAPPING, so the UI's server line indexed a dict by 0 and
+    died with KeyError. Both halves read correctly on their own; only the
+    assembly was wrong, and nothing was assembling it but production.
+
+    So this test asserts almost nothing about behaviour. It asserts that the
+    function RUNS — which is the property that was missing.
+    """
+    import main as main_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MCP_SERVERS", "memory=http://memory-mcp:5100/mcp,code-index=http://ci:5101/mcp")
+    monkeypatch.setenv("LLM_BASE_URL", "http://llm:1919/v1")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--host", "127.0.0.1", "--port", "0"])
+
+    # hermes stands in, and it HAS to: the rebind that broke startup lives
+    # inside `try: from tools.mcp_tool import register_mcp_servers`, so on a
+    # machine without hermes that import fails, the except branch runs, and
+    # the shadowing assignment never happens. A version of this test without
+    # these stubs passes against the broken code — which is worth more as a
+    # warning than as a comment: an assembly test that does not assemble the
+    # production imports is testing a different program.
+    mcp_tool = types.ModuleType("tools.mcp_tool")
+    mcp_tool.register_mcp_servers = lambda servers: [f"mcp_{n}_search" for n in servers]
+    tools_pkg = types.ModuleType("tools")
+    tools_pkg.mcp_tool = mcp_tool
+    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_conf = types.ModuleType("hermes_cli.config")
+    hermes_conf.load_config = lambda: {"mcp_servers": {"memory": {}, "code-index": {}}}
+    hermes_cli.config = hermes_conf
+    for name, mod in (("tools", tools_pkg), ("tools.mcp_tool", mcp_tool),
+                      ("hermes_cli", hermes_cli), ("hermes_cli.config", hermes_conf)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    served = {}
+
+    def fake_serve(app, host, port):
+        served["app"] = app
+        raise SystemExit(0)      # stop before the loop; everything is built by now
+
+    monkeypatch.setattr(main_mod, "serve", fake_serve)
+    monkeypatch.setattr(main_mod, "_sessions_module", lambda: None)
+
+    with pytest.raises(SystemExit):
+        main_mod.main()
+    assert served["app"] is not None
+    # The config the app writes for hermes names both servers, in order.
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert list(cfg["mcp_servers"]) == ["memory", "code-index"]
