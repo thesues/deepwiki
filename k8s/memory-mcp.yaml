@@ -150,19 +150,17 @@ spec:
               # pod that reschedules at 3am spends that time rebuilding an
               # index it already had.
               #
-              # It is on NOW for one roll, because the document ids changed.
-              # They used to be `mnt/autumn/docs/buda/x.md` — absolute, minus
-              # the leading slash, which display_path stripped along with a cwd
-              # of "/" — and nothing could read them back: read_file resolved
-              # that against its own root and reported the file missing, three
-              # of which tripped hermes' MCP circuit breaker and took
-              # search_docs down with it. The ids are `/mnt/...` from
-              # autumn-rs 3ad5170 on, so the chunks stored under the old
-              # spelling are unreachable duplicates that search would still
-              # return. TAKE THIS FLAG BACK OFF once the pod has come up
-              # healthy and read_file serves a document.
+              # It was on for exactly one roll, at autumn-rs 3ad5170. The
+              # document ids changed there: they used to be
+              # `mnt/autumn/docs/buda/x.md` — absolute, minus the leading
+              # slash, which display_path stripped along with a cwd of "/" —
+              # and nothing could read them back, three misses in a row being
+              # enough to trip hermes' MCP circuit breaker and take
+              # search_docs down with the tool that actually failed. The wipe
+              # cleared 2.9M keys written under the old spelling and the
+              # re-ingest cost 167 s for 21 files / 7433 chunks; that is the
+              # price of turning this on, and the reason it is off again.
               exec memory-mcp "$M" \
-                --reset \
                 --no-index \
                 --docs "$MP/docs/buda" \
                 --tenant buda \
