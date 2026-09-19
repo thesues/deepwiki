@@ -67,6 +67,10 @@ know, and every one of them has cost a retry when guessed:
    are at `/opt/data/skills/diagram/archify/`, and `cat` reports a wrong
    path in a way you can act on.
 
+   (This skill answers to `archify` — `skill_view("diagram")` is the
+   category and resolves to nothing, which cost a call before this line
+   existed. `diagram:archify` works too; the bare category never does.)
+
 7. **Do not invent geometry. Rename a skeleton that already validates.**
    This is where the first real attempt died: eleven components with
    hand-written `pos: [40, 100]`, fifteen connections each carrying
