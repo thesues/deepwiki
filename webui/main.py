@@ -184,8 +184,11 @@ def main() -> None:
     # names, the same "first entry wins" rule `load_endpoints` and
     # `build_profiles` use. A profile then narrows the agent to the server
     # its corpus lives on (profiles.py scope_agent_tools rule 1).
-    servers = mcp_servers_from_env()
-    for name, url in servers:
+    # NOT `servers`: that name is taken further down for the config's own
+    # mcp_servers mapping, and the rebind is invisible here — the UI's server
+    # line then indexed a dict by 0 and the process died on startup.
+    declared_servers = mcp_servers_from_env()
+    for name, url in declared_servers:
         try:
             from hermes_config import ensure_mcp_server
 
@@ -199,7 +202,7 @@ def main() -> None:
     try:
         from hermes_config import prune_mcp_servers
 
-        prune_mcp_servers(hermes_cfg, [n for n, _ in servers])
+        prune_mcp_servers(hermes_cfg, [n for n, _ in declared_servers])
     except Exception as e:  # noqa: BLE001
         log.error("could not prune retired mcp servers: %s", e)
 
@@ -287,7 +290,8 @@ def main() -> None:
         auth_pass=os.environ.get("AUTH_PASS", ""),
         sessions=_sessions_module(),
         mcp=(
-            {"name": servers[0][0], "url": servers[0][1]} if servers else None
+            {"name": declared_servers[0][0], "url": declared_servers[0][1]}
+            if declared_servers else None
         ),
     )
 
