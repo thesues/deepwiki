@@ -440,6 +440,25 @@ spec:
             # then narrowed per profile by scope_agent_tools.
             - name: MEMORY_MCP_EXTRA
               value: "code-index=http://code-index-mcp:5101/mcp"
+            # web_search / web_extract need a backend; the toolset alone is a
+            # tool that errors on every call. `web.backend` in config.yaml is
+            # empty, and an empty value does NOT mean "off" -- tools/web_tools
+            # walks the env for a usable key and, finding none, returns the
+            # literal string "firecrawl" for backward compat. So an unconfigured
+            # deployment reports a backend it has no key for, and the tool
+            # answers with Firecrawl's "log in to Nous Portal" billing notice.
+            #
+            # This env alone is the whole configuration: TAVILY_API_KEY is the
+            # FIRST candidate that walk checks, so nothing needs to be written
+            # to the PVC's config.yaml -- and nothing on the PVC can go stale
+            # against it either. Tavily because this cluster's egress reaches
+            # api.tavily.com; api.search.brave.com and duckduckgo.com both time
+            # out from here, which rules out the two no-key backends.
+            # `optional: true`: without the secret the toolset degrades to the
+            # error it already returns today, rather than blocking startup.
+            - name: TAVILY_API_KEY
+              valueFrom:
+                secretKeyRef: { name: hermes-webui-web, key: tavily-api-key, optional: true }
             # Single-user HTTP Basic, currently OFF: the `hermes-webui-auth`
             # secret does not exist, `optional: true` leaves both unset, and an
             # empty AUTH_USER bypasses the check on every path. Kept wired so
