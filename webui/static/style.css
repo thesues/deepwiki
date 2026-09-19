@@ -294,10 +294,21 @@ header h1 em { color:var(--accent); font-style:italic; }
 .md hr { border:0; border-top:1px solid var(--border); margin:0.9rem 0; }
 
 /* ---------- approval ---------- */
+/* The dock sits between the transcript and the composer, so the question the
+   agent is blocked on is next to the box where the answer goes and cannot be
+   scrolled away by the narration that continues above it. It takes the
+   accent border because it is the only thing on this page that stops until
+   it is answered. */
+#approval-dock { flex:none; padding:0.6rem 1rem 0; }
+#approval-dock[hidden] { display:none; }
+#approval-dock .perm { background:var(--surface-raised);
+                       border:1px solid var(--accent-dim);
+                       border-radius:var(--radius); padding:0.7rem 0.85rem; }
+#approval-dock .perm + .perm { margin-top:0.5rem; }
 .bubble.perm { background:var(--surface-raised); border:1px solid var(--accent-dim);
                border-radius:var(--radius); padding:0.7rem 0.85rem; }
 .bubble.perm.done { border-color:var(--border); opacity:.6; }
-.perm-title { font-size:0.8rem; margin-bottom:0.6rem; }
+.perm-title { font-size:0.8rem; margin-bottom:0.6rem; line-height:1.6; }
 .perm-opts { display:flex; gap:0.5rem; flex-wrap:wrap; }
 .opt { padding:0.3rem 0.9rem; font-size:0.74rem; }
 

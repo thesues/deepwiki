@@ -862,13 +862,18 @@ function renderDetail(pre, text, full) {
 function showApproval(a) {
   if (document.querySelector(`[data-perm="${a.id}"]`)) return;   // already on screen
   S.awaitingPerm = true;
-  const wrap = el("div", "msg bot");
-  const card = el("div", "bubble perm");
+  // Docked above the composer, not appended to the transcript. The first
+  // build put it in the message list, where it sat at the bottom for exactly
+  // as long as nothing else arrived — and then the agent's own narration
+  // scrolled the question it was waiting on off the top of the screen.
+  const dock = $("#approval-dock");
+  const card = el("div", "perm");
   card.dataset.perm = a.id;
   card.appendChild(el("div", "perm-title", a.title || "需要确认"));
   const opts = el("div", "perm-opts");
   (a.options || []).forEach((o) => {
     const b = el("button", "btn opt", o.name || o.optionId);
+    b.dataset.opt = o.optionId;
     b.onclick = () => answerApproval(a.id, o.optionId, card);
     opts.appendChild(b);
   });
@@ -878,15 +883,40 @@ function showApproval(a) {
     opts.appendChild(b);
   }
   card.appendChild(opts);
-  wrap.appendChild(card);
-  $("#messages").appendChild(wrap);
+  dock.appendChild(card);
+  dock.hidden = false;
   status("等待你的确认");
   scroll();
 }
 
+// The dock holds exactly the question still open. Emptying it is its own
+// function because three paths end an approval — answered, expired, and the
+// conversation being left — and a card left docked would sit above the box
+// of a conversation it does not belong to.
+function clearApprovalDock() {
+  const dock = $("#approval-dock");
+  if (!dock) return;
+  dock.replaceChildren();
+  dock.hidden = true;
+}
+
 async function answerApproval(id, optionId, card) {
   S.awaitingPerm = false;
-  if (card) { card.classList.add("done"); card.querySelector(".perm-opts").remove(); }
+  // The answer leaves a line in the TRANSCRIPT and the dock empties: what was
+  // decided belongs to the history of the conversation, the thing still being
+  // asked belongs next to the box. One of them scrolls, the other must not.
+  if (card) {
+    const title = card.querySelector(".perm-title")?.textContent || "";
+    const chosen = optionId
+      ? [...card.querySelectorAll(".perm-opts .opt")].find((b) => b.dataset.opt === optionId)?.textContent
+      : "取消";
+    addMsg("note", `${chosen || "已回应"} — ${title}`);
+    card.remove();
+    const dock = $("#approval-dock");
+    if (dock && !dock.children.length) dock.hidden = true;
+  } else {
+    clearApprovalDock();
+  }
   await fetch("/api/approval/answer", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, optionId }),
@@ -1004,6 +1034,7 @@ function apply(ev, from) {
     case "approval": showApproval(ev); break;
     case "approval_expired":
       S.awaitingPerm = false;
+      clearApprovalDock();
       finalizeSeg(); addMsg("note", "审批超时，本次操作已取消");
       break;
     case "note": finalizeSeg(); addMsg("note", ev.text); break;
@@ -1103,6 +1134,7 @@ function endTurn(error, owner, from) {
     setBusy(false);
     S.tools.clear();
     S.awaitingPerm = false;
+    clearApprovalDock();
     if (error) addMsg("error", `⚠ ${error}`);
   }
   if (shown) {
@@ -1363,6 +1395,7 @@ async function openSession(id) {
   // it, because the approval poll stops with the busy state. Returning to that
   // conversation replays the approval and raises it again.
   S.awaitingPerm = false;
+  clearApprovalDock();
   clearFresh();
   S.ownStream = null;       // whatever we started, we are not looking at it now
   // Leaving a pending 新会话 for a real conversation. Left raised, the next

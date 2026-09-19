@@ -56,6 +56,11 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
         <span class="count" id="elapsed"></span>
       </div>
       <div id="messages"></div>
+      <!-- A pending approval docks HERE, between the transcript and the box,
+           and not in the transcript: the agent keeps streaming while it waits,
+           and a card appended to the messages is pushed out of view by the
+           very work it is blocking. -->
+      <div id="approval-dock" hidden></div>
       <form id="composer">
         <!-- The textarea + send sit in one row; the pickers live in a
              SMALL-FONT ROW BELOW the box (deepwiki/Devin style): the project

@@ -121,6 +121,9 @@ function page() {
   const chat = mk("section", "", "card chat", body);
   mk("span", "spin", "", chat); mk("span", "run-status", "", chat); mk("span", "elapsed", "", chat);
   mk("div", "messages", "", chat);
+  // Mirrors index.html: a pending approval docks between the transcript and
+  // the composer so the narration cannot scroll it away.
+  mk("div", "approval-dock", "", chat);
   const form = mk("form", "composer", "", chat);
   mk("span", "profile-badge", "", form).hidden = true;
   mk("select", "profile", "", form).hidden = true;
