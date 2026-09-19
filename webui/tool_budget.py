@@ -57,6 +57,30 @@ MAX_RESULT_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_CHARS", "3500"))
 # (agent/tool_executor.py). So the budget is per wave, exactly, with no
 # guessing from timestamps.
 MAX_WAVE_CHARS = int(os.environ.get("DEEPWIKI_MAX_TOOL_WAVE_CHARS", "8000"))
+
+# TOOLS WHOSE RESULT IS NOT CORPUS, AND MUST NOT BE CUT LIKE IT.
+#
+# This budget exists to stop a retrieval result from filling the window: a
+# search returns as much as the corpus has, and the model cannot know in
+# advance how much that is. A skill is the opposite on every count. It is a
+# document the OPERATOR shipped, its size is fixed and known, and it is the
+# instructions — cutting it does not cost detail, it removes the part that
+# says what to do.
+#
+# Measured, and it is the root of four failed attempts at one diagram:
+# `skill_view archify` logged `26352 -> 3527 chars (plain cut)`. The model
+# had never once seen the skill it was following. It invented coordinates
+# because the section saying not to was past the cut; it guessed filenames
+# because the list of them was past the cut; it repaired in a loop because
+# the stopping rule was past the cut. Every fix landed in text nobody read.
+#
+# The cap stays for everything else. `skills_list` is included because it is
+# the same kind of thing — a fixed inventory, not a query result.
+UNCAPPED_TOOLS = frozenset(
+    t.strip() for t in os.environ.get(
+        "DEEPWIKI_UNCAPPED_TOOLS", "skill_view,skills_list,skill_manage",
+    ).split(",") if t.strip()
+)
 # One hit's body: A SIGNATURE, NOT A SNIPPET.
 #
 # A search result answers "where do I look", and `get_symbol` answers "what
@@ -194,6 +218,15 @@ def shrink(tool_name: str, result, wave: str = ""):
     rather than assume it saw everything.
     """
     if not isinstance(result, str):
+        return result
+
+    # A skill passes through whole — see UNCAPPED_TOOLS. It does not draw on
+    # the wave either: one skill read is a bounded, deliberate act, and
+    # charging the wave for it would just push the cut onto whatever the model
+    # asked for alongside it.
+    if tool_name in UNCAPPED_TOOLS:
+        if len(result) > MAX_RESULT_CHARS:
+            log.info("tool %s: %d chars passed through (uncapped)", tool_name, len(result))
         return result
 
     # What this result may spend: its own cap, further reduced by whatever the

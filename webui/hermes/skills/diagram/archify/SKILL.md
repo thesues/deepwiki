@@ -10,6 +10,25 @@ metadata:
 
 # Archify
 
+## The whole job, in three commands
+
+```bash
+cd /opt/data/skills/diagram/archify
+node deployment/skeleton.mjs inventory examples/web-app.architecture.json   # what can be renamed
+node deployment/skeleton.mjs rename examples/web-app.architecture.json "$PWD_MAP" out.json
+node bin/archify.mjs deliver architecture out.json diagram.html --json
+```
+
+You choose a skeleton and write a rename map. You do NOT write `pos`,
+`size`, `route`, `via`, `fromSide` or `toSide` — every attempt to author
+those by hand has ended in a repair loop that never converged. Details and
+the reason are in point 7 below; read the whole of this section before the
+upstream text starts.
+
+Read files of this skill with the TERMINAL (`cat`, `node`). NOT with
+`mcp_code_index_read_file` — that tool reads an indexed code corpus on
+another machine and will tell you this skill's own files do not exist.
+
 ## This deployment (read this first)
 
 Upstream's text follows unchanged below. These five facts are what it cannot

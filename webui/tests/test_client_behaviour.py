@@ -702,3 +702,31 @@ def test_main_gets_all_the_way_to_serving(tmp_path, monkeypatch):
     # The config the app writes for hermes names both servers, in order.
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert list(cfg["mcp_servers"]) == ["memory", "code-index"]
+
+
+# ── the budget must not cut the instructions ────────────────────────────────
+
+def test_a_skill_is_never_truncated(monkeypatch):
+    """`skill_view archify` logged `26352 -> 3527 chars (plain cut)`: the
+    model had never seen the skill it was following, and four fixes in a row
+    landed in text past the cut. A skill is a document the operator shipped,
+    not a query result whose size the model could have controlled."""
+    import tool_budget
+
+    skill = "# Archify\n" + ("x" * 30_000)
+    assert tool_budget.shrink("skill_view", skill, wave="w1") == skill
+    assert tool_budget.shrink("skills_list", skill, wave="w1") == skill
+    # And reading one does not spend the wave for the tools beside it.
+    corpus = "y" * 30_000
+    trimmed = tool_budget.shrink("mcp_code_index_search_code", corpus, wave="w1")
+    assert len(trimmed) < len(corpus)
+    assert len(trimmed) > 1_000, "the wave should still have had room"
+
+
+def test_a_retrieval_result_is_still_capped():
+    import tool_budget
+
+    big = "z" * 30_000
+    out = tool_budget.shrink("mcp_memory_search_docs", big, wave="w2")
+    assert len(out) <= tool_budget.MAX_RESULT_CHARS + 200
+    assert "超出单次工具输出上限" in out
