@@ -47,7 +47,27 @@ know, and every one of them has cost a retry when guessed:
    `read_file` / `find_callers`, then author the JSON from what you read.
    `--repo-root` has nothing here to point at.
 
-6. **Do not invent geometry. Rename a skeleton that already validates.**
+6. **The files are named. Do not guess them.** `skill_view` failed twice on
+   invented paths (`schemas/flowchart-schema.json`, `examples/architecture.json`)
+   before this list existed. Every file that exists, by type:
+
+   | type | schema | skeletons to rename (pick the closest) |
+   |---|---|---|
+   | `architecture` | `schemas/architecture.schema.json` | `examples/production-deployment.architecture.json` (12 boxes, 4 boundaries), `examples/web-app.architecture.json` (10), `examples/checkout-platform.base.architecture.json` (8), `examples/brand-aware-delivery.architecture.json` (8) |
+   | `workflow` | `schemas/workflow.schema.json` | `examples/incident-response.workflow.json`, `examples/release-delivery.workflow.json`, `examples/agent-tool-call.workflow.json` |
+   | `sequence` | `schemas/sequence.schema.json` | `examples/cache-miss-request.sequence.json`, `examples/async-job-roundtrip.sequence.json` |
+   | `dataflow` | `schemas/dataflow.schema.json` | `examples/product-analytics.dataflow.json`, `examples/event-stream.dataflow.json` |
+   | `lifecycle` | `schemas/lifecycle.schema.json` | `examples/agent-run.lifecycle.json`, `examples/deployment-release.lifecycle.json` |
+
+   `schemas/common.schema.json` is shared by all five. There is no
+   `flowchart` type; a flow of steps is a `workflow`, a call chain is a
+   `sequence`.
+
+   Read them with `cat`, not `skill_view`: you have a terminal, the files
+   are at `/opt/data/skills/diagram/archify/`, and `cat` reports a wrong
+   path in a way you can act on.
+
+7. **Do not invent geometry. Rename a skeleton that already validates.**
    This is where the first real attempt died: eleven components with
    hand-written `pos: [40, 100]`, fifteen connections each carrying
    `fromSide`/`toSide`, and then a repair loop that could not converge —
@@ -71,7 +91,7 @@ know, and every one of them has cost a retry when guessed:
    Fewer boxes than the example? Delete the component AND its connections
    AND its mentions in `wraps` / `focus`. Leave the survivors where they sit.
 
-7. **Two repairs, then stop and say so.** Upstream's rule, and it is the one
+8. **Two repairs, then stop and say so.** Upstream's rule, and it is the one
    that matters here: if two consecutive rounds do not lower the objective
    error count, report the remaining diagnostics truthfully instead of
    trying again. A model that keeps nudging coordinates will burn a whole
