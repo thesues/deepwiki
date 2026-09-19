@@ -150,19 +150,23 @@ spec:
               # pod that reschedules at 3am spends that time rebuilding an
               # index it already had.
               #
-              # It was on for exactly one roll, at autumn-rs 3ad5170. The
-              # document ids changed there: they used to be
-              # `mnt/autumn/docs/buda/x.md` — absolute, minus the leading
-              # slash, which display_path stripped along with a cwd of "/" —
-              # and nothing could read them back, three misses in a row being
-              # enough to trip hermes' MCP circuit breaker and take
-              # search_docs down with the tool that actually failed. The wipe
-              # cleared 2.9M keys written under the old spelling and the
-              # re-ingest cost 167 s for 21 files / 7433 chunks; that is the
-              # price of turning this on, and the reason it is off again.
+              # It was on for one roll, at autumn-rs 7190693, because the
+              # ids changed there — and that was the last time they can. They
+              # used to be `/mnt/autumn/docs/buda/x.md`: readable, and still
+              # wrong, because `/mnt/autumn` is THIS pod's `--mountpoint` and
+              # it had no business inside 7433 stored keys. An id is the
+              # autumnfs path now (`docs/buda/x.md`), so nothing about where
+              # a client mounts can invalidate the index again. The wipe cost
+              # 2.9M keys and the re-ingest 168 s; that is what this flag
+              # costs EVERY restart, which is why it is off.
+              #
+              # `--index` takes an autumnfs directory, never a host path, and
+              # `--fs-root` is the one place the mountpoint appears. No
+              # `--code`: this corpus is prose, and the tree-sitter pass only
+              # speaks Rust.
               exec memory-mcp "$M" \
-                --no-index \
-                --docs "$MP/docs/buda" \
+                --index docs/buda \
+                --fs-root "$MP" \
                 --tenant buda \
                 --embed-url http://llama-embed:8080 \
                 --embed-model bge-m3 \
