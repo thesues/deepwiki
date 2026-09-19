@@ -84,15 +84,35 @@ async function boot() {
     themeBtn.onclick = () => {
       const root = document.documentElement;
       const next = root.dataset.theme === "light" ? "dark" : "light";
-      // The transition is armed only around the switch — left standing, it
+      const flip = () => {
+        if (next === "dark") delete root.dataset.theme;
+        else root.dataset.theme = "light";
+        try { localStorage.setItem("hermes.theme", next); } catch (_) {}
+        paint();
+      };
+      // A View Transition turns the switch into a diagonal wipe: the browser
+      // freezes the page, we flip the attribute, and the new palette is
+      // revealed over the old snapshot (style.css, ::view-transition-new).
+      // The whole animation lives in CSS — this only says WHEN the DOM
+      // changes, which is the one thing CSS cannot know.
+      //
+      // Two reasons to fall back. An older browser has no startViewTransition
+      // (Firefox shipped it well after Chrome), and a reader who asked for
+      // less motion gets the cross-fade instead — checked HERE and not only
+      // in the media query, because a transition that has already started
+      // cannot be called off, it can only run unanimated, which lands as a
+      // snap a quarter-second late.
+      if (typeof document.startViewTransition === "function" &&
+          !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document.startViewTransition(flip);
+        return;
+      }
+      // The cross-fade is armed only around the switch — left standing, it
       // makes every hover and the streaming caret lag (style.css .theming).
       root.classList.add("theming");
       clearTimeout(settle);
       settle = setTimeout(() => root.classList.remove("theming"), 380);
-      if (next === "dark") delete root.dataset.theme;
-      else root.dataset.theme = "light";
-      try { localStorage.setItem("hermes.theme", next); } catch (_) {}
-      paint();
+      flip();
     };
     paint();
   }

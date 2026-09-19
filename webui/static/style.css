@@ -78,6 +78,11 @@
      every line. PingFang was drawn for screens and keeps an even stroke. */
   --prose:'Instrument Serif',Georgia,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
   --ease:cubic-bezier(0.4,0,0.2,1);
+  /* Expo-out: nearly all of the distance in the first third of the duration,
+     then a long settle. What makes a 0.7s wipe read as instant-but-smooth
+     rather than slow. (deepwiki's stylesheet asks for `var(--expo-out)` and
+     never defines it anywhere, so their 0.7s silently runs on plain `ease`.) */
+  --ease-expo-out:cubic-bezier(0.16,1,0.3,1);
   color-scheme: dark;
 }
 
@@ -374,6 +379,55 @@ header h1 em { color:var(--accent); font-style:italic; }
 html.theming, html.theming * {
   transition:background-color .3s var(--ease), border-color .3s var(--ease),
              color .3s var(--ease), box-shadow .3s var(--ease);
+}
+
+/* THE SWITCH ITSELF, as a diagonal wipe — deepwiki's shape, and the reason
+   the cross-fade above is now only the fallback.
+   
+   A View Transition freezes the page into two snapshots, old and new. The old
+   one is parked at z-index -1 and does not move; the new one is revealed
+   through a `clip-path` polygon that starts as a hairline along one diagonal
+   and sweeps across. So the new palette wipes OVER the old one corner to
+   corner instead of every surface fading in place — the difference is that a
+   wipe has a direction and a leading edge, and a cross-fade is 300 ms of
+   everything being briefly the wrong colour.
+   
+   The direction names where you are GOING, matching the icon's logic: dark
+   arrives from the top-left, light retreats to the bottom-right. Which
+   keyframe runs is decided by [data-theme] AFTER the swap, so the selector is
+   simply the same one the palette uses.
+   
+   The 0.5 -> 1 opacity on the leading edge is what softens the boundary; a
+   hard polygon edge alone looks like a page tear.
+   
+   Guarded on prefers-reduced-motion, and the script skips startViewTransition
+   under the same query — a media query cannot cancel a transition that has
+   already begun, it can only leave it unanimated (which shows as a snap at the
+   END of the default 0.25 s rather than no transition at all). */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-group(root) {
+    animation-duration:.7s; animation-timing-function:var(--ease-expo-out);
+  }
+  /* The old page holds still underneath. Without this it cross-fades out on
+     the UA's default animation and the wipe edge washes out with it. */
+  ::view-transition-old(root) { animation:none; z-index:-1; }
+  ::view-transition-new(root) {
+    animation-name:reveal-dark; animation-duration:.7s;
+    animation-timing-function:var(--ease-expo-out);
+  }
+  html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-light; }
+}
+
+/* The polygons run OUTSIDE the box on purpose (-71%, 171%): the sweep has to
+   clear the corners, and a diagonal that stops at 100% leaves two triangles
+   of the old theme standing at the end. */
+@keyframes reveal-dark {
+  from { clip-path:polygon(50% -71%, -50% 71%, -50% 71%, 50% -71%); opacity:.5; }
+  to   { clip-path:polygon(50% -71%, -50% 71%, 50% 171%, 171% 50%); opacity:1; }
+}
+@keyframes reveal-light {
+  from { clip-path:polygon(171% 50%, 50% 171%, 50% 171%, 171% 50%); opacity:.5; }
+  to   { clip-path:polygon(171% 50%, 50% 171%, -50% 71%, 50% -71%); opacity:1; }
 }
 
 /* The home page's header is a title, not a toolbar: logo left, toggle hard
