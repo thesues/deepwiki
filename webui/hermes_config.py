@@ -325,9 +325,9 @@ def ensure_compression_model(config_path: Path, endpoints, min_context: int | No
 # `build_agent` resolves the toolsets with `resolve_toolsets()` (hermes' own
 # `_get_platform_tools`, which HONOURS `agent.disabled_toolsets`) and hands
 # the result to `AIAgent.__init__` directly. Trimming the toolset is now a
-# config.yaml edit — no patch, no env. The Dockerfile still runs
-# patch_acp_toolsets.py as belt-and-braces for the retired ACP path; it no
-# longer gates anything here.
+# config.yaml edit — no patch, no env. (The Dockerfile used to run a
+# `patch_acp_toolsets.py` against the adapter's hardcoded list; that script
+# went with the ACP path it patched.)
 #
 # What config.yaml IS still needed for: the same `mcp_servers` block both
 # names the `mcp-<name>` toolsets (the resolver appends them) and connects

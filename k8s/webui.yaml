@@ -272,12 +272,13 @@ spec:
             # file owns it after that.
             # The browser toolset's availability check will DOWNLOAD Chromium
             # to decide it is available -- elsewhere a fresh volume grew from
-            # 220 KB to 897 MB doing it. These stop that. They do NOT remove the
-            # browser tools themselves: the ACP path hardcodes its toolset (W9).
+            # 220 KB to 897 MB doing it. These stop that. They are belt to the
+            # toolset list's braces: the list below is what removes the browser
+            # tools, these keep the availability check from paying for them.
             - { name: HERMES_NO_DEP_INSTALL, value: "1" }
             - { name: HERMES_DISABLE_LAZY_INSTALLS, value: "1" }
-            # Needs the image's patch_acp_toolsets.py; without it this is
-            # ignored and the session keeps the full hermes-acp toolset.
+            # The name is ACP-era; the ACP path (and the image patch it needed)
+            # is gone, and main.py reads this as the first-boot seed below.
             # `mcp-<server>` toolsets are appended after this list, so
             # narrowing it cannot drop retrieval.
             #
