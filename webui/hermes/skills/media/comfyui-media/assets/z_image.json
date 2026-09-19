@@ -1,0 +1,126 @@
+{
+ "76_67": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "Surreal double exposure portrait, semi-transparent glass human silhouette filled with fresh flowers and green foliage, faceless, glossy royal blue nylon baseball cap & shiny royal blue puffer jacket, bird of paradise, white jasmine, light purple forget-me-nots, lush leaves through glass gaps, subtle glass light refraction, plain off-white minimalist background, soft studio lighting, high fashion editorial, hyperrealistic texture, reflective synthetic fabric, delicate translucent flower layers, vertical composition, sharp focus, 8K ultra detailed, neutral tones with bright blue & orange floral pops, botanical glass fashion art",
+   "clip": [
+    "76_62",
+    0
+   ]
+  }
+ },
+ "76_68": {
+  "class_type": "EmptySD3LatentImage",
+  "inputs": {
+   "width": [
+    "94",
+    0
+   ],
+   "height": [
+    "94",
+    1
+   ],
+   "batch_size": 1
+  }
+ },
+ "76_63": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  }
+ },
+ "76_62": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen_3_4b.safetensors",
+   "type": "lumina2",
+   "device": "default"
+  }
+ },
+ "76_65": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "76_69",
+    0
+   ],
+   "vae": [
+    "76_63",
+    0
+   ]
+  }
+ },
+ "76_70": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "shift": 3,
+   "model": [
+    "76_66",
+    0
+   ]
+  }
+ },
+ "76_66": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "z_image_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "76_71": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "76_62",
+    0
+   ]
+  }
+ },
+ "76_69": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 677498465340151,
+   "steps": 25,
+   "cfg": 4,
+   "sampler_name": "res_multistep",
+   "scheduler": "simple",
+   "denoise": 1,
+   "model": [
+    "76_70",
+    0
+   ],
+   "positive": [
+    "76_67",
+    0
+   ],
+   "negative": [
+    "76_71",
+    0
+   ],
+   "latent_image": [
+    "76_68",
+    0
+   ]
+  }
+ },
+ "94": {
+  "class_type": "ResolutionSelector",
+  "inputs": {
+   "aspect_ratio": "1:1 (Square)",
+   "megapixels": 1,
+   "multiple": 8
+  }
+ },
+ "95": {
+  "class_type": "SaveImageAdvanced",
+  "inputs": {
+   "images": [
+    "76_65",
+    0
+   ],
+   "filename_prefix": "png",
+   "format": "8-bit"
+  }
+ }
+}

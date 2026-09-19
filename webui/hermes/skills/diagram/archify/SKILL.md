@@ -6,6 +6,14 @@ metadata:
   version: "2.17"
   author: tt-a1i
   based_on: Cocoon-AI/architecture-diagram-generator (MIT, v1.0)
+  hermes:
+    # archify is a Node CLI — validate and deliver are commands, not markup.
+    # A profile without a terminal cannot run it, and hermes' gate keeps it
+    # out of that profile's skill index rather than offering something it
+    # would fail at. The scripture profile carries `skills` alone; this is
+    # what keeps a diagram tool out of its prompt.
+    requires_toolsets:
+      - terminal
 ---
 
 # Archify

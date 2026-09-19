@@ -1,6 +1,14 @@
 ---
 name: buddhist-canon-retrieval
 description: 从已索引的佛教语料库中检索经文依据来回答教义问题（六道、五阴、八苦、楞严经等），不打腹稿，必附经名+原文引文+出处。经 mcp_memory_search_docs 检索、必要时 mcp_memory_read_file 读上下文；语料库不在本机文件系统上，不要用 search_files 找。
+metadata:
+  hermes:
+    # The corpus is reachable only through the memory MCP server, so a
+    # profile without that server has nothing this skill can act on — the
+    # code profile is granted code-index instead and would otherwise carry
+    # a scripture retrieval brief it cannot execute.
+    requires_tools:
+      - mcp_memory_search_docs
 ---
 
 # 佛教语料库检索作答
