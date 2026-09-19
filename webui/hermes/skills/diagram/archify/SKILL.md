@@ -63,9 +63,49 @@ know, and every one of them has cost a retry when guessed:
    `flowchart` type; a flow of steps is a `workflow`, a call chain is a
    `sequence`.
 
-   Read them with `cat`, not `skill_view`: you have a terminal, the files
-   are at `/opt/data/skills/diagram/archify/`, and `cat` reports a wrong
-   path in a way you can act on.
+   **Do not `cat` a skeleton.** Tool output here is capped at 3,500
+   characters and these files run 4-8 KB, so what comes back is truncated
+   exactly where the rename matters — `boundaries` and `meta.views` sit at
+   the tail. Re-emitting the geometry yourself would be worse: thousands of
+   coordinates retyped by hand to arrive back where you started.
+
+   `deployment/skeleton.mjs` exists so the geometry never has to reach you:
+
+   ```bash
+   cd /opt/data/skills/diagram/archify
+   node deployment/skeleton.mjs inventory examples/web-app.architecture.json
+   ```
+
+   That prints ~1,200 characters: every node as `id | type | label`, the
+   boundaries and what they wrap, every connection as `from -> to | label`.
+   Enough to decide the mapping, and it fits in one tool result.
+
+   Then write a small map and apply it:
+
+   ```bash
+   cat > /opt/data/artifacts/map.json <<'JSON'
+   {
+     "title": "autumn-rs 读路径",
+     "components": {
+       "cdn": { "id": "fuse", "label": "autumn-fuse", "sublabel": "POSIX 挂载" },
+       "lb":  { "id": "manager", "label": "manager", "sublabel": "元数据 · 租约" }
+     },
+     "connections": { "cdn-to-lb": { "label": "lookup" } },
+     "drop": ["s3", "queue"]
+   }
+   JSON
+   node deployment/skeleton.mjs rename examples/web-app.architecture.json \
+        /opt/data/artifacts/map.json /opt/data/artifacts/<name>.json
+   ```
+
+   `drop` removes a node, its connections, and every reference to it. Ids
+   are rewritten everywhere by value, so `boundaries[].wraps` and
+   `meta.views[].focus` come along without you naming them. Anything you do
+   not map keeps the skeleton's own label — map every node you keep.
+
+   Measured: renaming `web-app.architecture.json` this way passed all 9
+   showcase checks on the first validate, and again after dropping two
+   nodes.
 
    (This skill answers to `archify` — `skill_view("diagram")` is the
    category and resolves to nothing, which cost a call before this line
