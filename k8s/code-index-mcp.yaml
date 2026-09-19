@@ -124,8 +124,14 @@ spec:
               # --index takes the autumnfs path; --fs-root is the only place
               # the mountpoint is named, and it stays out of every stored id.
               # --code adds the tree-sitter pass on top of the prose ingest.
+              #
+              # `--reset` was on for the one roll that moved the ids from
+              # `src/...` (relative to an emptyDir that no longer exists) to
+              # `code/autumn-rs/...`. It rebuilt 5698 symbols / 67415 edges
+              # from 514 files in 2m23s — which is exactly what it would cost
+              # on EVERY restart if it were left on, since an existing index
+              # is otherwise served as-is (`--reindex` forces one deliberately).
               exec memory-mcp "$M" \
-                --reset \
                 --index code/autumn-rs \
                 --fs-root "$MP" \
                 --code \
