@@ -152,7 +152,7 @@ class Endpoint:
     """
 
     __slots__ = ("key", "label", "model", "base_url", "provider", "api_key",
-                 "max_concurrent", "context")
+                 "max_concurrent", "context", "max_tokens")
 
     def __init__(
         self,
@@ -164,6 +164,7 @@ class Endpoint:
         api_key: str = "none",
         max_concurrent: int = 4,
         context: int = 0,
+        max_tokens: int = 0,
     ) -> None:
         self.key = key
         self.label = label
@@ -182,6 +183,10 @@ class Endpoint:
         # hold its 32K floor, and only a declared window can say which
         # endpoint qualifies.
         self.context = max(0, int(context))
+        # The OUTPUT ceiling, which is a different number from the window and
+        # not derivable from it: a 1M-context model may answer in at most
+        # 128K. 0 leaves it to hermes' own default.
+        self.max_tokens = max(0, int(max_tokens))
 
     def as_json(self) -> dict:
         return {"key": self.key, "label": self.label, "model": self.model,
@@ -215,9 +220,18 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
                     model=str(e.get("model") or default_home_model),
                     base_url=str(e["base_url"]),
                     provider=str(e.get("provider") or "custom"),
-                    api_key=str(e.get("api_key") or "none"),
+                    # A key by VALUE or by ENV NAME. The env name is the one
+                    # to use: this list lives in a manifest that is read by
+                    # anyone who can read the deployment, and `api_key_env`
+                    # lets the value arrive from a Secret instead — the same
+                    # split the auth credentials already use.
+                    api_key=str(
+                        os.environ.get(str(e["api_key_env"]), "").strip()
+                        if e.get("api_key_env") else (e.get("api_key") or "none")
+                    ) or "none",
                     max_concurrent=int(e.get("maxConcurrent") or 4),
                     context=int(e.get("context") or 0),
+                    max_tokens=int(e.get("max_tokens") or e.get("maxTokens") or 0),
                 )
                 for e in items
             ]
@@ -406,6 +420,10 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         # hit the ceiling, which is a thing a reader can act on.
         "max_iterations": MAX_TOOL_ITERATIONS,
     }
+    # Only when the endpoint declares one: hermes has its own default, and an
+    # explicit 0 would be a ceiling of zero tokens rather than "unset".
+    if ep.max_tokens:
+        candidate["max_tokens"] = ep.max_tokens
     agent = AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
     return _scope_tools(agent, profile, mcp_servers)
 

@@ -238,7 +238,19 @@ spec:
             #   {"key":"cloud","label":"DeepSeek","model":"deepseek-chat",
             #    "base_url":"https://api.deepseek.com/v1",
             #    "provider":"custom","api_key":"sk-...","maxConcurrent":4}
-            # — better carried in a Secret than inlined here.
+            #
+            # A key belongs in a Secret, not in this file, so `api_key_env`
+            # names the variable to read instead of carrying the value —
+            # `ARK_API_KEY` below arrives from `hermes-webui-llm`. Declaring
+            # a key inline still works and is still a bad idea: anyone who can
+            # read this Deployment can read the key.
+            #
+            # `context` is the WINDOW and `max_tokens` is what one answer may
+            # produce. They are different numbers and neither implies the
+            # other: doubao-seed-evolving takes 1M in and writes at most 128K.
+            # The window also decides which endpoint may seed auxiliary
+            # compression (hermes refuses a session whose compression model is
+            # under its 32K floor), so an undeclared window is not neutral.
             - name: DEEPWIKI_ENDPOINTS
               value: |
                 [{"key":"dsv4","label":"DSV4-Flash","model":"dsv4-flash",
@@ -246,7 +258,11 @@ spec:
                   "context":62080},
                  {"key":"mm2","label":"MiniMax-M2.5","model":"minimax-m25-ftw",
                   "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":1,
-                  "context":65536}]
+                  "context":65536},
+                 {"key":"doubao","label":"Doubao-Seed","model":"doubao-seed-evolving",
+                  "base_url":"https://ark.cn-beijing.volces.com/api/v3",
+                  "api_key_env":"ARK_API_KEY","maxConcurrent":4,
+                  "context":1048576,"max_tokens":131072}]
             # The two model ids are the served names each engine reports on
             # /v1/models (the --model path's basename): dsv4-flash-ftw's pod was
             # later reverted to dsv4-flash, and sglang echoes any requested name
@@ -503,6 +519,14 @@ spec:
             # out from here, which rules out the two no-key backends.
             # `optional: true`: without the secret the toolset degrades to the
             # error it already returns today, rather than blocking startup.
+            # Volcengine Ark, for the doubao endpoint above. `optional: true`
+            # on purpose: without the secret the endpoint resolves its key to
+            # "none" and fails at the provider with something a reader can
+            # act on, which beats a pod that will not start and takes the two
+            # local models down with it.
+            - name: ARK_API_KEY
+              valueFrom:
+                secretKeyRef: { name: hermes-webui-llm, key: ark-api-key, optional: true }
             - name: TAVILY_API_KEY
               valueFrom:
                 secretKeyRef: { name: hermes-webui-web, key: tavily-api-key, optional: true }

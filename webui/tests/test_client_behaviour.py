@@ -730,3 +730,47 @@ def test_a_retrieval_result_is_still_capped():
     out = tool_budget.shrink("mcp_memory_search_docs", big, wave="w2")
     assert len(out) <= tool_budget.MAX_RESULT_CHARS + 200
     assert "超出单次工具输出上限" in out
+
+
+# ── endpoints: a key from a secret, an output ceiling of its own ────────────
+
+def test_an_endpoint_takes_its_key_from_the_environment(monkeypatch):
+    """The endpoint list lives in a manifest anyone who can read the
+    deployment can read. `api_key_env` names a variable instead, so the value
+    arrives from a Secret — the same split the auth credentials use."""
+    from hermes_agent import load_endpoints
+
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret-value")
+    eps = load_endpoints(json.dumps([
+        {"key": "doubao", "label": "Doubao", "model": "doubao-seed-evolving",
+         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+         "api_key_env": "ARK_API_KEY", "context": 1048576, "max_tokens": 131072},
+    ]))
+    assert eps[0].api_key == "ark-secret-value"
+    assert eps[0].context == 1048576
+    assert eps[0].max_tokens == 131072
+    # The key is part of what makes a built agent reusable, so switching it
+    # must miss the cache.
+    monkeypatch.setenv("ARK_API_KEY", "rotated")
+    again = load_endpoints(json.dumps([
+        {"key": "doubao", "label": "Doubao", "model": "doubao-seed-evolving",
+         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+         "api_key_env": "ARK_API_KEY"},
+    ]))
+    assert again[0].signature() != eps[0].signature()
+
+
+def test_a_missing_key_env_does_not_take_the_endpoint_down(monkeypatch):
+    """An unset variable yields "none", the same as an unkeyed endpoint: the
+    call will fail at the provider, which is a legible failure, rather than at
+    startup, which takes every other endpoint with it."""
+    from hermes_agent import load_endpoints
+
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    eps = load_endpoints(json.dumps([
+        {"key": "doubao", "label": "Doubao", "model": "m",
+         "base_url": "https://example/v1", "api_key_env": "ARK_API_KEY"},
+        {"key": "local", "label": "Local", "model": "m2", "base_url": "http://x/v1"},
+    ]))
+    assert [e.key for e in eps] == ["doubao", "local"]
+    assert eps[0].api_key == "none"
