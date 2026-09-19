@@ -6,12 +6,10 @@
 <title>deepwiki</title>
 <link rel="stylesheet" href="/static/style.css">
 <script>
-/* Apply the saved theme and the saved rail state BEFORE first paint — a light
-   reader must not see a dark flash on every navigation, and a reader who
-   collapsed the session list must not watch it open and shut again. Inline,
-   not app.js: app.js loads at the end of the body. */
+/* Apply the saved theme BEFORE first paint — a light reader must not see a
+   dark flash on every navigation. Inline, not app.js: app.js loads at the
+   end of the body. */
 try { if (localStorage.getItem("hermes.theme") === "light") document.documentElement.dataset.theme = "light"; } catch (_) {}
-try { if (localStorage.getItem("hermes.rail") === "off") document.documentElement.dataset.rail = "off"; } catch (_) {}
 </script>
 </head>
 <body>
@@ -45,19 +43,7 @@ try { if (localStorage.getItem("hermes.rail") === "off") document.documentElemen
 
   <div class="grid">
     <section class="card sessions">
-      <!-- The toggle lives IN the list's own header and stays put when the
-           list collapses: the column narrows to a rail rather than
-           disappearing, so the control that brings it back is where the one
-           that sent it away was. A button somewhere else in the chrome would
-           be a thing to go looking for. -->
-      <div class="card-head">
-        <button id="rail-toggle" class="rail-toggle" type="button"
-                title="收起会话栏" aria-label="收起会话栏" aria-expanded="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
-        </button>
-        <span class="dot"></span><span class="rail-label">会话</span>
-        <span class="count" id="sess-count"></span>
-      </div>
+      <div class="card-head"><span class="dot"></span>会话<span class="count" id="sess-count"></span></div>
       <!-- This project's conversations only: the sidebar is scoped to the
            profile the URL names, because a conversation belongs to the
            project it was opened under and a project page shows its own. -->
