@@ -277,6 +277,12 @@ def main() -> None:
     except Exception:  # noqa: BLE001 -- a chat box without retrieval still starts
         log.exception("could not register MCP servers; corpus search will be unavailable")
 
+    artifacts = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
+    try:
+        artifacts.mkdir(parents=True, exist_ok=True)
+    except OSError as e:  # noqa: BLE001 -- a chat box without diagrams still starts
+        log.error("could not create %s: diagrams will 404: %s", artifacts, e)
+
     # Σ max_concurrent is the exact number of turns admission ever lets run,
     # so it is the exact worker count the turn pool needs.
     manager = TurnManager(AgentPool(), workers=sum(e.max_concurrent for e in endpoints))
@@ -285,6 +291,11 @@ def main() -> None:
         endpoints=endpoints,
         profiles=profiles,
         static_dir=HERE / "static",
+        # Where a drawn diagram lands. On the VOLUME, not in the image: the
+        # agent writes here at runtime (skills/diagram/archify), and an
+        # artifact has to outlive the pod that drew it — a link in a
+        # transcript that 404s after the next rollout is worse than no link.
+        artifacts_dir=artifacts,
         index_html=HERE / "static" / "index.html",
         auth_user=os.environ.get("AUTH_USER", ""),
         auth_pass=os.environ.get("AUTH_PASS", ""),

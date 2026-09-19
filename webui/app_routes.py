@@ -82,13 +82,15 @@ def build_app(
     profiles: list[AgentProfile] | None = None,
     static_dir: Path,
     index_html: Path,
+    artifacts_dir: Path | None = None,
     auth_user: str = "",
     auth_pass: str = "",
     sessions: object | None = None,
     mcp: dict | None = None,
     session_profiles: "SessionProfiles | None" = None,
 ) -> App:
-    app = App(static_dir=static_dir, auth_user=auth_user, auth_pass=auth_pass)
+    app = App(static_dir=static_dir, artifacts_dir=artifacts_dir,
+               auth_user=auth_user, auth_pass=auth_pass)
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]
     # The project cards. A deploy that declares none gets the built-in default

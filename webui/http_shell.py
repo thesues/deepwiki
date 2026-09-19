@@ -45,6 +45,12 @@ log = logging.getLogger("deepwiki.http")
 # reference `/static/...`, and the aiohttp server this module replaced mounted
 # them with `add_static("/static/", STATIC)`.
 STATIC_PREFIX = "/static/"
+# Where a diagram the agent drew is served from. A second mount rather than a
+# subdirectory of `static/`: these files are WRITTEN BY THE AGENT at runtime and
+# live on the volume, while everything under `static/` is shipped in the image
+# and read-only. Keeping the two apart is what lets the CSP below apply to one
+# and not the other.
+ARTIFACTS_PREFIX = "/artifacts/"
 
 # The media types this server actually serves, spelled out rather than asked
 # for. `mimetypes.guess_type` reads the PLATFORM's database — /etc/mime.types
@@ -138,11 +144,13 @@ class App:
     def __init__(
         self,
         static_dir: Path | None = None,
+        artifacts_dir: Path | None = None,
         auth_user: str = "",
         auth_pass: str = "",
     ) -> None:
         self.routes: dict[tuple[str, str], Callable[[Request], Response]] = {}
         self.static_dir = static_dir
+        self.artifacts_dir = artifacts_dir
         self.auth_user = auth_user
         self.auth_pass = auth_pass
 
@@ -200,14 +208,14 @@ class App:
         fn = self.routes.get((req.method, req.path))
         if fn is not None:
             return fn(req)
-        if req.method == "GET" and self.static_dir is not None:
-            static = self.serve_static(req)
-            if static is not None:
-                return static
+        if req.method == "GET":
+            served = self.serve_static(req)
+            if served is not None:
+                return served
         return json_response({"error": "not found"}, status=404)
 
     def serve_static(self, req: Request) -> Response | None:
-        """Files under `static_dir`, addressed under `/static/`, nothing else.
+        """Files under `static_dir` (`/static/`) or `artifacts_dir` (`/artifacts/`).
 
         The prefix is part of the contract, not decoration. `index.html` asks
         for `/static/style.css`, `/static/app.js` and the two vendor scripts,
@@ -221,17 +229,19 @@ class App:
         "..": a symlink inside the directory reaches outside it without the
         string ever containing one.
         """
-        if self.static_dir is None:
+        for prefix, root in ((STATIC_PREFIX, self.static_dir),
+                             (ARTIFACTS_PREFIX, self.artifacts_dir)):
+            if root is not None and req.path.startswith(prefix):
+                rel = req.path[len(prefix):]
+                break
+        else:
             return None
-        path = req.path
-        if not path.startswith(STATIC_PREFIX):
-            return None
-        rel = path[len(STATIC_PREFIX):]
         if not rel:
             return None
+        artifact = prefix == ARTIFACTS_PREFIX
         try:
-            target = (self.static_dir / rel).resolve()
-            if not target.is_relative_to(self.static_dir.resolve()) or not target.is_file():
+            target = (root / rel).resolve()
+            if not target.is_relative_to(root.resolve()) or not target.is_file():
                 return None
             body = target.read_bytes()
         except (OSError, ValueError):
@@ -258,10 +268,25 @@ class App:
             cache = "public, max-age=31536000, immutable"
         else:
             cache = "no-cache"
+        headers = [("Content-Type", ctype), ("ETag", etag), ("Cache-Control", cache)]
+        if artifact:
+            # An artifact is a page the MODEL wrote, served from this app's
+            # own origin, and it carries its own inline script — that is what
+            # makes an Archify diagram explorable. Same origin means that
+            # script can reach `/api/*` as the reader, so it is boxed in:
+            # everything it needs is inline or a data: URI already, and this
+            # policy permits exactly that and no fetch, no frame, no origin
+            # but itself. The one thing it takes away from a self-contained
+            # artifact is the ability to call home.
+            headers.append(("Content-Security-Policy",
+                            "default-src 'none'; img-src 'self' data: blob:; "
+                            "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                            "font-src data:; media-src blob: data:; "
+                            "connect-src 'none'; frame-ancestors 'none'; base-uri 'none'"))
+            headers.append(("X-Content-Type-Options", "nosniff"))
         if req.headers.get("If-None-Match") == etag:
             return Response(304, [("ETag", etag), ("Cache-Control", cache)])
-        return Response(200, [("Content-Type", ctype), ("ETag", etag),
-                              ("Cache-Control", cache)], body)
+        return Response(200, headers, body)
 
 
 class _Handler(BaseHTTPRequestHandler):

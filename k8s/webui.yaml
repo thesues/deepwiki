@@ -312,7 +312,16 @@ spec:
             #           mcp-<name> toolsets are appended by build_agent for
             #           every enabled server, so skills→MCP stays reachable
             #           and this seed cannot drop it.
-            #   code  — file ONLY (when that profile lands).
+            #   code  — skills + TERMINAL. The terminal is there for one
+            #           reason: `skills/diagram/archify` is a Node CLI, and a
+            #           diagram is produced by running it (author JSON,
+            #           `validate`, `validate` again, `deliver`), not by
+            #           emitting markup. Mermaid was the emitting-markup
+            #           answer and it did not survive contact with real
+            #           architecture drawings. The trade is stated plainly:
+            #           this agent can now run commands in this pod. It reads
+            #           its corpus through code-index MCP, so the shell is for
+            #           archify and for nothing it needs to reach the code.
             # This env is the FIRST-BOOT seed for platform_toolsets.cli; from
             # then on the file on the PVC owns the list — edit it there.
             # `terminal` is IN the list above — the allowlist was widened once
@@ -361,13 +370,16 @@ spec:
             # internals, and without appearing in the user's own message the way
             # the retired ACP server's version did. Unset falls back to the same
             # text, which lives beside the code that uses it.
+            # Written in English, answered in Chinese, and the second half
+            # has to be said out loud: this brief used to BE Chinese, and the
+            # language of the answer came along for free with it.
             - name: CHAT_DIRECTIVE
               value: |
-                你是佛教典籍的检索助手，工作是从已索引的语料库中找出依据来回答问题。
-                - 凡涉及经文内容的问题，先用语料库工具检索，不要凭记忆作答。
-                - 回答时给出经名与原文引文，并标出出处（文件 › 标题路径 › 行号）。
-                - 语料库里没有的，直说没有；可以补充常识背景，但要注明那不是来自语料库。
-                - 简明作答，通常几段以内。除非明确要求，不要写长文、不要综述式铺陈。
+                You retrieve from an indexed corpus of Buddhist scripture and answer from what you find.
+                - Any question about what a text says: search the corpus first. Do not answer from memory.
+                - Cite the sutra and quote the passage, with its source (file › heading path › line numbers).
+                - If the corpus does not have it, say so. Background knowledge may be added, marked as not from the corpus.
+                - Answer in Chinese, briefly — a few paragraphs. No long essays or survey-style sprawl unless asked.
             # The project cards. Four projects:
             #   buda            — the scripture agent. skills ONLY: everything
             #                     it does a skill initiates, and the skill calls
@@ -470,11 +482,11 @@ spec:
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
                   "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
-                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"],
+                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
                   "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
-                  "directive":"你是 autumn-rs（Rust 分布式存储）代码库的阅读助手，依据索引里的代码回答。\n\n工作方式是「先定位，再精读」：\n- search_code 只告诉你东西在哪里 —— 命中里有 file 和 start/end 行号，没有代码正文。它是清单，不是内容。\n- 拿到命中后，用 read_file(path, start, end) 按行范围读你真正要看的那几段；单个符号的完整实现也可以用 get_symbol。不要用「再搜一次」的方式去拿正文。\n- 顺着 find_callers / find_callees 看调用关系，比反复发起宽泛的 search_code 有效得多。\n- 每次只读你需要的范围。read_file 单次上限 400 行，返回里的 truncated 会告诉你范围被截断了；真的需要更多就分几次读明确的区间，不要整文件拉取。\n\n其余要求：\n- 先想清楚要找什么再检索，够用就停下来作答。重复检索会占满上下文，让这轮对话无法收尾。\n- 引用代码时给出文件路径与符号名（以及行号，如果读过）。索引里没有的，直说没有，不要猜。\n- 被要求画流程图/架构图时，直接用 mermaid 或文字给出，不要为了画图再去检索。\n- 简明作答，通常几段以内。"},
+                  "directive":"You read the autumn-rs codebase (Rust, distributed storage) and answer from the indexed code.\n\nLocate first, then read closely:\n- search_code tells you WHERE something is — each hit carries file and start/end lines, and no source. It is an index, not content.\n- Read the lines you actually want with read_file(path, start, end); get_symbol returns one whole symbol. Do not search again to obtain text.\n- Follow find_callers / find_callees for call relationships. It beats repeated broad search_code by a wide margin.\n- Read only the range you need. read_file caps at 400 lines per call and reports truncated when it cut the range; ask for further explicit ranges rather than pulling whole files.\n\nOther requirements:\n- Decide what you are looking for before searching, and stop when you have enough. Repeated searching fills the context and leaves the turn unable to finish.\n- Cite file paths and symbol names (and line numbers, where you read them). If the index does not have it, say so rather than guessing.\n- For a flow or architecture diagram, use the archify skill (diagram/archify in skills_list): understand the subject from the index first, then author the JSON, validate, deliver, and give one /artifacts/ link. Do not search more broadly just to draw, and never paste the HTML or the SVG into the answer.\n- Answer in Chinese, briefly — usually a few paragraphs."},
                  {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"],
-                  "directive":"你是一个通用助手。按需使用工具，不确定的地方直说，不要编造。简明作答。"}]
+                  "directive":"A general assistant. Use tools when they help, say plainly where you are unsure, invent nothing. Answer in Chinese, briefly."}]
             # web_search / web_extract need a backend; the toolset alone is a
             # tool that errors on every call. `web.backend` in config.yaml is
             # empty, and an empty value does NOT mean "off" -- tools/web_tools

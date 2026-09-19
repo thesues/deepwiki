@@ -51,6 +51,33 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates curl git tini; \
     rm -rf /var/lib/apt/lists/*
 
+# --- node, for the diagram skill ------------------------------------------- #
+# `skills/diagram/archify` is a Node CLI (>=18, zero runtime dependencies): the
+# agent authors a typed JSON spec and archify compiles it to a self-contained
+# HTML diagram. No Node, no diagrams.
+#
+# The official tarball rather than Debian's `nodejs` package: bookworm ships
+# 18.19, archify is developed against 22, and one `curl | tar` costs less image
+# than apt's dependency closure.
+#
+# .tar.GZ, not .tar.xz, and that is not a preference: this base image has no
+# `xz`. hermes' own browser-tool installer reaches for the .xz build and dies
+# mid-extract with "tar (child): xz: Cannot exec: No such file or directory" —
+# 220 KB of download, then nothing. gz needs only what tar already has.
+#
+# NODE_MIRROR is a build arg for the same reason APT_MIRROR is: nodejs.org is
+# slow to unreachable from the CN build pool, and the mirror that fixes it is
+# reachable only from inside that network, so it cannot be the default.
+ARG NODE_VERSION=22.16.0
+ARG NODE_MIRROR=https://nodejs.org/dist
+RUN set -eux; \
+    url="${NODE_MIRROR%/}/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"; \
+    curl -fsSL "$url" -o /tmp/node.tar.gz; \
+    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+        --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
+    rm /tmp/node.tar.gz; \
+    node --version
+
 # --- hermes, in its own venv ------------------------------------------------ #
 # `hermes acp --check` at BUILD time: an image whose agent cannot start should
 # fail here, not at 3am in a rollout. It is also the only cheap proof that the

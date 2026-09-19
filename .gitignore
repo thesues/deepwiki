@@ -5,3 +5,7 @@ md/
 *.epub
 *.pdf
 __pycache__/
+
+# vim swap files. One got committed by a `git add -A` (16b386d) and had to be
+# removed again; the pattern costs nothing and that mistake is silent.
+.*.sw[op]
