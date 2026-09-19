@@ -101,6 +101,67 @@ def ensure_mcp_server(config_path: Path, name: str, url: str) -> bool:
     return True
 
 
+def prune_mcp_servers(config_path: Path, keep: list[str]) -> list[str]:
+    """Remove `mcp_servers` entries that are not in `keep`. Returns what went.
+
+    The other half of `ensure_mcp_server`, and the reason it exists: that
+    function only ever ADDS. A server dropped from the deployment stayed in
+    the config forever, and hermes reads this file — so the agent kept being
+    handed the tools of a server nobody runs any more. Those tools look like
+    working tools and fail on use, and hermes counts a tool-level failure
+    toward its MCP circuit breaker: three of them and it declares the server
+    unreachable for 60 s, taking the corpus that DOES work down with it.
+
+    Exactly the shape the skills sync fixed on the volume ("a skill deleted
+    from the repo stayed there, still listed, still loadable"), arrived at
+    separately for the same reason.
+
+    An empty `keep` prunes nothing. "No servers configured" is what an
+    unconfigured deployment looks like, and wiping an operator's hand-written
+    block on the strength of an unset env is not a repair.
+    """
+    if not keep or not config_path.exists():
+        return []
+    lines = config_path.read_text().splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == "mcp_servers:"), None)
+    if start is None:
+        return []
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        ln = lines[i]
+        if ln.strip() and not ln[0].isspace():
+            end = i
+            break
+
+    kept: list[str] = [lines[start]]
+    dropped: list[str] = []
+    i = start + 1
+    while i < end:
+        ln = lines[i]
+        # A server header is the one line indented exactly two spaces.
+        name = ln.strip()[:-1] if ln.startswith("  ") and not ln.startswith("   ") and ln.strip().endswith(":") else None
+        if name is None:
+            kept.append(ln)
+            i += 1
+            continue
+        stop = end
+        for j in range(i + 1, end):
+            if lines[j].strip() and not lines[j].startswith("    "):
+                stop = j
+                break
+        if name in keep:
+            kept.extend(lines[i:stop])
+        else:
+            dropped.append(name)
+        i = stop
+
+    if not dropped:
+        return []
+    _write(config_path, [*lines[:start], *kept, *lines[end:]])
+    log.info("hermes config: removed mcp_servers %s (no longer deployed)", ", ".join(dropped))
+    return dropped
+
+
 def _write(path: Path, lines: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write-then-rename: hermes may read this file at any moment, and a

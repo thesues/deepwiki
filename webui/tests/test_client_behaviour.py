@@ -582,3 +582,62 @@ def test_allowlist_judges_only_mcp_tools():
     # granted servers expose.
     assert allowed_mcp_names(None, ["memory"]) is None
     assert tool_allowed("mcp_memory_graph_delete_node", None)
+
+
+# ── MCP server declaration ──────────────────────────────────────────────────
+
+def _env(monkeypatch, **kw):
+    for k in ("MCP_SERVERS", "MEMORY_MCP_URL", "MEMORY_MCP_NAME", "MEMORY_MCP_EXTRA"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in kw.items():
+        monkeypatch.setenv(k, v)
+
+
+def test_one_variable_declares_every_server_in_order(monkeypatch):
+    from main import mcp_servers_from_env
+
+    _env(monkeypatch, MCP_SERVERS="memory=http://a/mcp, code-index=http://b/mcp")
+    assert mcp_servers_from_env() == [("memory", "http://a/mcp"), ("code-index", "http://b/mcp")]
+
+
+def test_the_old_spelling_still_works_and_agrees(monkeypatch):
+    """A manifest and a running PVC are not updated in the same instant."""
+    from main import mcp_servers_from_env
+
+    _env(monkeypatch, MEMORY_MCP_URL="http://a/mcp", MEMORY_MCP_EXTRA="code-index=http://b/mcp")
+    assert mcp_servers_from_env() == [("memory", "http://a/mcp"), ("code-index", "http://b/mcp")]
+    # The new spelling wins outright rather than merging: reading both would
+    # make "remove a server" mean nothing.
+    _env(monkeypatch, MCP_SERVERS="only=http://c/mcp",
+         MEMORY_MCP_URL="http://a/mcp", MEMORY_MCP_EXTRA="code-index=http://b/mcp")
+    assert mcp_servers_from_env() == [("only", "http://c/mcp")]
+
+
+def test_a_retired_server_is_removed_from_the_config(tmp_path):
+    """ensure_mcp_server only ever added; hermes reads this file, so a server
+    dropped from the manifest kept handing the agent tools that cannot work."""
+    from hermes_config import ensure_mcp_server, prune_mcp_servers
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    ensure_mcp_server(cfg, "memory", "http://a/mcp")
+    ensure_mcp_server(cfg, "code-index", "http://b/mcp")
+    ensure_mcp_server(cfg, "retired", "http://gone/mcp")
+
+    assert prune_mcp_servers(cfg, ["memory", "code-index"]) == ["retired"]
+    got = yaml.safe_load(cfg.read_text())["mcp_servers"]
+    assert sorted(got) == ["code-index", "memory"]
+    assert got["memory"]["url"] == "http://a/mcp"
+    # Idempotent: nothing left to remove.
+    assert prune_mcp_servers(cfg, ["memory", "code-index"]) == []
+
+
+def test_an_empty_keep_list_prunes_nothing(tmp_path):
+    """An unset env is not a reason to wipe an operator's block."""
+    from hermes_config import ensure_mcp_server, prune_mcp_servers
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    ensure_mcp_server(cfg, "memory", "http://a/mcp")
+    assert prune_mcp_servers(cfg, []) == []
+    assert "memory" in yaml.safe_load(cfg.read_text())["mcp_servers"]

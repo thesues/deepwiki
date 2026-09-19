@@ -37,6 +37,54 @@ from turns import TurnManager  # noqa: E402
 log = logging.getLogger("deepwiki")
 
 
+def mcp_servers_from_env() -> list[tuple[str, str]]:
+    """The MCP servers this deployment declares, in order, as (name, url).
+
+    `MCP_SERVERS` is the one variable: comma-separated `NAME=URL`, and the
+    FIRST entry is the one the UI names — the same "first wins" rule
+    `load_endpoints` and `build_profiles` follow, so the three ends agree
+    without talking.
+
+    `MEMORY_MCP_URL` / `MEMORY_MCP_NAME` / `MEMORY_MCP_EXTRA` are the old
+    spelling and still read, because a manifest and a running PVC are not
+    updated in the same instant and a rollout that silently dropped every
+    server would take retrieval with it. They are a fallback, not a merge:
+    a deployment states its servers in one place or the other, and reading
+    both would make "remove a server" mean nothing.
+
+    Order is preserved and duplicates collapse onto the first spelling.
+    """
+    def parse(spec: str) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in spec.split(","):
+            item = item.strip()
+            if not item or "=" not in item:
+                continue
+            name, url = (part.strip() for part in item.split("=", 1))
+            if not name or not url or name in seen:
+                continue
+            seen.add(name)
+            out.append((name, url))
+        return out
+
+    declared = parse(os.environ.get("MCP_SERVERS", ""))
+    if declared:
+        return declared
+
+    legacy: list[tuple[str, str]] = []
+    primary = os.environ.get("MEMORY_MCP_URL", "").strip()
+    if primary:
+        legacy.append((os.environ.get("MEMORY_MCP_NAME", "memory").strip() or "memory", primary))
+    legacy.extend(parse(os.environ.get("MEMORY_MCP_EXTRA", "")))
+    if legacy:
+        log.warning(
+            "MEMORY_MCP_URL/EXTRA are the old spelling; set MCP_SERVERS=%s",
+            ",".join(f"{n}={u}" for n, u in legacy),
+        )
+    return legacy
+
+
 def _sessions_module():
     """hermes' own session store, in process.
 
@@ -130,34 +178,30 @@ def main() -> None:
     hermes_cfg = Path(
         os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     ) / "config.yaml"
-    mcp_url = os.environ.get("MEMORY_MCP_URL", "")
-    if mcp_url:
-        try:
-            from hermes_config import ensure_mcp_server
-
-            ensure_mcp_server(
-                hermes_cfg, os.environ.get("MEMORY_MCP_NAME", "memory"), mcp_url
-            )
-        except Exception as e:  # noqa: BLE001
-            log.error("could not point hermes at %s: %s", mcp_url, e)
-    # The other corpora. One memory-mcp instance serves ONE corpus (its --docs
-    # / --root), so a second project's index is a second instance on its own
-    # port — declared here as NAME=URL pairs, the same ensure_mcp_server path
-    # as the primary. A profile then narrows the agent to the server its
-    # corpus lives on (profiles.py scope_agent_tools rule 1).
-    for spec in os.environ.get("MEMORY_MCP_EXTRA", "").split(","):
-        spec = spec.strip()
-        if not spec or "=" not in spec:
-            continue
-        name, url = (s.strip() for s in spec.split("=", 1))
-        if not name or not url:
-            continue
+    # One memory-mcp instance serves ONE corpus, so a second project's index
+    # is a second instance on its own port. All of them are declared in ONE
+    # variable as NAME=URL pairs, in order — the first is the one the UI
+    # names, the same "first entry wins" rule `load_endpoints` and
+    # `build_profiles` use. A profile then narrows the agent to the server
+    # its corpus lives on (profiles.py scope_agent_tools rule 1).
+    servers = mcp_servers_from_env()
+    for name, url in servers:
         try:
             from hermes_config import ensure_mcp_server
 
             ensure_mcp_server(hermes_cfg, name, url)
         except Exception as e:  # noqa: BLE001
             log.error("could not point hermes at %s (%s): %s", name, url, e)
+    # And remove what is no longer deployed. `ensure_mcp_server` only ever
+    # adds, so a server dropped from the manifest lived on in the config file
+    # hermes reads — handing the agent tools whose server is gone. See
+    # `prune_mcp_servers`.
+    try:
+        from hermes_config import prune_mcp_servers
+
+        prune_mcp_servers(hermes_cfg, [n for n, _ in servers])
+    except Exception as e:  # noqa: BLE001
+        log.error("could not prune retired mcp servers: %s", e)
 
     # The toolsets live in the SAME config file, under `platform_toolsets.cli`
     # — the key hermes' own CLI reads. Seed it only if the file does not have
@@ -243,10 +287,7 @@ def main() -> None:
         auth_pass=os.environ.get("AUTH_PASS", ""),
         sessions=_sessions_module(),
         mcp=(
-            {"name": os.environ.get("MEMORY_MCP_NAME", "memory"),
-             "url": os.environ["MEMORY_MCP_URL"]}
-            if os.environ.get("MEMORY_MCP_URL")
-            else None
+            {"name": servers[0][0], "url": servers[0][1]} if servers else None
         ),
     )
 

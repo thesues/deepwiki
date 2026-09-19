@@ -81,7 +81,10 @@ ENV HERMES_BIN=/usr/local/bin/hermes \
     HERMES_NO_DEP_INSTALL=1 \
     WORKDIR=/opt/data \
     PORT=8080 \
-    MEMORY_MCP_URL=http://memory-mcp:5100/mcp
+    # Every MCP server in one NAME=URL list, first one named by the UI. The
+    # deployment overrides this; the default is what makes `docker run` find
+    # a memory-mcp on the same network without a flag.
+    MCP_SERVERS=memory=http://memory-mcp:5100/mcp
 RUN mkdir -p /opt/data/logs
 
 EXPOSE 8080
