@@ -774,3 +774,62 @@ def test_a_missing_key_env_does_not_take_the_endpoint_down(monkeypatch):
     ]))
     assert [e.key for e in eps] == ["doubao", "local"]
     assert eps[0].api_key == "none"
+
+
+# ── the compression window is the endpoint's ────────────────────────────────
+
+def test_the_window_comes_from_the_endpoint(monkeypatch):
+    """One `model.context_length` in config.yaml governed every endpoint —
+    hermes takes it as an explicit override ahead of any probe — so a session
+    on a 1,048,576-token endpoint measured itself against 54000 and began
+    summarising at about 19K."""
+    import hermes_agent
+    from hermes_agent import Endpoint
+
+    class FakeCompressor:
+        def __init__(self):
+            self.context_length = 54_000
+            self.threshold_percent = 0.35
+            self.threshold_tokens = 18_900
+            self.api_mode = "chat"
+            self.base_url = ""
+
+        def update_model(self, model, context_length, base_url="", api_key="",
+                         provider="", api_mode=""):
+            self.context_length = context_length
+            self.base_url = base_url
+            self.threshold_tokens = int(context_length * self.threshold_percent)
+
+    class FakeAgent:
+        model = "doubao-seed-evolving"
+        base_url = "https://ark.cn-beijing.volces.com/api/v3"
+        api_key = "ark-key"
+        provider = "custom"
+
+        def __init__(self):
+            self.context_compressor = FakeCompressor()
+
+    agent = FakeAgent()
+    ep = Endpoint(key="doubao", label="Doubao", model="doubao-seed-evolving",
+                  base_url=agent.base_url, context=1_048_576)
+    hermes_agent._set_context_window(agent, ep)
+    assert agent.context_compressor.context_length == 1_048_576
+    # update_model resets the client fields too; they must survive.
+    assert agent.context_compressor.base_url == agent.base_url
+
+    # An endpoint that declares nothing keeps whatever hermes resolved.
+    other = FakeAgent()
+    hermes_agent._set_context_window(other, Endpoint(
+        key="x", label="x", model="m", base_url="http://x/v1"))
+    assert other.context_compressor.context_length == 54_000
+
+
+def test_a_missing_compressor_does_not_stop_the_turn():
+    import hermes_agent
+    from hermes_agent import Endpoint
+
+    class Bare:
+        model = "m"
+
+    hermes_agent._set_context_window(Bare(), Endpoint(
+        key="k", label="k", model="m", base_url="http://x/v1", context=65_536))

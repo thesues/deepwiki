@@ -425,7 +425,54 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     if ep.max_tokens:
         candidate["max_tokens"] = ep.max_tokens
     agent = AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
+    _set_context_window(agent, ep)
     return _scope_tools(agent, profile, mcp_servers)
+
+
+def _set_context_window(agent: Any, ep: Endpoint) -> None:
+    """Tell this agent how much its endpoint will actually accept.
+
+    Compression fires at a percentage of the window, so the window has to be
+    the ENDPOINT's, and it was not: `model.context_length` in config.yaml is
+    an explicit override that wins over every probe hermes would otherwise do
+    (agent/model_metadata.py, step 0 of nine), so one number written for
+    dsv4-flash governed all three endpoints. Measured before this existed:
+    dsv4 -> 54000, doubao-seed-evolving -> 54000, against a real 1,048,576.
+    The cost is not symmetric — a session on the million-token endpoint began
+    summarising at about 19K, discarding history it had room to keep.
+
+    The number is DECLARED per endpoint rather than probed. Both are right
+    when they work and they agree today (the engines report 62080 and 65536,
+    which is where the declarations came from), but a probe that fails falls
+    through to hermes' 256K default — silently four times too large, and
+    discovered only when the endpoint starts refusing requests. A declaration
+    that is wrong can be checked against `/models` at any time.
+
+    What the engine reports is what THIS DEPLOYMENT can serve, which is the
+    number compression needs: dsv4-flash's 62080 is what a 4090's KV budget
+    seats, not what the model could do on a larger card.
+    """
+    if not ep.context:
+        return
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None:
+        log.warning("no context_compressor on the agent; %s keeps hermes' window", ep.key)
+        return
+    try:
+        # update_model resets base_url/api_key/provider too, so hand back the
+        # agent's own — omitting them blanks the compressor's client.
+        cc.update_model(
+            model=agent.model,
+            context_length=ep.context,
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            api_mode=getattr(cc, "api_mode", "") or "",
+        )
+        log.info("endpoint %s: context window %d, compressing at %d",
+                 ep.key, cc.context_length, getattr(cc, "threshold_tokens", 0))
+    except Exception:  # noqa: BLE001 -- a wrong window is bad, no agent is worse
+        log.exception("could not set the context window for %s", ep.key)
 
 
 def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str]) -> Any:

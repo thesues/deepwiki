@@ -255,20 +255,35 @@ spec:
             # boot. They idle on a queue and cost no CPU; the number is worth
             # knowing before someone adds a fourth hosted model.
             #
-            # `context` is the WINDOW and `max_tokens` is what one answer may
-            # produce. They are different numbers and neither implies the
-            # other: doubao-seed-evolving takes 1M in and writes at most 128K.
-            # The window also decides which endpoint may seed auxiliary
-            # compression (hermes refuses a session whose compression model is
-            # under its 32K floor), so an undeclared window is not neutral.
+            # `context` is WHAT THE PROMPT MAY REACH — not what the engine
+            # reports. On these two the difference is the whole point: the
+            # local engines serve 62080 and 65536 counting prompt AND
+            # generation, so a prompt allowed to fill that leaves nothing to
+            # answer with and comes back "prompt is too long: N > 62080".
+            # 54000 is the value that has run here for months; 57344 gives
+            # mm2 the same ~8K of headroom. Hosted models count input
+            # separately, so doubao declares its million.
+            #
+            # This number is what a session measures itself against for
+            # compression (hermes_agent._set_context_window). It used to come
+            # from ONE `model.context_length` in the PVC's config.yaml, which
+            # hermes treats as an override ahead of every probe — so the
+            # value written for dsv4 governed all three endpoints, and a
+            # million-token session began summarising at about 19K.
+            #
+            # `max_tokens` is the other half: what one answer may produce.
+            # Neither implies the other. The window also decides which
+            # endpoint may seed auxiliary compression (hermes refuses a
+            # session whose compression model is under its 32K floor), so an
+            # undeclared window is not neutral.
             - name: DEEPWIKI_ENDPOINTS
               value: |
                 [{"key":"dsv4","label":"DSV4-Flash","model":"dsv4-flash",
                   "base_url":"http://freetoken-l3:1919/v1","maxConcurrent":1,
-                  "context":62080},
+                  "context":54000},
                  {"key":"mm2","label":"MiniMax-M2.5","model":"minimax-m25-ftw",
                   "base_url":"http://freetoken-mm2:1919/v1","maxConcurrent":1,
-                  "context":65536},
+                  "context":57344},
                  {"key":"doubao","label":"Doubao-Seed","model":"doubao-seed-evolving",
                   "base_url":"https://ark.cn-beijing.volces.com/api/v3",
                   "api_key_env":"ARK_API_KEY","maxConcurrent":64,
