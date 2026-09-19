@@ -73,14 +73,24 @@
      serif, controls and user text in a sans, and monospace is reserved for code,
      paths and tool names. Everything in one monospace made a long sutra passage
      read like a log file. */
-  --sans:-apple-system,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',system-ui,sans-serif;
-  /* Prose. Latin gets the serif; CJK deliberately does NOT — fallback is
-     per-glyph, and neither Instrument Serif nor Georgia carries Chinese, so the
-     next entry decides. It used to be Songti SC: a printing face whose
-     horizontal strokes are hairlines. At 14px, weight 300, light-on-dark, those
-     hairlines are below what a screen can hold steady, and the eye refocuses on
-     every line. PingFang was drawn for screens and keeps an even stroke. */
-  --prose:'Instrument Serif',Georgia,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  /* Latin first, CJK behind it, and that order is the whole trick: fallback
+     is per glyph, so a mixed sentence takes its Latin from the system UI face
+     and its Chinese from PingFang — which is how the OS composes this pair
+     natively. The Windows/Linux Latin entries are there so Latin does not
+     land on Microsoft YaHei's, which is a different and worse letter. */
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',system-ui,sans-serif;
+  /* Prose is ONE voice now, and it stopped being two by looking at it.
+     Latin used to take Instrument Serif while Chinese fell through to
+     PingFang — but Instrument Serif is a DISPLAY face: high stroke contrast,
+     tight fitting, drawn for a headline. At 15px it sets a cramped, spindly
+     line, and next to PingFang's even screen strokes the mismatch is the
+     first thing a mixed sentence shows. A CJK serif would not fix it either:
+     Songti SC's horizontal hairlines are below what a screen holds steady at
+     this size, which is why Chinese moved off it in the first place.
+     So prose is the system pair — the Latin face the OS ships beside
+     PingFang, which is what they were drawn to sit next to. The serif keeps
+     the work it is good at: headings, the logo, project names. */
+  --prose:var(--sans);
   --ease:cubic-bezier(0.4,0,0.2,1);
   /* Expo-out: nearly all of the distance in the first third of the duration,
      then a long settle. What makes a 0.7s wipe read as instant-but-smooth
@@ -256,8 +266,15 @@ header h1 em { color:var(--accent); font-style:italic; }
 .md > *:first-child { margin-top:0; }
 .md > *:last-child { margin-bottom:0; }
 .md p { margin:0.5rem 0; }
-.md h1,.md h2,.md h3,.md h4 { font-family:var(--serif); font-weight:400; letter-spacing:-0.01em;
-                              margin:1rem 0 0.4rem; line-height:1.3; }
+/* Headings INSIDE an answer take the prose face, not the display serif.
+   They are where mixed script is densest — "1. 萨埵太子舍身喂虎", a Rust
+   symbol beside a Chinese clause — and the serif set the Latin in a thin
+   display cut next to a CJK serif, so the numeral read as a different size
+   from the words after it. Weight carries the hierarchy instead, which is
+   what weight is for. The display serif keeps the logo, the home hero and
+   the project names: large, Latin-only, and the reason it is in the file. */
+.md h1,.md h2,.md h3,.md h4 { font-family:var(--prose); font-weight:600; letter-spacing:0;
+                              margin:1rem 0 0.4rem; line-height:1.4; }
 .md h1 { font-size:1.5rem; } .md h2 { font-size:1.25rem; } .md h3 { font-size:1.08rem; }
 .md ul,.md ol { margin:0.5rem 0 0.5rem 1.2rem; }
 .md li { margin:0.2rem 0; }
