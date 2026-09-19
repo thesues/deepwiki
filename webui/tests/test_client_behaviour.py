@@ -547,3 +547,38 @@ def test_the_client_reads_the_saved_view_from_one_place():
                 f"app.js reaches localStorage with {name} instead of viewKey(); "
                 "the saved view is per project now"
             )
+
+
+# ── per-profile MCP tool allowlist ──────────────────────────────────────────
+
+def test_allowlist_names_every_pair_it_means():
+    """Names are built, not matched: hermes' own source calls the
+    `mcp_{server}_{tool}` form ambiguous, and a suffix match would also admit
+    some server's `unsafe_read_file` when `read_file` was allowed."""
+    from profiles import allowed_mcp_names, tool_allowed
+
+    allowed = allowed_mcp_names(["search_docs", "read_file"], ["memory", "code-index"])
+    assert allowed == {
+        "mcp_memory_search_docs", "mcp_memory_read_file",
+        "mcp_code_index_search_docs", "mcp_code_index_read_file",
+    }
+    # The hyphen in a server name is sanitized the way hermes sanitizes it.
+    assert tool_allowed("mcp_code_index_read_file", allowed)
+    # Withheld: same server, a tool the profile did not ask for.
+    assert not tool_allowed("mcp_memory_graph_delete_node", allowed)
+    assert not tool_allowed("mcp_memory_ingest_documents", allowed)
+    # Withheld: a tool that merely ENDS in an allowed name.
+    assert not tool_allowed("mcp_memory_unsafe_read_file", allowed)
+
+
+def test_allowlist_judges_only_mcp_tools():
+    """A profile that narrows its MCP tools must not lose its own toolsets."""
+    from profiles import allowed_mcp_names, tool_allowed
+
+    allowed = allowed_mcp_names(["search_docs"], ["memory"])
+    assert tool_allowed("skills_list", allowed)
+    assert tool_allowed("terminal", allowed)
+    # No allowlist at all means what profiles did before: everything the
+    # granted servers expose.
+    assert allowed_mcp_names(None, ["memory"]) is None
+    assert tool_allowed("mcp_memory_graph_delete_node", None)

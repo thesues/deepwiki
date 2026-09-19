@@ -426,12 +426,32 @@ spec:
             # redirected to mm2 and the picker would then snap back — a choice
             # offered and not honoured.
             #
+            # `mcp_tools` narrows a GRANTED server to the tools the profile
+            # actually uses. memory-mcp publishes 18, and buda has business
+            # with four: search_docs / list_documents / document_outline to
+            # find things, read_file to read around a hit. The other 14 are a
+            # code index it has no corpus for (`search_code`, `get_symbol`,
+            # `find_callers`…) and WRITES nobody asked it to make —
+            # `ingest_documents` puts new material in the corpus,
+            # `graph_delete_node` / `graph_delete_edge` take it out.
+            #
+            # Cost, beyond the obvious: hermes counts a tool-level error
+            # toward its MCP circuit breaker (tools/mcp_tool.py — any result
+            # with an `error` key bumps the count), and three in a row
+            # declare the server unreachable for 60 s. So a tool that cannot
+            # work here does not just sit there costing tokens; used three
+            # times it takes search_docs down with it. That is exactly how
+            # this profile lost retrieval on 2026-09-19: three read_file
+            # calls against ids that could not resolve.
+            #
             # buda is the one profile that legitimately inherits
             # CHAT_DIRECTIVE: that brief was written for it.
             - name: DEEPWIKI_PROFILES
               value: |
-                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"]},
+                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
+                  "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills"],"mcp_servers":["code-index"],
+                  "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
                   "directive":"你是 autumn-rs（Rust 分布式存储）代码库的阅读助手，依据索引里的代码回答。\n\n工作方式是「先定位，再精读」：\n- search_code 只告诉你东西在哪里 —— 命中里有 file 和 start/end 行号，没有代码正文。它是清单，不是内容。\n- 拿到命中后，用 read_file(path, start, end) 按行范围读你真正要看的那几段；单个符号的完整实现也可以用 get_symbol。不要用「再搜一次」的方式去拿正文。\n- 顺着 find_callers / find_callees 看调用关系，比反复发起宽泛的 search_code 有效得多。\n- 每次只读你需要的范围。read_file 单次上限 400 行，返回里的 truncated 会告诉你范围被截断了；真的需要更多就分几次读明确的区间，不要整文件拉取。\n\n其余要求：\n- 先想清楚要找什么再检索，够用就停下来作答。重复检索会占满上下文，让这轮对话无法收尾。\n- 引用代码时给出文件路径与符号名（以及行号，如果读过）。索引里没有的，直说没有，不要猜。\n- 被要求画流程图/架构图时，直接用 mermaid 或文字给出，不要为了画图再去检索。\n- 简明作答，通常几段以内。"},
                  {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"],
                   "directive":"你是一个通用助手。按需使用工具，不确定的地方直说，不要编造。简明作答。"}]

@@ -375,7 +375,67 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         # hit the ceiling, which is a thing a reader can act on.
         "max_iterations": MAX_TOOL_ITERATIONS,
     }
-    return AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
+    agent = AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
+    return _scope_tools(agent, profile, mcp_servers)
+
+
+def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str]) -> Any:
+    """Hold the agent's tool list to the profile's `mcp_tools` allowlist.
+
+    Filtering the list ONCE after construction does not hold: hermes rebuilds
+    `agent.tools` from the live registry between turns
+    (`refresh_agent_mcp_tools`, for MCP servers that connect after the
+    snapshot), and that rebuild honours `enabled_toolsets` — which has no
+    per-tool granularity — so anything dropped here would come back on the
+    next turn.
+
+    So the filter lives on the ASSIGNMENT instead. The agent gets a subclass
+    whose `tools` and `valid_tool_names` are properties that filter whatever
+    is stored into them, which means every writer — construction, the
+    between-turns refresh, a /reload-mcp — passes through it, including
+    writers that do not exist yet.
+    """
+    allow = getattr(profile, "mcp_tools", None)
+    if allow is None:
+        return agent
+
+    from profiles import allowed_mcp_names, tool_allowed
+
+    allowed = allowed_mcp_names(allow, servers)
+
+    def _tools_get(self):
+        return self.__dict__.get("_scoped_tools", [])
+
+    def _tools_set(self, value):
+        kept = [t for t in (value or []) if tool_allowed(t.get("function", {}).get("name", ""), allowed)]
+        dropped = len(value or []) - len(kept)
+        if dropped:
+            log.info("profile %s: %d MCP tool(s) withheld, %d kept",
+                     profile.key, dropped, len(kept))
+        self.__dict__["_scoped_tools"] = kept
+
+    def _names_get(self):
+        return self.__dict__.get("_scoped_names", set())
+
+    def _names_set(self, value):
+        self.__dict__["_scoped_names"] = {n for n in (value or set()) if tool_allowed(n, allowed)}
+
+    cls = type(agent)
+    scoped = type(
+        f"{cls.__name__}Scoped",
+        (cls,),
+        {"tools": property(_tools_get, _tools_set),
+         "valid_tool_names": property(_names_get, _names_set)},
+    )
+    # Read the unscoped values BEFORE the swap: a property is a data
+    # descriptor, so once it is on the class the instance dict's copies are
+    # unreachable and would be lost rather than filtered.
+    raw_tools = list(getattr(agent, "tools", None) or [])
+    raw_names = set(getattr(agent, "valid_tool_names", None) or set())
+    agent.__class__ = scoped
+    agent.tools = raw_tools
+    agent.valid_tool_names = raw_names
+    return agent
 
 
 class AgentPool:

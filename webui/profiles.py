@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 log = logging.getLogger("deepwiki.profiles")
@@ -47,7 +48,7 @@ class AgentProfile:
     against Endpoint."""
 
     __slots__ = ("key", "label", "directive", "toolsets", "mcp_servers",
-                 "workspace", "skills", "endpoints")
+                 "workspace", "skills", "endpoints", "mcp_tools")
 
     def __init__(
         self,
@@ -59,6 +60,7 @@ class AgentProfile:
         workspace: str = "",
         skills: str = "",
         endpoints: list[str] | None = None,
+        mcp_tools: list[str] | None = None,
     ) -> None:
         self.key = str(key)
         self.label = str(label or key)
@@ -81,6 +83,15 @@ class AgentProfile:
         self.skills = str(skills or "").strip()
         # None = any endpoint. A list restricts /api/chat/start to it.
         self.endpoints = [str(e) for e in endpoints if str(e).strip()] if endpoints else None
+        # None means "every tool the granted servers expose" — the
+        # pre-existing behaviour. A list names the BARE tool names to keep
+        # (`search_docs`, not `mcp_memory_search_docs`), because an MCP
+        # server is otherwise all-or-nothing: `mcp_servers` grants a server
+        # and the server decides what that means. memory-mcp exposes 18
+        # tools, of which the scripture profile has business with four; the
+        # rest are a code index it has no corpus for and graph WRITES
+        # (`graph_delete_node`, `ingest_documents`) nobody asked it to make.
+        self.mcp_tools = [str(t).strip() for t in mcp_tools if str(t).strip()] if mcp_tools else None
 
     def as_json(self) -> dict:
         return {"key": self.key, "label": self.label}
@@ -111,6 +122,7 @@ def _profile_from(entry: dict, key: str, default_directive: str | None) -> Agent
         workspace=entry.get("workspace") or "",
         skills=entry.get("skills") or "",
         endpoints=entry.get("endpoints"),
+        mcp_tools=entry.get("mcp_tools") or entry.get("mcpTools"),
     )
     if not p.key:
         log.error("profile with an empty key: skipped (label=%r)", p.label)
@@ -273,6 +285,40 @@ def scope_agent_tools(
         toolsets.append("clarify")
         log.info("profile %s: terminal without clarify; clarify added", profile.key)
     return toolsets, servers
+
+
+def allowed_mcp_names(allow: list[str] | None, servers: list[str]) -> set[str] | None:
+    """The exact tool names a profile's `mcp_tools` allowlist admits.
+
+    Built by CONSTRUCTION, not by matching: hermes names an MCP tool
+    `mcp_{server}_{tool}` with both halves sanitized (anything outside
+    `[A-Za-z0-9_]` becomes `_`, so `code-index` becomes `code_index`), and it
+    says in its own source that the form is ambiguous — `mcp_a_b_tool` is
+    either server `a` + tool `b_tool` or server `a_b` + tool `tool`. Matching
+    a suffix inherits that ambiguity and adds one of its own: allowing
+    `read_file` would also admit some server's `unsafe_read_file`. Spelling
+    out every (server, tool) pair we mean is exact, and the servers are known
+    here — they are the ones the profile was granted.
+
+    `None` (no allowlist) means every tool of the granted servers, which is
+    the behaviour profiles had before this existed.
+    """
+    if allow is None:
+        return None
+    san = lambda v: re.sub(r"[^A-Za-z0-9_]", "_", str(v or ""))  # noqa: E731
+    return {f"mcp_{san(s)}_{san(t)}" for s in servers for t in allow}
+
+
+def tool_allowed(name: str, allowed: set[str] | None) -> bool:
+    """Is `name` a tool this profile may carry?
+
+    Only MCP tools are judged. Everything else was already decided by the
+    toolset list, and re-deciding it here would mean a profile that names
+    `mcp_tools` silently loses its file or skills tools.
+    """
+    if allowed is None or not name.startswith("mcp_"):
+        return True
+    return name in allowed
 
 
 def register_workspace_cwd(session_id: str, workspace: str) -> bool:
