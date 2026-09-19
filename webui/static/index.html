@@ -63,10 +63,11 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
              properties of THIS conversation, and both are always a select —
              a single entry is information, not noise. -->
         <div class="compose-row">
-          <textarea id="input" rows="1" placeholder="发消息…  Enter 发送 · Shift+Enter 换行"></textarea>
+          <textarea id="input" rows="1" placeholder="发消息…"></textarea>
           <button id="send" type="submit" class="btn">发送</button>
         </div>
         <div class="picker-row">
+          <span class="key-hint">Enter 发送 · Shift+Enter 换行</span>
           <span id="model-badge" hidden></span>
           <select id="endpoint" hidden title="本会话回复所用的模型"></select>
         </div>

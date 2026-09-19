@@ -1190,7 +1190,16 @@ function renderSessions() {
     // rows are indistinguishable — which is how two segments got deleted as
     // "duplicates". When the second line would say nothing new, say WHEN and
     // HOW MUCH instead: that is what tells one segment from another.
-    const sub = (s.preview && s.preview !== s.title)
+    // ...and `!==` was too strict to catch it. The preview is the first
+    // message, the title is that message cut short, so the two differ by an
+    // ellipsis and a few characters — distinct strings, identical to read:
+    // the row said the same sentence twice. Compare as prefixes instead.
+    const same = (a, b) => {
+      const trim = (t) => String(t || "").replace(/[…\s]+$/, "");
+      const [x, y] = [trim(a), trim(b)];
+      return !!x && !!y && (x.startsWith(y) || y.startsWith(x));
+    };
+    const sub = (s.preview && !same(s.preview, s.title))
       ? s.preview
       : [fmtWhen(s.lastActive), s.messageCount != null ? `${s.messageCount} 条` : ""]
           .filter(Boolean).join(" · ") || "";
