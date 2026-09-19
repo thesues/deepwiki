@@ -400,23 +400,26 @@ html.theming, html.theming * {
    The 0.5 -> 1 opacity on the leading edge is what softens the boundary; a
    hard polygon edge alone looks like a page tear.
    
-   Guarded on prefers-reduced-motion, and the script skips startViewTransition
-   under the same query — a media query cannot cancel a transition that has
-   already begun, it can only leave it unanimated (which shows as a snap at the
-   END of the default 0.25 s rather than no transition at all). */
-@media (prefers-reduced-motion: no-preference) {
-  ::view-transition-group(root) {
-    animation-duration:.7s; animation-timing-function:var(--ease-expo-out);
-  }
-  /* The old page holds still underneath. Without this it cross-fades out on
-     the UA's default animation and the wipe edge washes out with it. */
-  ::view-transition-old(root) { animation:none; z-index:-1; }
-  ::view-transition-new(root) {
-    animation-name:reveal-dark; animation-duration:.7s;
-    animation-timing-function:var(--ease-expo-out);
-  }
-  html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-light; }
+   NOT guarded on prefers-reduced-motion, deliberately, and it was guarded at
+   first. The owner of this deployment runs with Reduce Motion on and asked
+   for this animation by name — under the guard the switch fell back to the
+   cross-fade and looked broken to the one person it was built for. deepwiki
+   does not guard theirs either, which is why it plays there and did not here.
+   What the setting is protecting against is vestibular trouble from parallax,
+   zoom and spin; this is a flat clip-path sweep that neither scales nor
+   rotates anything, and it is over in 0.7 s. If that trade ever stops being
+   the right one, the guard is one @media around this block. */
+::view-transition-group(root) {
+  animation-duration:.7s; animation-timing-function:var(--ease-expo-out);
 }
+/* The old page holds still underneath. Without this it cross-fades out on
+   the UA's default animation and the wipe edge washes out with it. */
+::view-transition-old(root) { animation:none; z-index:-1; }
+::view-transition-new(root) {
+  animation-name:reveal-dark; animation-duration:.7s;
+  animation-timing-function:var(--ease-expo-out);
+}
+html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-light; }
 
 /* The polygons run OUTSIDE the box on purpose (-71%, 171%): the sweep has to
    clear the corners, and a diagonal that stops at 100% leaves two triangles

@@ -1672,14 +1672,14 @@ async function boot() {
       // The whole animation lives in CSS — this only says WHEN the DOM
       // changes, which is the one thing CSS cannot know.
       //
-      // Two reasons to fall back. An older browser has no startViewTransition
-      // (Firefox shipped it well after Chrome), and a reader who asked for
-      // less motion gets the cross-fade instead — checked HERE and not only
-      // in the media query, because a transition that has already started
-      // cannot be called off, it can only run unanimated, which lands as a
-      // snap a quarter-second late.
+      // prefers-reduced-motion is NOT consulted, and it was at first; see the
+      // note in style.css for why it came back out. The fallback below is now
+      // only for a browser with no startViewTransition (Firefox shipped it
+      // well after Chrome), and for a hidden document — a background tab
+      // aborts the transition with InvalidStateError, so the flip has to
+      // happen anyway.
       if (typeof document.startViewTransition === "function" &&
-          !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          document.visibilityState === "visible") {
         document.startViewTransition(flip);
         return;
       }
