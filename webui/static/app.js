@@ -29,6 +29,7 @@ const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessi
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
                         // still shows a conversation's model after a reload
 const LS_THEME = "hermes.theme";    // "light" | "dark"; unset = dark (the original look)
+const LS_RAIL = "hermes.rail";      // "off" = session list collapsed; unset = open
 
 // Keyed by session + the group's index in the transcript, which is stable for a
 // given conversation: reload it, switch away and back, and the rows you opened
@@ -1650,6 +1651,30 @@ async function boot() {
   // WHICH icon is up is CSS's business (both sun and moon are in the markup,
   // [data-theme] picks one). This is the whole of the behaviour: flip the
   // attribute, arm the cross-fade for the length of the switch, persist.
+  // The session rail. One attribute on <html>, mirrored to localStorage and
+  // re-applied before first paint by the inline script in index.html — the
+  // theme's shape exactly. The CSS owns what "collapsed" looks like; this
+  // owns only when it changes, and the title/aria say which way the button
+  // now points.
+  const railBtn = $("#rail-toggle");
+  if (railBtn) {
+    const paintRail = () => {
+      const off = document.documentElement.dataset.rail === "off";
+      railBtn.title = off ? "展开会话栏" : "收起会话栏";
+      railBtn.setAttribute("aria-label", railBtn.title);
+      railBtn.setAttribute("aria-expanded", off ? "false" : "true");
+    };
+    railBtn.onclick = () => {
+      const root = document.documentElement;
+      const off = root.dataset.rail !== "off";
+      if (off) root.dataset.rail = "off";
+      else delete root.dataset.rail;
+      try { localStorage.setItem(LS_RAIL, off ? "off" : "on"); } catch (_) {}
+      paintRail();
+    };
+    paintRail();
+  }
+
   const themeBtn = $("#theme-toggle");
   if (themeBtn) {
     const paint = () => {

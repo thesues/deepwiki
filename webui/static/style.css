@@ -164,8 +164,35 @@ header h1 em { color:var(--accent); font-style:italic; }
 
 /* ---------- layout ---------- */
 .grid { display:grid; grid-template-columns:minmax(230px,1fr) minmax(420px,3fr);
-        gap:1.2rem; align-items:stretch; flex:1; min-height:0; }
+        gap:1.2rem; align-items:stretch; flex:1; min-height:0;
+        transition:grid-template-columns .28s var(--ease); }
 @media (max-width:820px){ .grid { grid-template-columns:1fr; } .sessions { display:none; } }
+
+/* The session list COLLAPSES TO A RAIL, it does not vanish: a 2.4rem column
+   keeping only the button that opens it again. The state is one attribute on
+   <html>, set by the click and re-applied before first paint by the inline
+   script in <head> — the same shape the theme uses, for the same reason (a
+   list that opens and shuts on every navigation is worse than one that never
+   collapsed).
+   Animating grid-template-columns works in Chrome 107+; where it does not,
+   the column simply snaps, which is the whole of the degradation. */
+html[data-rail="off"] .grid { grid-template-columns:2.4rem minmax(420px,3fr); }
+html[data-rail="off"] .sessions .rail-label,
+html[data-rail="off"] .sessions .dot,
+html[data-rail="off"] .sessions .count,
+html[data-rail="off"] .sessions ul { display:none; }
+html[data-rail="off"] .sessions .card-head { padding:0.7rem 0; justify-content:center; }
+html[data-rail="off"] .rail-toggle svg { transform:rotate(180deg); }
+
+.rail-toggle { flex:none; width:1.35rem; height:1.35rem; margin-left:-0.15rem;
+               display:inline-flex; align-items:center; justify-content:center;
+               padding:0; border:0; border-radius:4px; background:none;
+               color:var(--text-muted); cursor:pointer;
+               transition:color .15s var(--ease), background .15s var(--ease); }
+.rail-toggle:hover { color:var(--text); background:var(--surface-raised); }
+.rail-toggle svg { width:0.95rem; height:0.95rem; fill:none; stroke:currentColor;
+                   stroke-width:2; stroke-linecap:round; stroke-linejoin:round;
+                   transition:transform .28s var(--ease); }
 
 .card { background:var(--surface);
         border:1px solid var(--border); border-radius:var(--radius);
