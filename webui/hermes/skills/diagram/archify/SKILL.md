@@ -47,6 +47,37 @@ know, and every one of them has cost a retry when guessed:
    `read_file` / `find_callers`, then author the JSON from what you read.
    `--repo-root` has nothing here to point at.
 
+6. **Do not invent geometry. Rename a skeleton that already validates.**
+   This is where the first real attempt died: eleven components with
+   hand-written `pos: [40, 100]`, fifteen connections each carrying
+   `fromSide`/`toSide`, and then a repair loop that could not converge —
+   because `renderers/shared/geometry.mjs` checks the endpoint side even when
+   you did NOT author one. It infers the side from the layout and then
+   demands the route honour it, so invented coordinates fail against a rule
+   you never wrote down and cannot see.
+
+   What works, measured: take the example in `examples/` whose shape is
+   closest, keep every `pos`, `size`, `route` and `labelAt` EXACTLY as they
+   are, and change only ids, labels, sublabels and edge text. Renaming
+   `production-deployment.architecture.json` into an autumn-rs read path
+   passed all 9 showcase checks on the first validate.
+
+   When you rename an id, rename it everywhere: `components[].id`,
+   `connections[].from`/`.to`, `boundaries[].wraps[]`, and
+   `meta.views[].focus[]`. The first two are obvious and the last two are
+   where it bites — a stale id there fails validation with a message about
+   semantic ids that reads like a schema problem.
+
+   Fewer boxes than the example? Delete the component AND its connections
+   AND its mentions in `wraps` / `focus`. Leave the survivors where they sit.
+
+7. **Two repairs, then stop and say so.** Upstream's rule, and it is the one
+   that matters here: if two consecutive rounds do not lower the objective
+   error count, report the remaining diagnostics truthfully instead of
+   trying again. A model that keeps nudging coordinates will burn a whole
+   turn and deliver nothing — which is exactly what happened. A diagram that
+   validates at `standard` beats a `showcase` attempt that never lands.
+
 Everything below is upstream's skill, unmodified.
 
 ---
