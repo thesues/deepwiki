@@ -281,7 +281,14 @@ def build_app(
            CONTEXT COMPRESSION: compression forks a child session under a new
            id, stamping it from the same agent, so the tip of a chain carries
            the same mark as its root.
-        2. THE RETIRED SIDE TABLE, resolved through the chain — see
+        2. THE LIVE TURN, if one is writing into this id. The mark reaches the
+           store only when the turn ENDS, and compression rotates a live turn
+           onto an id that has neither a row nor a pin — so for the length of
+           that turn both persisted answers are "unknown", and unknown files
+           under the DEFAULT project. That is how a 通用助手 conversation
+           turned up in 佛典检索's sidebar mid-reply, and how a send from that
+           sidebar would have been answered by buda's agent.
+        3. THE RETIRED SIDE TABLE, resolved through the chain — see
            `_pins_by_tip`. For rows written before the mark existed.
 
         None means "no answer" — the caller files it under the default
@@ -290,6 +297,9 @@ def build_app(
         key = profile_of_source(source)
         if key:
             return key
+        live = manager.profile_of(session_id)
+        if live:
+            return live
         if pins is None:
             pins = _pins_by_tip()
         return pins.get(session_id)
@@ -336,9 +346,11 @@ def build_app(
                 "is_streaming": True,
                 # No store row yet (hermes persists at the END of the turn),
                 # so the mark does not exist either — the pin recorded at
-                # chat/start is all there is for the length of the first
-                # turn, and without it the conversation vanishes from its
-                # project's sidebar for exactly that long.
+                # chat/start, or the live turn's own profile once compression
+                # has moved the conversation off the pinned id, is all there
+                # is for the length of the first turn, and without it the
+                # conversation vanishes from its project's sidebar for
+                # exactly that long — or worse, surfaces in another's.
                 "profile": _profile_of_session(sid, None, pins),
             })
         return json_response({

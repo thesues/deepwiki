@@ -173,6 +173,25 @@ class TurnManager:
             s = self._live.get(session_id)
             return s if s is not None and s.running else None
 
+    def profile_of(self, session_id: str) -> str | None:
+        """The project whose agent is writing into `session_id`, or None.
+
+        The one answer about a conversation that needs no store and no side
+        table: the turn was admitted with a profile and still holds it. It
+        exists for the id compression rotates a live turn onto — that id has
+        no row yet and no pin under it, so every persisted answer about it is
+        "unknown", which the sidebar reads as the DEFAULT project. A general
+        conversation would appear in 佛典检索's sidebar for the rest of the
+        turn, and a send from there would be answered by buda's agent.
+
+        Not gated on `running`: a turn that just ended still answers for the
+        conversation it was writing until `forget_finished` drops it, and the
+        store row that replaces this appears in the same moment.
+        """
+        with self._lock:
+            stream = self._live.get(session_id)
+        return (getattr(stream, "profile_key", "") or None) if stream is not None else None
+
     def running(self) -> dict[str, str]:
         """session_id -> stream_id for every turn still going."""
         with self._lock:
@@ -240,6 +259,12 @@ class TurnManager:
             # Which endpoint this turn is on, so the per-endpoint count above can
             # be taken without reaching back into the agent.
             stream.endpoint_key = endpoint.key  # type: ignore[attr-defined]
+            # And which PROJECT is answering it. `_rotated` re-keys `_live`
+            # under the id compression moved the conversation to, and that id
+            # has neither a store row (hermes persists at the end of the turn)
+            # nor a pin (the pin was written under the id chat/start was given).
+            # Carried on the stream, the answer moves with the conversation.
+            stream.profile_key = profile.key if profile is not None else ""  # type: ignore[attr-defined]
             self._streams[stream.stream_id] = stream
             self._live[session_id] = stream
 

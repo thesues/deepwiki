@@ -805,3 +805,90 @@ def test_a_retry_clears_the_previous_failure(app_server):
     assert not any(e.get("kind") == "error" for e in events), (
         f"a successful retry must clear the previous failure; got {events}"
     )
+
+
+def test_a_compression_mid_turn_keeps_the_conversation_in_its_own_project(app_server):
+    """The bug in the screenshot: 通用助手's conversation, listed under 佛典检索.
+
+    Compression rotates the session id UNDER A LIVE TURN. `running()` follows
+    it (`_rotated` re-keys `_live`), so the sidebar starts listing the turn
+    under the new id — and that id has nothing that says which project it
+    belongs to: no store row (hermes persists when the turn ENDS, so no mark)
+    and no pin (chat/start wrote the pin under the id it was given). Both
+    persisted answers being "unknown", the row filed under the DEFAULT
+    project, which is the first entry in DEEPWIKI_PROFILES — buda. A video
+    conversation appeared in 佛典检索's sidebar, mid-reply, and a send from
+    that sidebar would have been answered by buda's agent and re-pinned there
+    for good.
+
+    The live turn knows: it was admitted with a profile and still holds it.
+
+    Ablation: drop `manager.profile_of` from `_profile_of_session` and this
+    goes red — the row comes back with `profile: None`, i.e. the default.
+    """
+    base, mgr, state = app_server
+    state["gate"].clear()          # hold the turn open, mid-compression
+
+    def run(agent, **kw):
+        agent.session_id = "child-after-compression"   # hermes moved the conversation
+        agent.stream_delta_callback("…")               # the frame that reports the move
+        state["gate"].wait(3)
+        return {}
+
+    mgr._run = run
+    try:
+        code, body = _post(base, "/api/chat/start",
+                           {"text": "给布偶猫做个视频", "profile": "video",
+                            "endpoint": "vision", "new": True})
+        assert code == 200, body
+        end = time.monotonic() + 3
+        while time.monotonic() < end and "child-after-compression" not in mgr.running():
+            time.sleep(0.01)
+        assert "child-after-compression" in mgr.running(), "the turn never rotated"
+
+        rows = _get(base, "/api/sessions")["sessions"]
+        row = next((r for r in rows if r["id"] == "child-after-compression"), None)
+        assert row is not None and row["profile"] == "video", (
+            "a conversation compressed mid-turn must stay in its own project's "
+            f"sidebar, not fall to the default one; got {row}"
+        )
+    finally:
+        state["gate"].set()
+        _wait_idle(mgr)
+
+
+def test_a_send_into_a_compressed_conversation_keeps_its_agent(app_server):
+    """The damage the sidebar row leads to, closed at the same point.
+
+    The reader clicks that row from the wrong project's page and types. The
+    request carries THAT page's profile, and the conversation — rotated onto
+    an id with no row and no pin — had no answer of its own to override it.
+    So buda's agent, with buda's MCP servers, would have answered a video
+    conversation, and `record()` would have moved it there permanently.
+    """
+    base, mgr, state = app_server
+    state["gate"].clear()
+
+    def run(agent, **kw):
+        agent.session_id = "child-id"
+        agent.stream_delta_callback("…")
+        state["gate"].wait(3)
+        return {}
+
+    mgr._run = run
+    _post(base, "/api/chat/start",
+          {"text": "给布偶猫做个视频", "profile": "video", "endpoint": "vision", "new": True})
+    end = time.monotonic() + 3
+    while time.monotonic() < end and "child-id" not in mgr.running():
+        time.sleep(0.01)
+    state["gate"].set()
+    _wait_idle(mgr)
+
+    # The same conversation, sent from buda's page under its rotated id.
+    _, second = _post(base, "/api/chat/start",
+                      {"text": "再来一个", "sessionId": "child-id", "profile": "buda"})
+    assert second["profile"] == "video", (
+        "the conversation's own project answers, even under the id compression "
+        "moved it to"
+    )
+    _wait_idle(mgr)
