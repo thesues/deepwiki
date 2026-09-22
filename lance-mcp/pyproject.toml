@@ -17,4 +17,11 @@ dev = ["pytest>=8,<9"]
 [[tool.uv.index]]
 name = "ivolc"
 url = "https://mirrors.ivolces.com/pypi/simple/"
+
+[[tool.uv.index]]
+name = "aliyun-fallback"
+url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
