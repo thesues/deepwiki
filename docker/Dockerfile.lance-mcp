@@ -24,8 +24,11 @@ RUN set -eux; \
 RUN python -m pip install --no-cache-dir "uv==0.8.22"
 WORKDIR /app
 COPY lance-mcp/pyproject.toml lance-mcp/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
-COPY lance-mcp/ ./
+# The ivolc mirror owns its artifact URLs; a lock generated against PyPI cannot
+# be made valid by rewriting the hostname. Refresh once inside the Volc build
+# network, then install the exact graph that refresh produced.
+RUN uv lock --refresh && uv sync --frozen --no-dev --no-install-project
+COPY lance-mcp/*.py lance-mcp/README.md ./
 
 RUN .venv/bin/python -m py_compile *.py && \
     .venv/bin/python test_chunk.py && \
