@@ -2,7 +2,7 @@
 #
 # Note what is NOT here, compared to every other workload in this repo: no
 # privileged container, no `autumn-fuse`, no `/dev/fuse`, no autumn credential,
-# no mountPropagation. This pod never talks to autumn. It talks to `memory-mcp`
+# no mountPropagation. This pod never talks to autumn. It talks to `lance-mcp`
 # over HTTP MCP and to `freetoken-l3` over the OpenAI-compatible API, both plain
 # ClusterIP Services.
 #
@@ -348,7 +348,7 @@ spec:
             # The toolset POLICY per project (PLAN §5's division of labour):
             #   buda  — skills ONLY. Everything the scripture agent does —
             #           retrieval, corpus reading — a skill initiates, and the
-            #           skill calls the MCP (memory-mcp) tools; the agent
+            #           skill calls the MCP (lance-mcp) tools; the agent
             #           itself never sees raw file/terminal surface.
             #           mcp-<name> toolsets are appended by build_agent for
             #           every enabled server, so skills→MCP stays reachable
@@ -380,7 +380,7 @@ spec:
             # ONE variable for every MCP server, as NAME=URL pairs, in order.
             # The first is the one the UI names — the same "first entry wins"
             # rule the endpoint list and the profile list follow. One
-            # memory-mcp instance serves ONE corpus, so a second project's
+            # lance-mcp serves ONE corpus, so a second project's
             # index is a second instance on its own port
             # (k8s/code-index-mcp.yaml), and a profile is then narrowed to
             # the server its corpus lives on plus the tools it uses
@@ -397,7 +397,7 @@ spec:
             # still read as a fallback, so a PVC and a manifest that update
             # at different moments do not leave a pod with no retrieval.
             - name: MCP_SERVERS
-              value: "memory=http://memory-mcp:5100/mcp,code-index=http://code-index-mcp:5101/mcp"
+              value: "lance=http://lance-mcp:5102/mcp,code-index=http://code-index-mcp:5101/mcp"
             - { name: LLM_BASE_URL, value: "http://freetoken-l3:1919/v1" }
             - { name: LLM_MODEL, value: "dsv4-flash" }
             # FreeToken's max_seq_len is 62080 (prompt + generation, derived
@@ -424,7 +424,7 @@ spec:
             # The project cards. Four projects:
             #   buda            — the scripture agent. skills ONLY: everything
             #                     it does a skill initiates, and the skill calls
-            #                     the MCP (memory) tools. NO terminal — observed
+            #                     the MCP (lance) tools. NO terminal — observed
             #                     in production it reached for sed on the corpus
             #                     instead of calling retrieval; without a shell
             #                     it cannot take that shortcut.
@@ -500,9 +500,9 @@ spec:
             # offered and not honoured.
             #
             # `mcp_tools` narrows a GRANTED server to the tools the profile
-            # actually uses. memory-mcp publishes 18, and buda has business
-            # with four: search_docs / list_documents / document_outline to
-            # find things, read_file to read around a hit. The other 14 are a
+            # actually uses. lance-mcp publishes more tools than buda needs;
+            # buda has business with four: search_docs / list_documents / document_outline to
+            # find things, read_file to read around a hit. The other six are a
             # code index it has no corpus for (`search_code`, `get_symbol`,
             # `find_callers`…) and WRITES nobody asked it to make —
             # `ingest_documents` puts new material in the corpus,
@@ -521,7 +521,7 @@ spec:
             # CHAT_DIRECTIVE: that brief was written for it.
             - name: DEEPWIKI_PROFILES
               value: |
-                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
+                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["lance"],
                   "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
                   "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],

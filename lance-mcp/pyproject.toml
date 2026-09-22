@@ -1,0 +1,15 @@
+[project]
+name = "buda-lance-mcp"
+version = "0.1.0"
+description = "Buda retrieval MCP backed by community LanceDB on Autumn FUSE"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "lancedb==0.39.0",
+  "numpy>=1.26,<3",
+  "pyarrow>=18,<22",
+  "tree-sitter==0.25.2",
+  "tree-sitter-rust==0.23.3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]

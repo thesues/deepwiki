@@ -14,7 +14,7 @@ buda/
 └── k8s/
     ├── freetoken.yaml           MoE serving on one RTX 4090
     ├── upload-models.yaml       one-shot: load a checkpoint into autumn fs/
-    ├── memory-mcp.yaml          MCP/HTTP retrieval over the document corpus
+    ├── lance-mcp.yaml           LanceDB MCP over an Autumn FUSE mount
     └── webui.yaml               chat + session management
 ```
 
@@ -26,21 +26,21 @@ Host memory, not VRAM, sets the model ceiling; the weights become a cold-start
 streaming problem rather than a resident one, which is what makes it sensible to
 keep them in autumn and read them through a FUSE mount.
 
-**Retrieval** — `memory-mcp` (an autumn tool) indexes a document corpus stored in
-autumn and exposes it over MCP and HTTP.
+**Retrieval** — `lance-mcp` runs unmodified community LanceDB against an Autumn
+FUSE path, indexes the document corpus, and exposes the result over MCP/HTTP.
 
 **Chat** — `webui` is a hermes front end, now positioned as **deepwiki**: a
 multi-project DeepWiki-style site. The homepage lists project cards; each
 project is an `AgentProfile` (its own brief, toolsets, MCP subset and
 workspace folder), declared in hermes' config.yaml (`profiles:`) or the
 `DEEPWIKI_PROFILES` env. Session management and a chat box otherwise. It
-reaches retrieval through `memory-mcp`'s **HTTP** MCP transport rather than
+reaches retrieval through `lance-mcp`'s **HTTP** MCP transport rather than
 spawning it, so it holds no autumn credential and is the one workload here NOT
 bound by the WIRE lockstep below. See `webui/ARCHITECTURE.md`.
 
-Both follow the same shape: a privileged `autumn-fuse` sidecar mounts the `fs/`
-namespace, the app reads files from the mount, and anything the app *writes*
-goes to its own namespace with its own credential.
+Storage-backed workloads mount Autumn FUSE in the privileged app container.
+This cluster does not propagate sidecar mounts reliably, so one mount namespace
+is intentional. LanceDB reads and writes ordinary paths under that mount.
 
 ## What lives here vs in autumn-rs
 
@@ -52,8 +52,8 @@ etcd / dashboard), the all-roles image and its entrypoint, `autumn-fuse`, and
 image — it does not fork or vendor them.
 
 The dividing question is "would this exist if the workload went away?" The
-`fuse` entrypoint role and the `memory-mcp` binary would: they are capabilities
-of the storage system. These manifests would not.
+`fuse` entrypoint role would: it is a capability of the storage system. The
+Lance MCP source and these manifests would not.
 
 ## Dependency on the autumn image
 
@@ -117,22 +117,21 @@ correctness constraint, not a speed one.
 ## Deploying
 
 ```bash
-kubectl -n autumn apply -f k8s/memory-mcp.yaml          # small, exercises the
-                                                        # same fuse-sidecar shape
+kubectl -n autumn apply -f k8s/lance-mcp.yaml
 kubectl -n autumn apply -f k8s/upload-model-minimax.yaml
 kubectl -n autumn apply -f k8s/freetoken.yaml
 ```
 
-Fill the `IMAGE_*` placeholders first. Deploy `memory-mcp` before the serving
-pod if you can: it uses the same sidecar pattern, the same mountPropagation
-pairing and the same credential mounts, but needs no GPU and no 130 GiB
-download — so a mistake in the pod shape surfaces cheaply.
+Fill the `IMAGE_*` placeholders first. Deploy `lance-mcp` before switching the
+webui endpoint; its first start builds the persistent LanceDB index and only
+becomes ready after that succeeds.
 
 ## Status
 
-Deployed and serving. FreeToken runs DeepSeek-V4-Flash reading its weights from
-an autumn-fuse mount; `memory-mcp` is up; the webui is built but not yet rolled
-out. Verified against the live cluster:
+FreeToken is deployed and reads its weights from an autumn-fuse mount. The
+tracked retrieval target is `lance-mcp`; until that image and the updated
+webui manifest are rolled out, the live webui remains on `memory-mcp`. The
+storage path itself has been verified against the live cluster:
 
 - `O_DIRECT` reads work on an autumn-fuse mount at 4 KiB and 8 MiB — the load
   path this whole design rests on, since FreeToken probes `O_DIRECT` once and

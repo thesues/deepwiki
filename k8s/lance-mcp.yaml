@@ -1,0 +1,118 @@
+# Replace both image placeholders before applying. IMAGE_AUTUMN_RS must be the
+# image currently running the Autumn cluster; its init container contributes
+# only autumn-fuse. Community LanceDB itself is entirely inside IMAGE_LANCE_MCP.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lance-mcp
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp }
+  ports:
+    - { name: http, port: 5102, targetPort: 5102 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lance-mcp
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      initContainers:
+        - name: fusebin
+          image: IMAGE_AUTUMN_RS
+          command: ["sh", "-c", "cp /usr/local/bin/autumn-fuse /fusebin/ && chmod +x /fusebin/autumn-fuse"]
+          volumeMounts:
+            - { name: fusebin, mountPath: /fusebin }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits:   { cpu: "1", memory: 256Mi }
+      containers:
+        - name: lance-mcp
+          image: IMAGE_LANCE_MCP
+          imagePullPolicy: Always
+          securityContext: { privileged: true }
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              M="$(getent hosts autumn-manager | awk '{print $1}'):9001"
+              MP=/mnt/autumn
+              DB="$MP/lancedb/buda"
+              READY="$MP/lancedb/.buda-docs-v1-ready"
+              mkdir -p "$MP"
+
+              if grep -qs " $MP fuse" /proc/mounts; then
+                fusermount3 -uz "$MP" 2>/dev/null || umount -l "$MP" 2>/dev/null || true
+              fi
+              /opt/fusebin/autumn-fuse \
+                --manager "$M" --mountpoint "$MP" --transport tcp \
+                --direct-read false --read-io-threads 8 \
+                --credential-file /etc/autumn/cred/fs.cred &
+              FUSE_PID=$!
+              APP_PID=
+              cleanup() {
+                [ -z "${APP_PID:-}" ] || kill "$APP_PID" 2>/dev/null || true
+                kill "$FUSE_PID" 2>/dev/null || true
+                fusermount3 -uz "$MP" 2>/dev/null || true
+              }
+              trap cleanup EXIT TERM INT
+
+              for i in $(seq 1 120); do
+                ls "$MP/docs/buda" >/dev/null 2>&1 && break
+                kill -0 "$FUSE_PID" 2>/dev/null || { echo "autumn-fuse exited during mount"; exit 1; }
+                sleep 1
+              done
+              ls "$MP/docs/buda" >/dev/null 2>&1 || { echo "mount not serving corpus after 120s"; exit 1; }
+
+              # The success marker is written last. A replacement therefore
+              # overwrites tables left by an interrupted initial ingest.
+              if [ ! -f "$READY" ]; then
+                mkdir -p "$DB"
+                .venv/bin/python ingest_docs.py \
+                  --fs-root "$MP" --index docs/buda --db-path "$DB" \
+                  --embed-url http://llama-embed:8080 --embed-model bge-m3
+                touch "$READY"
+              fi
+
+              .venv/bin/python server.py \
+                --db-path "$DB" --fs-root "$MP" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3 \
+                --host 0.0.0.0 --port 5102 &
+              APP_PID=$!
+              wait "$APP_PID"
+          ports:
+            - { name: http, containerPort: 5102 }
+          volumeMounts:
+            - { name: mnt, mountPath: /mnt/autumn }
+            - { name: fusebin, mountPath: /opt/fusebin, readOnly: true }
+            - { name: cred, mountPath: /etc/autumn/cred, readOnly: true }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+          startupProbe:
+            httpGet: { path: /healthz, port: 5102 }
+            periodSeconds: 15
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: { path: /healthz, port: 5102 }
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - { name: mnt, emptyDir: {} }
+        - { name: fusebin, emptyDir: {} }
+        - name: cred
+          secret: { secretName: autumn-credential }
