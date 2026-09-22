@@ -5,18 +5,17 @@ FROM ${UV_IMAGE} AS uv
 
 FROM ${BASE_REGISTRY}${PYTHON_IMAGE}
 
-ARG APT_MIRROR=
-ARG PIP_INDEX_URL=https://pypi.org/simple/
-ENV UV_INDEX_URL=${PIP_INDEX_URL} \
+ARG IVOLC_APT_MIRROR=https://mirrors.ivolces.com
+ARG IVOLC_PYPI_INDEX=https://mirrors.ivolces.com/pypi/simple/
+ENV UV_INDEX_URL=${IVOLC_PYPI_INDEX} \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 RUN set -eux; \
-    if [ -n "${APT_MIRROR}" ]; then \
-      sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources || true; \
-    fi; \
+    mirror="${IVOLC_APT_MIRROR%/}"; mirror="${mirror%/debian}"; \
+    sed -i -E "s#https?://deb.debian.org#${mirror}#g" /etc/apt/sources.list.d/debian.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates fuse3 tini; \
     rm -rf /var/lib/apt/lists/*

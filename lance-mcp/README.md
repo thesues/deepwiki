@@ -11,6 +11,10 @@ custom provider, Python binding, or commit handler. In production the pod
 mounts Autumn at `/mnt/autumn` and gives LanceDB the ordinary filesystem path
 `/mnt/autumn/lancedb/buda`.
 
+The image build uses the ivolc Debian and PyPI mirrors directly. Legacy
+`APT_MIRROR` / `PIP_INDEX_URL` values passed by the shared CP pipeline are not
+consumed by this Dockerfile.
+
     uv sync --group dev
     PY="uv run --no-sync python"
     EVAL=~/upstream/autumn-rs/examples/memory-mcp/eval
