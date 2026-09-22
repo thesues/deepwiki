@@ -13,7 +13,9 @@ mounts Autumn at `/mnt/autumn` and gives LanceDB the ordinary filesystem path
 
 The image build uses the ivolc Debian and PyPI mirrors directly. Legacy
 `APT_MIRROR` / `PIP_INDEX_URL` values passed by the shared CP pipeline are not
-consumed by this Dockerfile.
+consumed by this Dockerfile. As in Buda's existing WebUI image, the base Python
+environment only bootstraps the `uv` executable; `uv sync --frozen` installs
+the complete application dependency graph.
 
     uv sync --group dev
     PY="uv run --no-sync python"
