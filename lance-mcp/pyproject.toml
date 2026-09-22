@@ -13,3 +13,8 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8,<9"]
+
+[[tool.uv.index]]
+name = "ivolc"
+url = "https://mirrors.ivolces.com/pypi/simple/"
+default = true
