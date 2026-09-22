@@ -397,7 +397,7 @@ spec:
             # still read as a fallback, so a PVC and a manifest that update
             # at different moments do not leave a pod with no retrieval.
             - name: MCP_SERVERS
-              value: "lance=http://lance-mcp:5102/mcp,code-index=http://code-index-mcp:5101/mcp"
+              value: "memory=http://lance-mcp:5102/mcp,code-index=http://code-index-mcp:5101/mcp"
             - { name: LLM_BASE_URL, value: "http://freetoken-l3:1919/v1" }
             - { name: LLM_MODEL, value: "dsv4-flash" }
             # FreeToken's max_seq_len is 62080 (prompt + generation, derived
@@ -521,7 +521,7 @@ spec:
             # CHAT_DIRECTIVE: that brief was written for it.
             - name: DEEPWIKI_PROFILES
               value: |
-                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["lance"],
+                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
                   "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
                   "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
