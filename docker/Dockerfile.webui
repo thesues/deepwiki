@@ -1,45 +1,15 @@
-# hermes webui — session management and a chat box.
-#
-# Two venvs on purpose. hermes and this app share most of their dependencies and
-# disagree on some, so one venv would resolve to whatever the later install
-# wanted and quietly break the other. `hermes_session_api.py` is executed by
-# HERMES' interpreter for exactly the same reason.
-#
-# Retrieval goes through `memory-mcp` over HTTP MCP. Nothing else here talks
-# to autumn: the app carried a PyO3 client while it stored media in autumn, and
-# that client IS the wire format, so the image was pinned to autumn's WIRE
-# lockstep — a commit mismatch decoded garbage rather than failing a handshake.
-# With media gone the client went with it, and so did the pin: this image is now
-# independent of the cluster's autumn version, and of the Rust stage that cost
-# the build its slowest minutes.
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22
+FROM ${UV_IMAGE} AS uv
 
 ARG BASE_REGISTRY=
-# `library/` spelled out, not the bare `python:` Docker Hub lets you write.
-# BASE_REGISTRY points this at a Hub cache in CI, and that cache rejects a
-# repository name with no namespace as malformed — a build there dies in
-# resolveBaseImage before running a single instruction, while the same
-# Dockerfile builds fine on a laptop. Docker Hub accepts both spellings, so the
-# explicit one is the one that works in both places.
 ARG PYTHON_IMAGE=library/python:3.12-slim-bookworm
-
 FROM ${BASE_REGISTRY}${PYTHON_IMAGE}
 
 ARG APT_MIRROR=
-# The default index resolves pypi.org but pulls wheels from files.hosted, which
-# stalls from the CN build pool with no output rather than failing. Same trap
-# `Dockerfile.freetoken` documents.
 ARG PIP_INDEX_URL=https://pypi.org/simple/
-ARG HERMES_VERSION=0.17.0
-ARG HERMES_EXTRA_INDEX=
-
-# `uv` does NOT read PIP_INDEX_URL — it reads UV_INDEX_URL. The pipeline passes
-# the aliyun mirror as PIP_INDEX_URL, so every `uv pip install` here went to
-# pypi.org anyway: "Resolved 70 packages in 4m 06s" for the hermes install,
-# which was the largest single cost in the build once the crates mirror was
-# fixed. Set both from the one arg and neither tool is left out.
-ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
-    UV_INDEX_URL=${PIP_INDEX_URL} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+ENV UV_INDEX_URL=${PIP_INDEX_URL} \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -48,75 +18,19 @@ RUN set -eux; \
       sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources || true; \
     fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git tini; \
+    apt-get install -y --no-install-recommends ca-certificates fuse3 tini; \
     rm -rf /var/lib/apt/lists/*
 
-# --- node, for the diagram skill ------------------------------------------- #
-# `skills/diagram/archify` is a Node CLI (>=18, zero runtime dependencies): the
-# agent authors a typed JSON spec and archify compiles it to a self-contained
-# HTML diagram. No Node, no diagrams.
-#
-# The official tarball rather than Debian's `nodejs` package: bookworm ships
-# 18.19, archify is developed against 22, and one `curl | tar` costs less image
-# than apt's dependency closure.
-#
-# .tar.GZ, not .tar.xz, and that is not a preference: this base image has no
-# `xz`. hermes' own browser-tool installer reaches for the .xz build and dies
-# mid-extract with "tar (child): xz: Cannot exec: No such file or directory" —
-# 220 KB of download, then nothing. gz needs only what tar already has.
-#
-# NODE_MIRROR is a build arg for the same reason APT_MIRROR is: nodejs.org is
-# slow to unreachable from the CN build pool, and the mirror that fixes it is
-# reachable only from inside that network, so it cannot be the default.
-ARG NODE_VERSION=22.16.0
-ARG NODE_MIRROR=https://nodejs.org/dist
-RUN set -eux; \
-    url="${NODE_MIRROR%/}/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"; \
-    curl -fsSL "$url" -o /tmp/node.tar.gz; \
-    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
-        --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
-    rm /tmp/node.tar.gz; \
-    node --version
-
-# --- hermes, in its own venv ------------------------------------------------ #
-# `hermes acp --check` at BUILD time: an image whose agent cannot start should
-# fail here, not at 3am in a rollout. It is also the only cheap proof that the
-# `[acp]` extra actually resolved.
-RUN set -eux; \
-    python -m pip install --no-cache-dir uv; \
-    uv venv /opt/hermes/.venv; \
-    VIRTUAL_ENV=/opt/hermes/.venv uv pip install --no-cache-dir \
-        $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
-        "hermes-agent[acp,mcp]==${HERMES_VERSION}"; \
-    ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
-    hermes acp --check
-
-# --- the app ---------------------------------------------------------------- #
-# No pip install here on purpose: `http_shell.py` replaced aiohttp with the
-# stdlib, and it was this server's only third-party dependency.
+COPY --from=uv /uv /uvx /bin/
 WORKDIR /app
-COPY webui/ /app/
+COPY lance-mcp/pyproject.toml lance-mcp/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY lance-mcp/ ./
 
-ENV HERMES_BIN=/usr/local/bin/hermes \
-    HERMES_PY=/opt/hermes/.venv/bin/python \
-    HERMES_HOME=/opt/data \
-    HERMES_DISABLE_LAZY_INSTALLS=1 \
-    # The other half of disabling a toolset. Availability is computed for EVERY
-    # toolset and filtered afterwards, so the browser toolset's lazy installer
-    # still fires during the check even when the toolset is off -- a fresh
-    # volume elsewhere grew 220 KB -> 897 MB pulling Chromium it would never use.
-    HERMES_NO_DEP_INSTALL=1 \
-    WORKDIR=/opt/data \
-    PORT=8080 \
-    # Every MCP server in one NAME=URL list, first one named by the UI. The
-    # deployment overrides this; the default is what makes `docker run` find
-    # a memory-mcp on the same network without a flag.
-    MCP_SERVERS=memory=http://memory-mcp:5100/mcp
-RUN mkdir -p /opt/data/logs
+RUN .venv/bin/python -m py_compile *.py && \
+    .venv/bin/python test_chunk.py && \
+    .venv/bin/python test_server.py
 
-EXPOSE 8080
-# tini reaps: `hermes acp` is a child of this process, and a chat session that
-# ends without one leaves a zombie per turn. The lerobot console learned this by
-# accumulating 48 of them over 26 hours.
+EXPOSE 5102
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/opt/hermes/.venv/bin/python", "main.py"]
+CMD [".venv/bin/python", "server.py", "--help"]
