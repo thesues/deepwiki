@@ -256,3 +256,54 @@ def test_a_non_todo_result_is_never_read_as_a_checklist(monkeypatch):
     assert [e.get("kind") for e in hs.history("s", 0)] == [
         "history_user", "tool", "tool",
     ]
+
+
+# ── the post-compression todo injection ────────────────────────────────────
+#
+# hermes re-injects the agent's active todo list as a USER message after
+# context compression (`compressed.append({"role": "user", "content":
+# todo_snapshot})`). It is an instruction to the MODEL, and rendered as
+# speech it is a wall of `[>]` markers in a user bubble — verbatim from the
+# report that found it.
+
+
+def _injection_block():
+    return (
+        "[Your active task list was preserved across context compression]\n"
+        "- [>] upload_images. 上传 6 张故事板图片到 ComfyUI (in_progress)\n"
+        "- [>] generate_videos. 提交修复版 6 个 h3_i2v 视频生成任务 （fix BasicScheduler） (in_progress)\n"
+        "- [ ] download_videos. 下载所有生成的视频 (pending)\n"
+        "- [ ] deliver. 交付视频到 /app/static/ (pending)"
+    )
+
+
+def test_the_todo_injection_row_becomes_a_card_not_speech(monkeypatch):
+    msgs = [{"role": "user", "content": _injection_block()}]
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: msgs)})())
+    events = hs.history("s", 0)
+    assert [e.get("kind") for e in events] == ["todo"]
+    items = events[0]["items"]
+    assert [(t["id"], t["status"]) for t in items] == [
+        ("upload_images", "in_progress"),
+        ("generate_videos", "in_progress"),
+        ("download_videos", "pending"),
+        ("deliver", "pending"),
+    ]
+    # Content with its own dots and brackets survives whole.
+    assert items[1]["content"] == "提交修复版 6 个 h3_i2v 视频生成任务 （fix BasicScheduler）"
+
+
+def test_a_real_user_message_is_never_read_as_an_injection(monkeypatch):
+    msgs = [{"role": "user", "content": "什么是怨憎会苦"}]
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: msgs)})())
+    assert [e.get("kind") for e in hs.history("s", 0)] == ["history_user"]
+
+
+def test_an_injection_header_with_no_items_renders_nothing(monkeypatch):
+    msgs = [{"role": "user",
+             "content": "[Your active task list was preserved across context compression]"}]
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: msgs)})())
+    assert hs.history("s", 0) == []

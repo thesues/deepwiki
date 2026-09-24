@@ -165,6 +165,53 @@ def _tool_calls(raw) -> list[dict]:
     return []
 
 
+# ── the todo-injection block ──────────────────────────────────────
+
+
+# After context compression, hermes re-injects the agent's active todo list as
+# a USER message (`conversation_compression.py`: `compressed.append({"role":
+# "user", "content": todo_snapshot})`). It is an instruction to the MODEL —
+# nobody typed it — and rendered as speech it is a wall of `[>]` markers in a
+# user bubble, which is exactly how it was reported. Parsed instead: the items
+# become the same `todo` event the tool result emits, and the row renders as
+# the checklist card it is describing.
+TODO_INJECTION_MARK = "[your active task list was preserved across context compression]"
+_TODO_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+
+
+def _parse_todo_injection(text: str):
+    """A post-compression todo snapshot, as plain items — or None.
+
+    Each item line hermes writes is `- [marker] id. content (status)`; the
+    trailing `(status)` is the authoritative state and the marker is its
+    fallback, because the content may itself end in a bracketed note. Lines
+    that parse as nothing are not todos — a list with no items yields None,
+    and the caller skips the row entirely.
+    """
+    t = (text or "").strip()
+    if TODO_INJECTION_MARK not in t.lower():
+        return None
+    out = []
+    marker_status = {"x": "completed", ">": "in_progress", "~": "cancelled"}
+    for line in t.splitlines():
+        m = re.match(r"^\s*- \[([^\]]+)\]\s+(.*)\s+\((\w+)\)\s*$", line)
+        if not m:
+            continue
+        marker, content, status = m.group(1).strip(), m.group(2), m.group(3).lower()
+        if status not in _TODO_STATUSES:
+            continue
+        # Split `id. content`: the id is the dot-delimited head, the rest —
+        # which may contain its own dots — is the description.
+        head, dot, tail = content.partition(". ")
+        item_id = head.strip() if dot else ""
+        out.append({
+            "id": item_id or marker,
+            "content": (tail if dot else content).strip(),
+            "status": status,
+        })
+    return out or None
+
+
 def _is_compaction_summary(text: str) -> bool:
     """True when a persisted message IS a context-compaction summary, not
     something a human or the model said.
@@ -225,6 +272,15 @@ def history(sid: str, limit: int) -> list[dict]:
             continue
         if role == "user":
             if text:
+                # The todo-injection row is model-facing state, not speech.
+                # With items it becomes the checklist card it describes; even
+                # without them it is never rendered as something a human said.
+                injected = _parse_todo_injection(text)
+                if injected is not None:
+                    out.append({"kind": "todo", "items": injected})
+                    continue
+                if TODO_INJECTION_MARK in text.lower():
+                    continue
                 out.append({"kind": "history_user", "text": text})
         elif role == "assistant":
             if text:
