@@ -83,9 +83,22 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 // artifactNode() turns the path into an inline <img>/<video> instead of a
 // link. Markdown `![](…)` already arrives as an <img>; this is the path the
 // model typed as text.
-const ARTIFACT_RE = /(?:\/opt\/data)?\/(?:artifacts|static)\/(?:[^\s/]+\/)*[^\s/]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v)/;
+// A MEDIA path is not a link at all — the element IS the content. The src is
+// the served URL (prefix stripped), and the click-through still exists for an
+// image: wrapped in an anchor so "open the full-size original" stays one
+// click away. A video carries its own controls and needs no wrapper.
+// Segments are any non-space, non-slash run: the agent names files in the
+// reader's own language (图.png), and an ASCII-only class is how a CJK image
+// silently stayed a link.
+// An ABSOLUTE URL is accepted and normalized: the model learned to write the
+// full gateway host (it saw one in the history and imitated it), and a link
+// through a DNS name is both wrong for this page and useless to a viewer —
+// the host is stripped to the relative path, which is what this page serves.
+const ARTIFACT_RE = /(?:https?:\/\/[^\/\s]+)?(?:\/opt\/data)?\/(?:artifacts|static)\/(?:[^\s/]+\/)*[^\s/]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v)/;
 const ARTIFACT_PATH = new RegExp(`^${ARTIFACT_RE.source}$`);
-const artifactHref = (p) => p.replace(/^\/opt\/data/, "");
+const artifactHref = (p) => p
+  .replace(/^https?:\/\/[^/\s]+/i, "")
+  .replace(/^\/opt\/data/, "");
 const artifactLabel = (p) => artifactHref(p).split("/").pop();
 const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
 // New-tab + no opener, set HERE and not by the DOMPurify hook that does it
@@ -170,12 +183,29 @@ const renderMD = (src) => {
   box.innerHTML = DOMPurify.sanitize(
     marked.parse(src || "", { gfm: true, breaks: true }),
   );
-  // A markdown image the model wrote with the FILESYSTEM path — the same
-  // two-true-spellings problem linkifyArtifacts answers for text. The prefix
-  // is not a URL; as written the <img> 404s. Rewrite to the served path.
+  // Marked has already turned the model's markdown into elements, and two
+  // shapes here need the same normalization linkifyArtifacts gives raw text:
+  //
+  // 1. An ABSOLUTE URL under /static|/artifacts — the model learned the full
+  //    gateway host from the history and imitates it. As an href it is a
+  //    click to a DNS name that may not even resolve for this reader; as an
+  //    img src it should not leave the page. Rewritten to the relative path.
+  // 2. A markdown LINK to a media file — `[看视频](…/x.mp4)` arrives as an
+  //    <a>, and a video the reader must CLICK AWAY to watch is the exact
+  //    failure this page exists to prevent. Replaced by the element itself.
+  const mediaHref = (u) => {
+    const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
+    return m ? m[1] : null;
+  };
+  for (const a of [...box.querySelectorAll("a[href]")]) {
+    const path = mediaHref(a.getAttribute("href"));
+    if (!path) continue;
+    if (MEDIA_FILE_RE.test(path)) a.replaceWith(artifactNode(path));
+    else { a.href = artifactHref(path); a.textContent = a.textContent.trim() || artifactLabel(path); }
+  }
   for (const media of box.querySelectorAll("img[src], video[src], source[src]")) {
-    const s = media.getAttribute("src") || "";
-    if (s.startsWith("/opt/data/")) media.setAttribute("src", s.slice("/opt/data".length));
+    const path = mediaHref(media.getAttribute("src") || "");
+    if (path) media.setAttribute("src", artifactHref(path));
   }
   linkifyArtifacts(box);
   return box.innerHTML;

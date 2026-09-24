@@ -104,3 +104,14 @@ curl -s -o /tmp/out.png \
 - 400 + `Required input is missing`：漏了某个必填参数，对照 asset 原文件补回。
 - 长时间无结果：`GET /queue` 看是否在跑；`GET /history` 一直查不到 id 说明提交没成功，重提。
 - OOM：视频把 megapixels 降到 0.4、时长降到 5s；3D 换 trellis2 单图路线。
+
+## 交付给用户（怎么引用生成的文件）
+
+生成的文件最终放到 `/app/static/`（先下载到工作目录，再 `cp` 过去；`/app/static` 已由 webui 直接对外服务）。
+
+**回复里引用一律用相对路径**，形如：
+
+- 图片：`![封面](/static/cover.png)`
+- 视频：`/static/episode.mp4`
+
+**绝对不要写带域名的完整 URL**（如 `https://xxx.apigateway…volceapi.com/static/a.png`）。页面只认相对路径——写了域名，用户看到的会是一条死链接而不是一张图。不确定文件名时先 `ls /app/static/` 再引用。

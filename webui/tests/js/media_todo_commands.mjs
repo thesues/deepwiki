@@ -38,6 +38,26 @@ assert.strictEqual(
 assert.strictEqual(
   show('/artifacts/s1/notes.md'), 'link', 'unknown extensions stay links');
 
+// An ABSOLUTE URL normalizes to the RELATIVE path — the model learned to
+// write the full gateway host and imitates it, and a media reference that
+// leaves the page is both wrong here and useless to the viewer.
+function hrefOf(p) {
+  const host = /^https?:\/\/[^/\s]+/i;
+  return p.replace(host, "").replace(/^\/opt\/data/, "");
+}
+assert.strictEqual(
+  hrefOf('https://gw.example.com/static/doorstory_final.mp4'),
+  '/static/doorstory_final.mp4', 'the gateway host is stripped');
+assert.strictEqual(
+  show('https://gw.example.com/static/storyboard-01.png'), 'media',
+  'an absolute-URL image renders inline');
+assert.strictEqual(
+  hrefOf('https://gw.example.com:8443/static/a.png'), '/static/a.png',
+  'a port is stripped with the host');
+assert.ok(ARTIFACT_RE.test('https://gw.example.com/static/a.png'));
+assert.ok(!ARTIFACT_RE.test('https://gw.example.com/other/a.png'),
+  'a URL outside the mounts is not an artifact');
+
 // The artifact regex recognises the media spellings at all — the shared
 // collector matches text nodes against ARTIFACT_RE, so a media path it
 // misses is never even considered.
