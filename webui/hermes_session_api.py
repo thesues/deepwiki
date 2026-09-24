@@ -35,7 +35,7 @@ def _db():
 # live fix removed, handed back the moment the reader refreshed. `turn_stream`
 # is stdlib-only, so it imports under either venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from turn_stream import DETAIL_MAX, _detail_for, _invocation_text  # noqa: E402
+from turn_stream import DETAIL_MAX, _detail_for, _invocation_text, _todo_items  # noqa: E402
 
 # The LIVE path does not derive the command -- hermes hands it one, built by
 # `build_tool_preview`. Deriving a second version here produced a different
@@ -252,6 +252,13 @@ def history(sid: str, limit: int) -> list[dict]:
                 if cid:
                     invocations[cid] = inv
                 detail = _detail_for(inv, None)
+                # A `todo` CALL is the write; the list itself lives in the
+                # result and is what the checklist card is drawn from. The
+                # call row is not where the plan belongs — the args ARE the
+                # JSON, and "$ {…}" is exactly the shape a plan must not
+                # take. Named here; summarised on the result row below.
+                if (fn.get("name") or "") == "todo":
+                    detail = "任务清单"
                 out.append({
                     "kind": "tool",
                     "id": cid,
@@ -263,7 +270,15 @@ def history(sid: str, limit: int) -> list[dict]:
             # The result arrives as its own row and carries the id the call was
             # announced under, so the client merges it into that same line.
             cid = m.get("tool_call_id")
+            tool_name = m.get("tool_name") or ""
             detail = _detail_for(invocations.get(cid, ""), text)
+            # A `todo` result IS the task list — summarised on the row, replayed
+            # whole as the `todo` event the client's checklist card is drawn
+            # from, the same shape the live sink emits.
+            items = _todo_items(tool_name, text)
+            if items is not None:
+                done = sum(1 for t in items if t.get("status") == "completed")
+                detail = f"任务清单：{len(items)} 项，{done} 已完成"
             # `is_error` is NOT persisted, so a replayed row cannot reproduce
             # hermes' own verdict. An explicit `error` in the payload is a
             # failure by any reading and is honoured; everything else stays
@@ -279,13 +294,15 @@ def history(sid: str, limit: int) -> list[dict]:
             out.append({
                 "kind": "tool",
                 "id": cid,
-                "title": m.get("tool_name") or "",
+                "title": tool_name,
                 "status": status,
                 # `detailFull` is a LENGTH, not a second copy of the text --
                 # the client computes "还有 N 字" from it. Sending the string
                 # made that arithmetic NaN on every replayed tool result.
                 "detail": detail[:DETAIL_MAX], "detailFull": len(detail),
             })
+            if items is not None:
+                out.append({"kind": "todo", "items": items})
     # A call no `tool` row ever answered. It happens — captured in production:
     # a `mcp_memory_search_docs` call followed directly by the final answer —
     # and `pending` made the client time it as running forever. `incomplete`

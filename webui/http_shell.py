@@ -72,6 +72,11 @@ CONTENT_TYPES = {
     ".woff2": "font/woff2", ".woff": "font/woff",
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+    # Media the agent generates lands here as files too — an <img>/<video> the
+    # transcript renders inline is only as good as the type the response
+    # carries: a video served as octet-stream downloads instead of playing.
+    ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".webm": "video/webm",
+    ".mov": "video/quicktime",
 }
 
 # Tells one BROWSER from another. Not authentication — everyone here shares one

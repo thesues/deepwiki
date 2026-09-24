@@ -245,6 +245,39 @@ def _detail_for(invocation: str, result) -> str:
     return "\n".join(lines).strip()
 
 
+def _todo_items(name: str, result) -> list | None:
+    """The todo list a `todo` call returned, as plain items — or None.
+
+    hermes' todo tool answers EVERY call with the full current list:
+    `{"todos": [{id, content, status}…], "summary": {…}}`, as a JSON string
+    from the schema-path tools and as a dict from wherever hermes already
+    parsed it. The reader wants the CHECKLIST, not the JSON in a detail box,
+    so the sink lifts it out and the client renders its own card.
+    """
+    if name != "todo":
+        return None
+    import json
+
+    parsed = result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except ValueError:
+            return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("todos"), list):
+        return None
+    out = []
+    for t in parsed["todos"]:
+        if not isinstance(t, dict):
+            continue
+        out.append({
+            "id": str(t.get("id") or ""),
+            "content": str(t.get("content") or ""),
+            "status": str(t.get("status") or "pending"),
+        })
+    return out or None
+
+
 class EventSink:
     """What `bind_callbacks` hands the agent: a turn's stream, in agent terms.
 
@@ -379,6 +412,15 @@ class EventSink:
         except (TypeError, ValueError):
             dur = ""
 
+        # `todo` carries the whole list in its result. The reader gets the
+        # CHECKLIST (emitted as its own kind below); the activity row keeps a
+        # one-line summary — the raw JSON was the one shape a plan must not
+        # take, and it was what a reopened row showed.
+        items = _todo_items(name, info.get("result"))
+        if items is not None:
+            done = sum(1 for t in items if t.get("status") == "completed")
+            detail = f"任务清单：{len(items)} 项，{done} 已完成"
+
         self.stream.emit(
             "tool",
             id=row_id,
@@ -390,6 +432,10 @@ class EventSink:
             # rather than silently ending mid-value.
             detailFull=len(detail),
         )
+
+        # Sent after the tool row, so replay order stays stable.
+        if items is not None:
+            self.stream.emit("todo", items=items)
 
     def step(self, *args, **kwargs) -> None:
         """Steps are progress, not content. Dropped unless they name something:

@@ -356,3 +356,83 @@ def test_metadata_passed_as_a_dict_beside_the_event_keeps_the_tool_name():
     ])
     assert rows[0]["title"] == "terminal"
     assert rows[0]["status"] == "running"
+
+
+# ── the todo tool: the checklist leaves the JSON box ────────────────────────
+
+
+def _all_events(calls):
+    """Run `sink.tool(*args, **kwargs)` for each call, return every event."""
+    from turn_stream import EventSink, TurnStream
+
+    st = TurnStream("st", "sess")
+    sink = EventSink(st)
+    for args, kwargs in calls:
+        sink.tool(*args, **kwargs)
+    return st.after(0)
+
+
+_TODO_RESULT = (
+    '{"todos": ['
+    '{"id": "1", "content": "检索经文", "status": "completed"},'
+    '{"id": "2", "content": "整理引文", "status": "in_progress"},'
+    '{"id": "3", "content": "写出答案", "status": "pending"}],'
+    ' "summary": {"total": 3, "completed": 1}}'
+)
+
+
+def test_a_todo_call_emits_the_list_as_its_own_event():
+    """hermes' todo tool answers EVERY call with the full list. The reader
+    wants the checklist, not the JSON — so the completed call also emits a
+    `todo` event carrying the plain items."""
+    events = _all_events([
+        (("tool.completed", "todo", None, None), {"result": _TODO_RESULT}),
+    ])
+    kinds = [e["kind"] for e in events]
+    assert "todo" in kinds
+    todo = next(e for e in events if e["kind"] == "todo")
+    assert [(t["id"], t["status"]) for t in todo["items"]] == [
+        ("1", "completed"), ("2", "in_progress"), ("3", "pending"),
+    ]
+    assert todo["items"][1]["content"] == "整理引文"
+
+
+def test_a_todo_rows_detail_is_a_summary_not_the_json():
+    """The activity row keeps a one-line summary; the raw list lives in the
+    `todo` event, where the checklist card is drawn from."""
+    rows = [e for e in _all_events([
+        (("tool.completed", "todo", None, None), {"result": _TODO_RESULT}),
+    ]) if e["kind"] == "tool"]
+    assert len(rows) == 1
+    assert "todos" not in rows[0]["detail"]
+    assert "3 项" in rows[0]["detail"] and "1 已完成" in rows[0]["detail"]
+
+
+def test_a_todo_started_call_emits_no_list():
+    """`tool.started` carries the WRITE (the args), not the state. Emitting an
+    event per progress frame would repaint the card half-written."""
+    events = _all_events([
+        (("tool.started", "todo", "write", {"todos": [{"id": "1"}]}), {}),
+    ])
+    assert [e["kind"] for e in events] == ["tool"]
+
+
+def test_a_todo_result_that_is_not_a_list_changes_nothing():
+    """A malformed result is not worth a broken turn: the row renders as any
+    tool's would and no `todo` event exists."""
+    events = _all_events([
+        (("tool.completed", "todo", None, None), {"result": "not json"}),
+        (("tool.completed", "todo", None, None), {"result": '{"todos": "nope"}'}),
+    ])
+    assert [e["kind"] for e in events] == ["tool", "tool"]
+
+
+def test_a_non_todo_tool_is_never_read_as_a_todo():
+    """`terminal` legitimately returns JSON containing the word `todos` (a
+    grep over a todo file, say). Gating on the tool NAME is what keeps that
+    from turning into a phantom checklist."""
+    events = _all_events([
+        (("tool.completed", "terminal", None, None),
+         {"result": '{"output": "todos found", "exit_code": 0}'}),
+    ])
+    assert [e["kind"] for e in events] == ["tool"]

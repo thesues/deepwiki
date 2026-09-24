@@ -384,6 +384,35 @@ header h1 em { color:var(--accent); font-style:italic; }
                     cursor:pointer; padding:0; text-align:left; }
 .act-detail .more:hover { text-decoration:underline; }
 
+/* ---------- todo: one checklist card, updated in place ---------- */
+/* hermes' todo tool answers every call with the FULL list, so the card is a
+   live state, not an append log: each event repaints the same card. */
+.bubble.todo-card { background:color-mix(in srgb, var(--surface-raised) 82%, transparent);
+                    border:1px solid var(--border); border-radius:var(--radius); padding:0.55rem 0.8rem; }
+.todo-head { font-size:0.7rem; letter-spacing:0.06em; color:var(--text-dim); margin-bottom:0.35rem; }
+.todo-item { display:flex; align-items:baseline; gap:0.5rem; font-size:0.78rem;
+             line-height:1.65; color:var(--text); padding:0.08rem 0; }
+.todo-mark { font-family:var(--mono); font-size:0.7rem; color:var(--text-muted); flex:none;
+             width:1rem; text-align:center; }
+.todo-text { overflow-wrap:anywhere; }
+.todo-status { margin-left:auto; flex:none; font-size:0.64rem; color:var(--text-muted); }
+.todo-item.s-completed .todo-text { color:var(--text-muted); text-decoration:line-through;
+                                    text-decoration-color:color-mix(in srgb, var(--text-muted) 60%, transparent); }
+.todo-item.s-completed .todo-mark { color:var(--success); }
+.todo-item.s-in_progress { color:var(--text); }
+.todo-item.s-in_progress .todo-mark { color:var(--accent); }
+.todo-item.s-in_progress .todo-status { color:var(--accent); }
+.todo-item.s-cancelled .todo-text { color:var(--text-muted); }
+
+/* ---------- inline media ---------- */
+/* An image or video the agent produced is CONTENT, not a link: shown at its
+   own size, capped to the column, with the original one click away (the img
+   is wrapped in an anchor). */
+.artifact-media { display:block; max-width:100%; max-height:26rem; width:auto;
+                  border-radius:calc(var(--radius) - 2px); border:1px solid var(--border); }
+video.artifact-media { width:100%; max-height:none; background:var(--bg); }
+.msg .bubble.md img { max-width:100%; height:auto; border-radius:calc(var(--radius) - 2px); }
+
 /* ---------- architecture note ---------- */
 .btn.ghost { background:transparent; border-color:var(--border); color:var(--text-dim); }
 .btn.ghost:hover { color:var(--accent); border-color:var(--accent-dim); background:transparent; }

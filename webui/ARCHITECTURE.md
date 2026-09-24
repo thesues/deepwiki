@@ -119,6 +119,37 @@ per-profile SKILLS have no hermes injection point yet (hermes reads one
 process-wide directory), so `AgentProfile.skills` is surfaced but not wired —
 see profiles.py.
 
+## Rendering: media, todos, commands
+
+Three surfaces where the transcript's shape is this app's choice, not hermes':
+
+* **Media renders inline.** An image or a video the agent produced is
+  content, not a link. The same path recognition that linkifies artifact
+  paths (`/artifacts/…`, `/opt/data/artifacts/…`, and now `/static/…`) turns
+  a media extension into an `<img>`/`<video>` at the point it was typed — as
+  markdown (`![](…)`, with a `/opt/data` prefix rewritten to the served URL),
+  as a code span, or as plain text. Documents (`.html`) stay links. Media can
+  live under either mount: `static/` (shipped) or `artifacts/` (written at
+  runtime); the server carries the video MIME types (`http_shell`), because a
+  video served as `octet-stream` downloads instead of playing. Path segments
+  match ANY non-space run — the agent names files in the reader's language,
+  and an ASCII-only class is how a `图.png` silently stayed a link.
+* **The todo list is a card, not JSON.** hermes' `todo` tool answers every
+  call with the FULL list. The sink (`turn_stream._todo_items`) lifts the
+  items out of the result and emits a `todo` event; the client draws ONE
+  checklist card per view, updated in place by every event — a plan rewritten
+  three times reads as one list ticking over. The activity row keeps a
+  one-line summary ("任务清单：3 项，1 已完成"); the raw JSON is the one
+  shape a plan must not take. History replay emits the same event from the
+  stored tool result (`hermes_session_api.history`), so a reload shows the
+  checklist a live reader saw.
+* **A leading `/` is a command, never a prompt.** The client honours
+  hermes' destructive-session commands locally: `/clear` (and `/new`,
+  `/reset`) ends the conversation and starts a fresh one — the store row
+  stays, history is not destroyed, the reader just stops typing into it —
+  and `/help` lists them. An unknown command is told so; nothing starting
+  with `/` reaches the model as a prompt about clearing.
+
 ## Toolsets and MCP
 
 Both are owned by ONE file: `HERMES_HOME/config.yaml` — the same file hermes'

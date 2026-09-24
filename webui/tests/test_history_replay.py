@@ -187,3 +187,72 @@ def test_history_real_user_message_with_similar_opening_is_kept():
     finally:
         hsa._db = orig
     assert [e["kind"] for e in events] == ["history_user"]
+
+
+# ── the todo checklist, replayed ────────────────────────────────────────────
+#
+# A reload must show the same checklist a live reader saw: the tool row with a
+# one-line summary, then a `todo` event carrying the plain items. Without the
+# event, a plan the agent rewrote three times mid-turn survives the reload as
+# nothing but a collapsed JSON row — the one shape a plan must not take.
+
+
+def _todo_msgs():
+    import json
+
+    result = json.dumps({
+        "todos": [
+            {"id": "1", "content": "检索经文", "status": "completed"},
+            {"id": "2", "content": "整理引文", "status": "in_progress"},
+        ],
+        "summary": {"total": 2, "completed": 1},
+    }, ensure_ascii=False)
+    return [
+        {"role": "user", "content": "plan it"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call_t1", "call_id": "call_t1", "type": "function",
+            "function": {"name": "todo", "arguments": json.dumps(
+                {"todos": [{"id": "1", "content": "检索经文",
+                            "status": "completed"}]})},
+        }]},
+        {"role": "tool", "tool_call_id": "call_t1", "tool_name": "todo",
+         "content": result},
+    ]
+
+
+def test_a_reloaded_todo_result_replays_the_checklist(monkeypatch):
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: _todo_msgs())})())
+    events = hs.history("s", 0)
+    todo = [e for e in events if e.get("kind") == "todo"]
+    assert len(todo) == 1
+    items = todo[0]["items"]
+    assert [(t["id"], t["status"]) for t in items] == [
+        ("1", "completed"), ("2", "in_progress"),
+    ]
+    assert items[0]["content"] == "检索经文"
+
+
+def test_a_reloaded_todo_rows_show_summaries_not_the_json(monkeypatch):
+    """Two rows survive a reload (the call and the result), and neither shows
+    the raw list: the call row names what it was, the result row summarises."""
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: _todo_msgs())})())
+    rows = [e for e in hs.history("s", 0) if e.get("kind") == "tool"]
+    assert len(rows) == 2
+    assert all("todos" not in r["detail"] for r in rows)
+    assert rows[0]["detail"] == "任务清单"
+    assert "2 项" in rows[1]["detail"] and "1 已完成" in rows[1]["detail"]
+
+
+def test_a_non_todo_result_is_never_read_as_a_checklist(monkeypatch):
+    """The tool NAME gates the parse: `terminal` legitimately returns JSON
+    about todo files, and that is not a plan."""
+    import json
+
+    msgs = _msgs("grep todos .", "found", 0)
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: msgs)})())
+    assert [e.get("kind") for e in hs.history("s", 0)] == [
+        "history_user", "tool", "tool",
+    ]

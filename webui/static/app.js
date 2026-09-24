@@ -77,13 +77,49 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 // delivery said `/opt/data/artifacts/autumn-rs-architecture.html` — correct,
 // and not a link. Nested segments are allowed: a diagram lands in the
 // session's own directory, so the path carries one.
-const ARTIFACT_RE = /(?:\/opt\/data)?\/artifacts\/(?:[\w.-]+\/)*[\w.-]+\.(?:html|svg|png)/;
+// MEDIA files are a different story: an image or a video is not something to
+// CLICK — it is something to LOOK AT. The same recognition now also covers
+// those extensions (and `/static/…`, the other place media lands), and
+// artifactNode() turns the path into an inline <img>/<video> instead of a
+// link. Markdown `![](…)` already arrives as an <img>; this is the path the
+// model typed as text.
+const ARTIFACT_RE = /(?:\/opt\/data)?\/(?:artifacts|static)\/(?:[^\s/]+\/)*[^\s/]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v)/;
 const ARTIFACT_PATH = new RegExp(`^${ARTIFACT_RE.source}$`);
 const artifactHref = (p) => p.replace(/^\/opt\/data/, "");
 const artifactLabel = (p) => artifactHref(p).split("/").pop();
+const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
 // New-tab + no opener, set HERE and not by the DOMPurify hook that does it
 // for every other link: these anchors are built after sanitize returns, so
 // that hook never sees them. Measured by a target that came back empty.
+// A MEDIA path is not a link at all — the element IS the content. The src is
+// the served URL (prefix stripped), and the click-through still exists for an
+// image: wrapped in an anchor so "open the full-size original" stays one
+// click away. A video carries its own controls and needs no wrapper.
+// Segments are any non-space, non-slash run: the agent names files in the
+// reader's own language (图.png), and an ASCII-only class is how a CJK image
+// silently stayed a link.
+const artifactNode = (path) => {
+  const href = artifactHref(path);
+  if (/\.(?:mp4|webm|mov|m4v)$/i.test(href)) {
+    const v = document.createElement("video");
+    v.src = href;
+    v.controls = true;
+    v.preload = "metadata";
+    v.className = "artifact-media";
+    return v;
+  }
+  const img = document.createElement("img");
+  img.src = href;
+  img.alt = artifactLabel(path);
+  img.loading = "lazy";
+  img.className = "artifact-media";
+  const a = document.createElement("a");
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.appendChild(img);
+  return a;
+};
 const artifactAnchor = (path) => {
   const a = document.createElement("a");
   a.href = artifactHref(path);
@@ -98,7 +134,7 @@ const linkifyArtifacts = (root) => {
     const text = code.textContent.trim();
     if (!ARTIFACT_PATH.test(text)) continue;
     if (code.closest("a, pre")) continue;
-    code.replaceWith(artifactAnchor(text));
+    code.replaceWith(MEDIA_FILE_RE.test(text) ? artifactNode(text) : artifactAnchor(text));
   }
   // Plain childNodes recursion rather than a TreeWalker: this same function
   // runs under the tests' hand-built DOM, which has no NodeFilter, and the
@@ -108,7 +144,7 @@ const linkifyArtifacts = (root) => {
     for (const child of [...(node.childNodes || [])]) {
       if (child.nodeType === 3) {
         if (ARTIFACT_RE.test(child.nodeValue || "")) hits.push(child);
-      } else if (child.nodeType === 1 && !/^(A|PRE|CODE)$/.test(child.tagName)) {
+      } else if (child.nodeType === 1 && !/^(A|PRE|CODE|IMG|VIDEO)$/.test(child.tagName)) {
         collect(child);
       }
     }
@@ -120,7 +156,7 @@ const linkifyArtifacts = (root) => {
     const re = new RegExp(ARTIFACT_RE.source, "g");
     for (let m = re.exec(n.nodeValue); m; m = re.exec(n.nodeValue)) {
       frag.append(n.nodeValue.slice(last, m.index));
-      frag.append(artifactAnchor(m[0]));
+      frag.append(MEDIA_FILE_RE.test(m[0]) ? artifactNode(m[0]) : artifactAnchor(m[0]));
       last = m.index + m[0].length;
     }
     frag.append(n.nodeValue.slice(last));
@@ -134,6 +170,13 @@ const renderMD = (src) => {
   box.innerHTML = DOMPurify.sanitize(
     marked.parse(src || "", { gfm: true, breaks: true }),
   );
+  // A markdown image the model wrote with the FILESYSTEM path — the same
+  // two-true-spellings problem linkifyArtifacts answers for text. The prefix
+  // is not a URL; as written the <img> 404s. Rewrite to the served path.
+  for (const media of box.querySelectorAll("img[src], video[src], source[src]")) {
+    const s = media.getAttribute("src") || "";
+    if (s.startsWith("/opt/data/")) media.setAttribute("src", s.slice("/opt/data".length));
+  }
   linkifyArtifacts(box);
   return box.innerHTML;
 };
@@ -302,6 +345,9 @@ const S = {
                         // setBusy. Send/stop gate on this, never on `busy`.
   seg: null,          // { kind: "think"|"out", body, text, refs }
   tools: new Map(),
+  todoCard: null,        // the one 任务清单 card, updated in place — hermes' todo
+                         // tool answers EVERY call with the FULL list, so the
+                         // latest event is the state, not one more card to stack.
   approvalTimer: null,
   awaitingPerm: false,
   skipUserEcho: false,   // we drew this turn's prompt optimistically
@@ -530,11 +576,14 @@ function tickSlow() {
   $("#elapsed").textContent = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
 }
 
-function scroll() {
+function scroll(force) {
   const m = $("#messages");
   // Follow the tail only if the reader is already there. Yanking the viewport
   // away from someone reading back is worse than a missed autoscroll.
-  if (m.scrollHeight - m.scrollTop - m.clientHeight < 140) m.scrollTop = m.scrollHeight;
+  // `force` is for view replacement -- a session switch repaints the whole
+  // transcript, and the reader asked for THAT conversation, so it opens at its
+  // tail regardless of where the previous view happened to be scrolled.
+  if (force || m.scrollHeight - m.scrollTop - m.clientHeight < 140) m.scrollTop = m.scrollHeight;
 }
 
 /* ---------- messages ---------- */
@@ -939,6 +988,80 @@ async function pollApprovals() {
   } catch (_) { /* transient; the next tick retries */ }
 }
 
+/* ---------- todos ---------- */
+// hermes' todo tool is how the agent plans: it calls `todo` with a list and
+// gets the WHOLE list back — every call, full state. What the reader wants is
+// a checklist that ticks over, not a JSON blob in a collapsed activity row
+// (the old rendering) and not one card per call (a plan rewritten three times
+// reads as three plans). So: one card, updated in place by every event.
+const TODO_MARK = { completed: "✓", in_progress: "▶", pending: "○", cancelled: "–" };
+const TODO_NAME = { completed: "已完成", in_progress: "进行中", pending: "待办", cancelled: "已取消" };
+
+function showTodos(items) {
+  if (!Array.isArray(items) || !items.length) return;
+  let card = S.todoCard;
+  if (!card || !document.body.contains(card.wrap)) {
+    const wrap = el("div", "msg bot");
+    const box = el("div", "bubble todo-card");
+    const head = el("div", "todo-head", "任务清单");
+    const body = el("div", "todo-body");
+    box.append(head, body);
+    wrap.appendChild(box);
+    // Above the answer, next to the activity group — the plan is part of the
+    // turn's work, and it reads before the conclusion the same way.
+    const top = S.turnTop && document.body.contains(S.turnTop) ? S.turnTop : null;
+    if (top) $("#messages").insertBefore(wrap, top);
+    else $("#messages").appendChild(wrap);
+    card = S.todoCard = { wrap, box, head, body };
+  }
+  const done = items.filter((t) => t.status === "completed").length;
+  card.head.textContent = `任务清单 · ${done}/${items.length} 完成`;
+  card.body.replaceChildren(...items.map((t) => {
+    const st = TODO_MARK[t.status] ? t.status : "pending";
+    const row = el("div", `todo-item s-${st}`);
+    row.append(
+      el("span", "todo-mark", TODO_MARK[st]),
+      el("span", "todo-text", t.content || ""),
+      el("span", "todo-status", TODO_NAME[st]),
+    );
+    return row;
+  }));
+  scroll();
+}
+
+/* ---------- slash commands ---------- */
+// hermes' own commands, the ones this webui can honour locally. A message
+// starting with "/" is never sent to the model: the CLI would have run it as
+// a command, and a prompt of "/clear" to the model is a prompt ABOUT clearing.
+const SLASH_HELP = [
+  ["/clear", "结束当前对话，开始新会话（原会话保留在侧栏）"],
+  ["/new", "/clear 的别名"],
+  ["/reset", "/clear 的别名"],
+  ["/help", "显示这些命令"],
+];
+
+function runSlashCommand(raw) {
+  const [word, ...rest] = raw.trim().slice(1).split(/\s+/);
+  const name = (word || "").toLowerCase();
+  if (name === "help") {
+    addMsg("note", "可用命令：\n" + SLASH_HELP.map(([c, d]) => `${c} — ${d}`).join("\n"));
+    return true;
+  }
+  if (name === "clear" || name === "new" || name === "reset") {
+    // hermes' /clear semantic: the conversation ENDS and a new one starts.
+    // The old row stays in the store and the sidebar — history is not
+    // destroyed, the reader just stops typing into it.
+    const had = !!S.sessionId;
+    newSession();
+    addMsg("note", had
+      ? "已开始新对话。原会话仍保留在侧栏中。"
+      : "已是新对话。" + (rest.length ? `(参数已忽略：${rest.join(" ")})` : ""));
+    return true;
+  }
+  addMsg("note", `未知命令 /${name}。输入 /help 查看可用命令。`);
+  return true;
+}
+
 /* ---------- the stream ---------- */
 function apply(ev, from) {
   // Does this belong to what the reader is looking at? Browsing mid-turn means
@@ -1031,6 +1154,7 @@ function apply(ev, from) {
       break;
     case "delta": ev.thought ? appendThought(ev.text) : appendToken(ev.text); break;
     case "tool": toolRow(ev.id, ev.title, ev.status, ev.detail, ev.detailFull, ev.duration); break;
+    case "todo": showTodos(ev.items); break;
     case "approval": showApproval(ev); break;
     case "approval_expired":
       S.awaitingPerm = false;
@@ -1382,6 +1506,10 @@ function paintHistory(history) {
     // opening any conversation drew an empty panel.
     .forEach((ev) => apply(ev));
   finalizeSeg();
+  // A switched-to conversation opens at its END, not wherever the previous
+  // session's viewport was. The threshold check in scroll() sees a just-
+  // repainted transcript at an arbitrary inherited offset and would skip.
+  scroll(true);
 }
 
 async function openSession(id) {
@@ -1572,6 +1700,16 @@ async function send() {
   const input = $("#input");
   const text = input.value.trim();
   if (!text) return;
+  // A leading slash is a COMMAND, not a prompt — see runSlashCommand. Handled
+  // entirely here: nothing is sent, the box clears, and the composer state is
+  // untouched. `S.owns` is still honoured: /clear mid-reply would walk away
+  // from a turn that keeps running, and the CLI refuses the same way.
+  if (text.startsWith("/") && text.length > 1) {
+    if (S.owns) { status("⚠ 先等当前回复结束（或停止它）再执行命令"); return; }
+    input.value = ""; input.style.height = "auto";
+    runSlashCommand(text);
+    return;
+  }
   if (S.awaitingPerm) {
     // Never a silent return: you type, press Enter, nothing happens, and the
     // reason (an approval is blocking the agent) is invisible. Point at it.
