@@ -1,0 +1,87 @@
+# lance-mcp-mayi —麻衣神相相术语料，lance-mcp 镜像的第二个实例。
+#
+# 同一个镜像、不同的 `--db-path` 和不同的 port/Service 名；数据摄取在
+# Mac 本地一次完成（见 lance-mcp/ingest_pdfs.py 和 claude-progress.txt），
+# pod 启动时不做 ingest，直接 serve。
+#
+# 数据模型与佛典实例一致：`docs`/`files` 表复用现有 schema，所以
+# search_docs / list_documents / document_outline / read_file 零改动可用。
+# PDF 特有的两件事：
+#   1) 页级 chunking（每页一块，超长页按句号切），cite 坐标是页码
+#      （id 以 `#pN` 结尾），所以 read_page(file, a, b) 是按页拉正文；
+#   2) `page_images` 表（large_binary 列，PNG 字节在表内），插图经
+#      md5 频次去水印 + macOS Vision OCR 把图中文字（感情线/离火/山根）
+#      拼回所在页文本做检索，page_images(file,a,b) 以 MCP image 内容块
+#      返回给多模态模型看图。
+#
+# 佛典实例的 docs 表没有 page_images，tools_for() 自动不发布
+# read_page/page_images，所以同一个镜像可以同时服两个 corpus。
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lance-mcp-mayi
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-mayi }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-mayi }
+  ports:
+    - { name: http, port: 5103, targetPort: 5103 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lance-mcp-mayi
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-mayi }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-mayi }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-mayi }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      containers:
+        - name: lance-mcp
+          image: IMAGE_LANCE_MCP
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              S3="http://$(getent hosts autumn-s3 | awk '{print $1}'):9100"
+              DB="s3://lancedb/mayi"
+
+              for i in $(seq 1 120); do
+                if .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.exists('lancedb', '.mayi-docs-v1-ready') else 1)" 2>/dev/null; then break; fi
+                sleep 1
+              done
+              .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.exists('lancedb', '.mayi-docs-v1-ready') else 1)" \
+                || { echo "marker .mayi-docs-v1-ready not found: run ingest_pdfs.py locally first"; exit 1; }
+
+              exec .venv/bin/python server.py \
+                --db-path "$DB" --s3-endpoint "$S3" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3 \
+                --host 0.0.0.0 --port 5103
+          ports:
+            - { name: http, containerPort: 5103 }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          startupProbe:
+            httpGet: { path: /healthz, port: 5103 }
+            periodSeconds: 15
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: { path: /healthz, port: 5103 }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 5103 }
+            periodSeconds: 30
+            failureThreshold: 3

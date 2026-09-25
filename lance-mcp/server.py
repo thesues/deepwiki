@@ -24,6 +24,7 @@ It runs on the standard library's threading HTTP server; there is no SDK
 because the protocol surface is four methods.
 """
 import argparse
+import base64
 import json
 import logging
 import threading
@@ -39,7 +40,13 @@ log = logging.getLogger("lance-mcp")
 
 RRF_K = 60.0
 MAX_READ_LINES = 400
+MAX_PAGE_CHARS = 24000
 HIT_COLS = ["id", "name", "file", "start", "end"]
+
+
+class Content(list):
+    """A tool result that is already a list of MCP content parts (text plus
+    image blocks) — call_tool sends it verbatim instead of JSON-wrapping it."""
 
 
 class ToolError(Exception):
@@ -78,7 +85,7 @@ class Retriever:
 
     # -- search ---------------------------------------------------------------
 
-    def search(self, corpus: str, q: str, mode: str = "auto", k: int = 8) -> list[dict]:
+    def search(self, corpus: str, q: str, mode: str = "auto", k: int = 6) -> list[dict]:
         table = self.docs_table if corpus == "docs" else "code"
         available = self.modes(table)
         if mode == "auto":
@@ -92,7 +99,7 @@ class Retriever:
         if not q.strip() or k <= 0:
             return []
         t = self._open(table)
-        cols = HIT_COLS + (["headings"] if corpus == "docs" else ["kind"])
+        cols = HIT_COLS + ["text"] + (["headings"] if corpus == "docs" else ["kind"])
         if mode == "lexical":
             return [self._hit(corpus, r, r["_score"]) for r in self._lexical(t, q, k, cols)]
         qv = self.emb.embed(q)
@@ -123,16 +130,19 @@ class Retriever:
 
     @staticmethod
     def _hit(corpus: str, r: dict, score: float | None, source: str | None = None) -> dict:
-        """A search hit is a location, not a delivery: id, name, kind, file and
-        line span, and no body — memory-mcp's rule, for its reason (one hit's
-        body can be most of a reply). get_symbol / read_file fetch text."""
+        """A search hit is a location, not a delivery. Search results carry an
+        80-char preview so the caller judges whether to fetch; explicit callers
+        (get_symbol) that pass the whole body get it back as `source`."""
         h = {"id": r["id"], "name": r["name"],
              "kind": "Section" if corpus == "docs" else r["kind"],
              "file": r["file"], "start": r["start"], "end": r["end"]}
-        if source is not None:
-            h["source"] = source
         if corpus == "docs":
             h["headings"] = list(r["headings"] or [])
+        if source is not None:
+            h["source"] = source
+        elif "text" in r:
+            body = r["text"].split("\n\n", 1)[1] if "\n\n" in r["text"] else r["text"]
+            h["preview"] = (body[:80] + "…") if len(body) > 80 else body
         if score is not None:
             h["score"] = float(score)
         return h
@@ -167,6 +177,62 @@ class Retriever:
         capped = min(to, frm + MAX_READ_LINES - 1)
         return {"file": path, "start": frm, "end": capped, "total_lines": len(lines),
                 "truncated": capped < to, "text": "\n".join(lines[frm - 1:capped])}
+
+    # -- pages and pictures (a PDF corpus: pages are the citation coordinate) -
+
+    def read_page(self, path: str, page_start: int | None, page_end: int | None) -> dict:
+        """Whole pages of a PDF ingest: the per-page chunks of the `docs` table
+        grouped back into page order. `page` numbers are the ingest's start/end
+        values, so this is the page analogue of read_file's line range."""
+        p = path.lstrip("/")
+        a = max(page_start or 1, 1)
+        b = page_end if page_end is not None else a
+        if b < a:
+            raise ToolError(f"page range {a}-{b}: end is before start")
+        rows = self._open("docs").search() \
+            .where(f"file = {lit(p)} AND start >= {a} AND end <= {b}") \
+            .select(["id", "start", "text"]).limit(None).to_list()
+        if not rows:
+            raise ToolError(f"no indexed pages {a}-{b} of {path}: the file a search hit "
+                            "reports is the value to pass here")
+        by_page: dict[int, list[str]] = {}
+        for r in rows:
+            # the row text is "<file> › 第N页\n\n<body>" — the page header is
+            # re-emitted by the separator, so drop the per-chunk breadcrumb
+            body = r["text"].split("\n\n", 1)[1] if "\n\n" in r["text"] else r["text"]
+            by_page.setdefault(r["start"], []).append(body)
+        all_pages = [(pg, f"── {p} › 第{pg}页 ──\n" + "\n".join(by_page[pg]))
+                     for pg in sorted(by_page)]
+        kept, size, truncated = [], 0, False
+        for pg, text in all_pages:
+            if size + len(text) > MAX_PAGE_CHARS and kept:
+                truncated = True
+                break
+            kept.append(text)
+            size += len(text)
+        return {"file": p, "pages": [all_pages[0][0], kept and all_pages[len(kept) - 1][0]],
+                "truncated": truncated, "text": "\n\n".join(kept)}
+
+    def page_images(self, path: str, page_start: int | None, page_end: int | None) -> "Content":
+        """The figures of a page range, as MCP image content the host can show
+        a vision model. The PNG bytes live IN the page_images table."""
+        p = path.lstrip("/")
+        a = max(page_start or 1, 1)
+        b = page_end if page_end is not None else a
+        rows = self._open("page_images").search() \
+            .where(f"file = {lit(p)} AND page >= {a} AND page <= {b}") \
+            .select(["page", "width", "height", "image"]).limit(None).to_list()
+        if not rows:
+            raise ToolError(f"no figures indexed for {path} pages {a}-{b}")
+        rows.sort(key=lambda r: (r["page"], r["image"][:8]))
+        content = Content([{"type": "text", "text": json.dumps(
+            {"file": p, "pages": [a, b], "count": len(rows),
+             "images": [{"page": r["page"], "width": r["width"], "height": r["height"]}
+                        for r in rows]}, ensure_ascii=False)}])
+        for r in rows:
+            content.append({"type": "image", "mimeType": "image/png",
+                            "data": base64.b64encode(r["image"]).decode()})
+        return content
 
     # -- graph ----------------------------------------------------------------
 
@@ -285,31 +351,7 @@ class Retriever:
 _ID = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
 _QUERY = {"type": "object", "properties": {"query": {"type": "string"}, "mode": {"type": "string"},
                                            "k": {"type": "integer"}}, "required": ["query"]}
-TOOLS = [
-    {"name": "search_code", "inputSchema": _QUERY, "description":
-        "Search the indexed codebase (mode: lexical|vector|hybrid|auto). Returns WHERE each match "
-        "is — id, name, kind, file, start/end lines, score — and no source. Read what you want with "
-        "read_file (a line range) or get_symbol (one whole symbol). Code only; use search_docs for prose."},
-    {"name": "read_file", "description":
-        "Read a line range of an indexed file: `path` is the `file` a search hit reports, and "
-        "`start`/`end` are 1-based inclusive (omit for the whole file). The natural follow-up to a "
-        "search hit's file+start+end. Capped at 400 lines per call; `truncated` says when the range was cut.",
-     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "start": {"type": "integer"},
-                                                      "end": {"type": "integer"}}, "required": ["path"]}},
-    {"name": "get_symbol", "inputSchema": _ID, "description":
-        "Full text + metadata for an id — a code symbol ('src/lib.rs::MemoryStore::add_edge') or a "
-        "document chunk ('docs/ops.md#L10-L42')."},
-    {"name": "find_callers", "inputSchema": _ID, "description": "Symbols that call `id`."},
-    {"name": "find_callees", "inputSchema": _ID, "description": "Symbols that `id` calls."},
-    {"name": "trace_call_path", "description":
-        "Bounded call-path from `id` (direction out=callees, in=callers).",
-     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "direction": {"type": "string"}},
-                     "required": ["id"]}},
-    {"name": "ingest_documents", "description":
-        "Ingest markdown/plain-text (.md/.markdown/.txt) from `path` (a file or directory under this "
-        "server's --fs-root) into the index: heading-aware chunks, full-text + vector indexed, heading "
-        "hierarchy as an outline. Replaces what was ingested under that path; returns counts.",
-     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+DOC_TOOLS = [
     {"name": "search_docs", "inputSchema": _QUERY, "description":
         "Search ingested documents (mode: lexical|vector|hybrid|auto). Returns chunks' source file, "
         "heading path, line range and score — enough to cite 'file › headings, lines a-b'; read the "
@@ -320,6 +362,84 @@ TOOLS = [
         "Heading outline of an ingested document (`id` = its file path, from list_documents or a "
         "chunk's `file`), depth-tagged."},
 ]
+
+CODE_TOOLS = [
+    {"name": "search_code", "inputSchema": _QUERY, "description":
+        "Search the indexed codebase (mode: lexical|vector|hybrid|auto). Returns WHERE each match "
+        "is — id, name, kind, file, start/end lines, score — and no source. Read what you want with "
+        "read_file (a line range) or get_symbol (one whole symbol). Code only; use search_docs for prose."},
+    {"name": "find_callers", "inputSchema": _ID, "description": "Symbols that call `id`."},
+    {"name": "find_callees", "inputSchema": _ID, "description": "Symbols that `id` calls."},
+    {"name": "trace_call_path", "description":
+        "Bounded call-path from `id` (direction out=callees, in=callers).",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "direction": {"type": "string"}},
+                     "required": ["id"]}},
+]
+
+# Shared by doc and code corpora: reading a line range is the natural follow-up
+# to any search hit, regardless of corpus kind. get_symbol returns one whole
+# chunk (doc chunk OR code symbol) by id — useful when a hit's preview points
+# at exactly the symbol you want.
+READ_TOOLS = [
+    {"name": "read_file", "description":
+        "Read a line range of an indexed file: `path` is the `file` a search hit reports, and "
+        "`start`/`end` are 1-based inclusive (omit for the whole file). The natural follow-up to a "
+        "search hit's file+start+end. Capped at 400 lines per call; `truncated` says when the range was cut.",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "start": {"type": "integer"},
+                                                      "end": {"type": "integer"}}, "required": ["path"]}},
+    {"name": "get_symbol", "inputSchema": _ID, "description":
+        "Full text + metadata for an id — a code symbol (e.g. 'src/lib.rs::MemoryStore::add_edge') or "
+        "a document chunk (e.g. 'docs/ops.md#L10-L42'). The natural follow-up when a search hit's id "
+        "is exactly the unit you want."},
+]
+
+# ingest_documents is intentionally NOT advertised to any served corpus: all
+# our corpora are built offline (ingest_docs.py / ingest_pdfs.py on a Mac) and
+# pods are read-only. Keeping the tool hidden prevents the agent from trying
+# to write into s3://lancedb — both against policy and because it lacks the
+# credentials (autumn-s3 gateway forbids POST to /lancedb outside ingest).
+
+
+PAGE_TOOLS = [
+    {"name": "read_page", "description":
+        "Whole pages of an ingested PDF, in page order: `file` is the `file` a search hit "
+        "reports, `page_start`/`page_end` are 1-based inclusive page numbers. Use this instead "
+        "of read_file for PDFs — a PDF's citation coordinate is the PAGE, not the line.",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"},
+                                                      "page_start": {"type": "integer"},
+                                                      "page_end": {"type": "integer"}}, "required": ["file"]}},
+    {"name": "page_images", "description":
+        "The figures of a PDF page range (face-reading charts, diagrams). Returns each image as "
+        "a picture you can look at. Call it after search hits on pages the question is about — "
+        "a physiognomy answer that ignores the figure is half an answer.",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"},
+                                                      "page_start": {"type": "integer"},
+                                                      "page_end": {"type": "integer"}}, "required": ["file"]}},
+]
+
+
+def tools_for(r: Retriever) -> list[dict]:
+    """Tools advertised to this connection. The set depends on which tables
+    the opened DB actually carries:
+      - `docs`        → DOC_TOOLS (search_docs/list_documents/document_outline)
+      - `symbols`     → CODE_TOOLS (search_code/get_symbol/find_callers/…)
+      - `page_images` → PAGE_TOOLS (read_page/page_images, PDF-only)
+    READ_TOOLS (read_file) is universal because hit coordinates are always
+    file + line range (or file + page, read_page is the PDF variant).
+    This conditional advertising is what lets ONE image serve the buda
+    prose corpus, the mayi PDF+image corpus and the code-index corpus
+    without any profile seeing tools that would error on its corpus — and
+    without needing profile-awareness in the server at all.
+    """
+    names = table_names(r.db)
+    tools: list[dict] = [*READ_TOOLS]
+    if "docs" in names:
+        tools.extend(DOC_TOOLS)
+    if "code" in names:
+        tools.extend(CODE_TOOLS)
+    if "page_images" in names:
+        tools.extend(PAGE_TOOLS)
+    return tools
 
 
 def call_tool(r: Retriever, name: str, args: dict) -> dict:
@@ -341,6 +461,10 @@ def call_tool(r: Retriever, name: str, args: dict) -> dict:
             data = r.traverse(s("id"), s("direction") or "out", "CALLS", 6, 200)
         elif name == "ingest_documents":
             data = r.ingest_documents(s("path"))
+        elif name == "read_page":
+            data = r.read_page(s("file"), i("page_start"), i("page_end"))
+        elif name == "page_images":
+            data = r.page_images(s("file"), i("page_start"), i("page_end"))
         elif name == "list_documents":
             data = r.documents()
         elif name == "document_outline":
@@ -349,6 +473,8 @@ def call_tool(r: Retriever, name: str, args: dict) -> dict:
             raise ToolError(f"unknown tool {name}")
     except ToolError as e:
         return {"content": [{"type": "text", "text": str(e)}], "isError": True}
+    if isinstance(data, Content):
+        return {"content": data}
     return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}]}
 
 
@@ -358,7 +484,7 @@ def dispatch(r: Retriever, method: str, params: dict):
                 "serverInfo": {"name": "lance-mcp", "version": "0.1.0"},
                 "capabilities": {"tools": {}}}
     if method == "tools/list":
-        return {"tools": TOOLS}
+        return {"tools": tools_for(r)}
     if method == "tools/call":
         return call_tool(r, params.get("name", ""), params.get("arguments") or {})
     if method == "ping":
@@ -457,7 +583,8 @@ def main() -> None:
     tables = sorted(table_names(db))
     info = {"server": "lance-mcp", "db": str(args.db_path),
             "tables": tables, "embedder": args.embed_model if emb else "none"}
-    log.info("tables %s; docs modes %s, code modes %s", tables, r.modes("docs"), r.modes("code"))
+    log.info("tables %s; docs modes %s%s", tables, r.modes("docs"),
+             f", code modes {r.modes('code')}" if "code" in tables else "")
     srv = ThreadingHTTPServer((args.host, args.port), make_handler(r, info))
     log.info("lance-mcp → http://%s:%d/mcp", args.host, args.port)
     srv.serve_forever()

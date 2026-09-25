@@ -345,59 +345,24 @@ spec:
             #   the platform integrations (slack/discord/feishu/…) cost tokens
             #   in every request's tool list and none of them are wired up.
             - { name: HERMES_ACP_TOOLSETS, value: "skills" }
-            # The toolset POLICY per project (PLAN §5's division of labour):
-            #   buda  — skills ONLY. Everything the scripture agent does —
-            #           retrieval, corpus reading — a skill initiates, and the
-            #           skill calls the MCP (lance-mcp) tools; the agent
-            #           itself never sees raw file/terminal surface.
-            #           mcp-<name> toolsets are appended by build_agent for
-            #           every enabled server, so skills→MCP stays reachable
-            #           and this seed cannot drop it.
-            #   code  — skills + TERMINAL. The terminal is there for one
-            #           reason: `skills/diagram/archify` is a Node CLI, and a
-            #           diagram is produced by running it (author JSON,
-            #           `validate`, `validate` again, `deliver`), not by
-            #           emitting markup. Mermaid was the emitting-markup
-            #           answer and it did not survive contact with real
-            #           architecture drawings. The trade is stated plainly:
-            #           this agent can now run commands in this pod. It reads
-            #           its corpus through code-index MCP, so the shell is for
-            #           archify and for nothing it needs to reach the code.
-            # This env is the FIRST-BOOT seed for platform_toolsets.cli; from
-            # then on the file on the PVC owns the list — edit it there.
-            # `terminal` is IN the list above — the allowlist was widened once
-            # it was six entries and the agent had no way to reach anything
-            # this cluster offers. It stays watched, though: with a shell in
-            # hand the model takes shortcuts — observed locally reading the
-            # corpus with `sed` instead of calling the retrieval server, which
-            # also means a local test stops predicting how the pod behaves.
-            # To remove it, edit platform_toolsets.cli in the PVC's config.yaml
-            # (this env only seeds a file that has no key; it will not put
-            # terminal back).
+            # FIRST-BOOT seed for platform_toolsets.cli. `skills` is the
+            # narrow seed: mcp-<name> toolsets are appended per enabled
+            # server, so skill→MCP stays reachable. Code/buda per-profile
+            # toolsets live in DEEPWIKI_PROFILES (`toolsets` field); the
+            # PVC's config.yaml owns the list after first boot.
             - { name: WORKDIR, value: /opt/data }
-            # The decoupled dependency: HTTP URLs, not spawned processes.
-            #
-            # ONE variable for every MCP server, as NAME=URL pairs, in order.
-            # The first is the one the UI names — the same "first entry wins"
-            # rule the endpoint list and the profile list follow. One
-            # lance-mcp serves ONE corpus, so a second project's
-            # index is a second instance on its own port
-            # (k8s/code-index-mcp.yaml), and a profile is then narrowed to
-            # the server its corpus lives on plus the tools it uses
-            # (`mcp_servers` / `mcp_tools` below).
-            #
-            # Removing a server here REMOVES it: main.py prunes the config
-            # entries this list does not name. It had to be added — the
-            # writer only ever added, so a retired server stayed in the file
-            # hermes reads and kept handing the agent tools whose server was
-            # gone, which fail on use and, three failures in, take the whole
-            # MCP connection down with them.
-            #
-            # `MEMORY_MCP_URL` / `MEMORY_MCP_EXTRA` are the old spelling and
-            # still read as a fallback, so a PVC and a manifest that update
-            # at different moments do not leave a pod with no retrieval.
+            # HTTP MCP servers as NAME=URL pairs, comma-separated. The list
+            # is authoritative: a server not named here is pruned from the
+            # PVC config on startup, so a retired MCP does not linger in the
+            # tool list and trip the circuit breaker.
+            #   memory       — 佛典 (lance-mcp, s3://lancedb/buda)
+            #   code-index   — autumn-rs 代码 (Rust memory-mcp binary, FUSE)
+            #   mayi         — 麻衣神相 / 风水 / 手面相 (lance-mcp s3://lancedb/mayi,
+            #                  含插图；必须配多模态端点才能看图)
+            # One lance-mcp image serves ONE corpus; extra corpora are
+            # additional Deployments (k8s/lance-mcp-*.yaml) on their own port.
             - name: MCP_SERVERS
-              value: "memory=http://lance-mcp:5102/mcp,code-index=http://code-index-mcp:5101/mcp"
+              value: "memory=http://lance-mcp:5102/mcp,code-index=http://code-index-mcp:5101/mcp,mayi=http://lance-mcp-mayi:5103/mcp"
             - { name: LLM_BASE_URL, value: "http://freetoken-l3:1919/v1" }
             - { name: LLM_MODEL, value: "dsv4-flash" }
             # FreeToken's max_seq_len is 62080 (prompt + generation, derived
@@ -405,15 +370,8 @@ spec:
             # leaves ~8k for the reply. Raise it only together with the KV
             # budget on the FreeToken side.
             - { name: LLM_CONTEXT_LENGTH, value: "54000" }
-            # What this deployment is for. Read by `hermes_agent.CHAT_DIRECTIVE`
-            # and passed as `system_message`, which hermes APPENDS to its own
-            # system prompt -- so this steers the agent without displacing its
-            # internals, and without appearing in the user's own message the way
-            # the retired ACP server's version did. Unset falls back to the same
-            # text, which lives beside the code that uses it.
-            # Written in English, answered in Chinese, and the second half
-            # has to be said out loud: this brief used to BE Chinese, and the
-            # language of the answer came along for free with it.
+            # Default system brief (buda profile inherits this; other
+            # profiles carry their own `directive`).
             - name: CHAT_DIRECTIVE
               value: |
                 You retrieve from an indexed corpus of Buddhist scripture and answer from what you find.
@@ -421,111 +379,47 @@ spec:
                 - Cite the sutra and quote the passage, with its source (file › heading path › line numbers).
                 - If the corpus does not have it, say so. Background knowledge may be added, marked as not from the corpus.
                 - Answer in Chinese, briefly — a few paragraphs. No long essays or survey-style sprawl unless asked.
-            # The project cards. Four projects:
-            #   buda            — the scripture agent. skills ONLY: everything
-            #                     it does a skill initiates, and the skill calls
-            #                     the MCP (lance) tools. NO terminal — observed
-            #                     in production it reached for sed on the corpus
-            #                     instead of calling retrieval; without a shell
-            #                     it cannot take that shortcut.
-            #   code-autumn-rs  — code understanding for github.com/journeymidnight/
-            #                     autumn-rs. skills + the code-index MCP server
-            #                     (the tree-sitter index over the pinned
-            #                     tarball, k8s/code-index-mcp.yaml) —
-            #                     search_code / get_symbol / document_outline.
-            #                     NO file tools: a raw file surface lets the
-            #                     agent bypass the index; the index IS the
-            #                     interface, the same discipline the buda
-            #                     profile applies to its corpus. NO workspace:
-            #                     this pod deliberately does not mount autumnfs.
-            #   general         — the general-purpose agent: hermes' own default
-            #                     toolsets, spelled out (terminal, web, search,
-            #                     file, todo, memory, skills, session_search,
-            #                     clarify) and EVERY MCP server. terminal ⇒
-            #                     clarify is enforced by scope_agent_tools
-            #                     regardless. No mcp_servers key = no
-            #                     narrowing.
-            # EVERY PROFILE NEEDS ITS OWN BRIEF. `directive` omitted means the
-            # profile inherits CHAT_DIRECTIVE — and CHAT_DIRECTIVE is the
-            # BUDDHIST-CANON brief. So the code agent was being told "你是佛教
-            # 典籍的检索助手 … 不要凭记忆作答 … 回答时给出经名与原文引文",
-            # pointed at a Rust index. Reported as a 画图 request that never
-            # arrived: the agent searched fifteen times and never concluded,
-            # because its brief forbids answering without a citation it could
-            # not possibly find.
+            # Project cards. Each card is `{key, label, toolsets, mcp_servers,
+            # mcp_tools, endpoints?, directive?}`.
             #
-            # ⚠ THE CODE BRIEF BELOW REQUIRES A memory-mcp THAT HAS
-            # `read_file`, i.e. an autumn-rs image at 49c4ed2 or later. DO NOT
-            # apply this profile to a cluster whose code-index-mcp predates
-            # it: the brief tells the agent to locate with search_code and
-            # then read line ranges, and against the older server that is a
-            # call to a tool which does not exist. The currently deployed
-            # code-index-mcp is autumn-rs:633a4832, which does NOT have it —
-            # that image is pinned by autumn's WIRE lockstep (14 pods share
-            # it), and rolling only this one pod forward broke its unpack
-            # init container outright.
+            #   buda         - 佛典检索（佛典语料）；skills only；文档四工具；
+            #                  inherits CHAT_DIRECTIVE（佛典 brief）。
+            #   code-autumn-rs - autumn-rs 代码理解（code-index MCP）；skills+terminal
+            #                  （archify CLI）；代码+文档工具；brief 见 directive。
+            #   mayi         - 麻衣神相/风水/手面相（lance-mcp-mayi，含插图）；
+            #                  skills only；pin doubao 多模态；文档+read_page+page_images。
+            #   general      - 通用助手；全 toolsets + 全 MCP；hermes 默认。
             #
-            # The shape the brief assumes, and why: a search hit is a
-            # LOCATION, not a delivery. Hits used to carry each symbol's whole
-            # body — 6,563 chars for 8 hits on this index, of which one hit
-            # was 17,396 — and trimming that to an excerpt was still the wrong
-            # shape, because an excerpt is a smaller delivery the caller must
-            # still take. Location-only is 1,712 chars, and reading is then a
-            # bounded act the agent performs on purpose.
+            # `mcp_tools` 是白名单：server 发布的工具如果不在这里，hermes 不把
+            # 它交给 agent，避免无关工具浪费 token / 触发熔断器（连续 3 次报错
+            # 会熔断整个 server 60s）。架构长注放在各 MCP manifest 顶部。
             #
-            # `file` is deliberately NOT in this profile's toolsets. The
-            # agent's file tools run in THIS pod, and the corpus (24 MB at
-            # /repo/src) lives in the code-index-mcp pod — unpacked there from
-            # autumn by an init container. Mounting it here would mean giving
-            # this pod the autumn credential and client that its own header
-            # says it must never have. read_file serves the tree from the pod
-            # that already holds it, and can read nothing else.
+            #   buda         - 佛典检索（佛典语料）；skills only，无 terminal；
+            #                  4 个文档工具；inherits CHAT_DIRECTIVE（佛典 brief）。
+            #   code-autumn-rs - autumn-rs 代码理解（code-index MCP）；skills+terminal
+            #                  （archify Node CLI）；代码 + 文档工具；brief 放在该 profile。
+            #   mayi         - 麻衣神相/风水/手面相（lance-mcp-mayi，含插图）；
+            #                  skills only；pin doubao 多模态端点（看图必须用
+            #                  多模态模型）；文档工具 + read_page/page_images。
+            #   general      - 通用助手：全部 toolsets + 全部 MCP；hermes 默认。
             #
-            # webui/tool_budget.py stays as the backstop for ANY tool's
-            # output, which is a different job from this one.
+            # `mcp_tools` 是白名单：server 发布的工具如果不在这里，hermes 不把
+            # 它交给 agent，避免无关工具浪费 token / 触发熔断器；一个工具连续
+            # 报错三次会把整个 server 熔断 60s。
             #
-            # NO ENDPOINT PIN, and the attempt is worth recording. mm2 was
-            # pinned here for a shift, on the strength of "mm2 answered this
-            # question and dsv4-flash did not". Both halves of that were wrong:
-            # dsv4-flash was never allowed to finish (killed at iteration 12,
-            # twice, to free the GPU), and mm2 did not win on reasoning — it
-            # simply never triggered compression, because its 65,536-token
-            # window held what dsv4-flash's 54,000 could not. The real fault
-            # was compression timing out; see hermes_config.
-            #
-            # The pin was also user-hostile in a way measuring did not show:
-            # the model picker lists every endpoint (it does not know about
-            # profile pins), so choosing DSV4-Flash here would be silently
-            # redirected to mm2 and the picker would then snap back — a choice
-            # offered and not honoured.
-            #
-            # `mcp_tools` narrows a GRANTED server to the tools the profile
-            # actually uses. lance-mcp publishes more tools than buda needs;
-            # buda has business with four: search_docs / list_documents / document_outline to
-            # find things, read_file to read around a hit. The other six are a
-            # code index it has no corpus for (`search_code`, `get_symbol`,
-            # `find_callers`…) and WRITES nobody asked it to make —
-            # `ingest_documents` puts new material in the corpus,
-            # `graph_delete_node` / `graph_delete_edge` take it out.
-            #
-            # Cost, beyond the obvious: hermes counts a tool-level error
-            # toward its MCP circuit breaker (tools/mcp_tool.py — any result
-            # with an `error` key bumps the count), and three in a row
-            # declare the server unreachable for 60 s. So a tool that cannot
-            # work here does not just sit there costing tokens; used three
-            # times it takes search_docs down with it. That is exactly how
-            # this profile lost retrieval on 2026-09-19: three read_file
-            # calls against ids that could not resolve.
-            #
-            # buda is the one profile that legitimately inherits
-            # CHAT_DIRECTIVE: that brief was written for it.
+            # 架构长注（为什么 no file/no terminal/为什么 location-only/为什么
+            # 不 pin 端点）放在各 MCP 自己的 manifest 顶部（k8s/lance-mcp*.yaml,
+            # k8s/code-index-mcp.yaml），webui 这里只保留配置本身。
             - name: DEEPWIKI_PROFILES
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
                   "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
                   "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
-                  "directive":"You read the autumn-rs codebase (Rust, distributed storage) and answer from the indexed code.\n\nLocate first, then read closely:\n- search_code tells you WHERE something is — each hit carries file and start/end lines, and no source. It is an index, not content.\n- Read the lines you actually want with read_file(path, start, end); get_symbol returns one whole symbol. Do not search again to obtain text.\n- Follow find_callers / find_callees for call relationships. It beats repeated broad search_code by a wide margin.\n- Read only the range you need. read_file caps at 400 lines per call and reports truncated when it cut the range; ask for further explicit ranges rather than pulling whole files.\n\nOther requirements:\n- Decide what you are looking for before searching, and stop when you have enough. Repeated searching fills the context and leaves the turn unable to finish.\n- Cite file paths and symbol names (and line numbers, where you read them). If the index does not have it, say so rather than guessing.\n- For a flow or architecture diagram: `skill_view(\"archify\")` — that exact name, not the category it sits in — and follow what it says. In short: understand the subject from the index first, rename a skeleton it names rather than inventing coordinates, validate, deliver, and give one /artifacts/ link. Do not search more broadly just to draw, and never paste the HTML or the SVG into the answer.\n- Answer in Chinese, briefly — usually a few paragraphs."},
+                  "directive":"You read the autumn-rs codebase (Rust, distributed storage) and answer from the indexed code. Search hits are LOCATIONS (file + line span) with no body — read the lines you want with read_file(path,start,end); get_symbol returns a whole symbol; follow find_callers/find_callees for edges. Read bounded ranges only (read_file caps at 400 lines; ask further rather than pulling whole files). Stop searching once you have what you need. For architecture diagrams call skill_view('archify') and follow its steps. Cite file paths, symbol names and line numbers; if the index does not have it, say so. Answer in Chinese, briefly."},
+                 {"key":"mayi","label":"麻衣神相","toolsets":["skills"],"mcp_servers":["mayi"],"endpoints":["doubao"],
+                  "mcp_tools":["search_docs","list_documents","document_outline","read_file","read_page","page_images"],
+                  "directive":"你是一名中国传统相术与风水检索助手，语料是麻衣神相、手相、面相、阳宅风水、周易、八字等古籍与笔记。规则：\n- 所有结论从语料中检索得出，先 search_docs 定位，再 read_page 读整页文本，再 page_images 拉插图给多模态模型看——面相/手相/风水图是答案核心，看图作答。\n- 命中坐标：PDF 是页码（read_page 参数），其它文档是行号（read_file）。回答时引用书名 + 页码/章节 + 原文片段。\n- 语料没有的直说没有，可以补充通用常识但必须标明『通用常识』。\n- 用中文回答，简洁，不要大段铺陈。"},
                  {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","search","web","session_search","clarify"],
                   "directive":"A general assistant. Use tools when they help, say plainly where you are unsure, invent nothing. Answer in Chinese, briefly."}]
             # web_search / web_extract need a backend; the toolset alone is a
