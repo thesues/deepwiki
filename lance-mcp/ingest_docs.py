@@ -30,7 +30,8 @@ from lancedb.index import FTS
 
 from chunk import chunk_markdown
 from embed import Embedder
-from store import DIM, connect, lit, replace_files, rust_lines, table_names
+from s3 import Gateway
+from store import DIM, connect, lit, replace_files, rust_lines, s3_storage_options, table_names
 
 DOC_EXTS = {".md", ".markdown", ".txt"}
 
@@ -80,9 +81,22 @@ def collect(root: Path) -> list[Path]:
     return sorted(out)
 
 
-def rows_for(path: Path, base: Path) -> tuple[list[dict], dict | None]:
-    text = path.read_bytes().decode("utf-8", errors="replace")
-    relpath = path.resolve().relative_to(base).as_posix()
+def is_indexable(relpath: str) -> bool:
+    """collect()'s rules, applied to a path string so they hold for S3 keys
+    exactly as for local files: no dot-directory, no target/node_modules, and
+    no dotted file whatever its extension — macOS tar writes `._x.md`
+    AppleDouble sidecars that would otherwise be indexed as prose."""
+    for part in relpath.split("/")[:-1]:
+        if part.startswith(".") or part in ("target", "node_modules"):
+            return False
+    name = relpath.rsplit("/", 1)[-1]
+    return not name.startswith(".") and Path(name).suffix in DOC_EXTS
+
+
+def rows_for_text(text: str, relpath: str, name: str) -> tuple[list[dict], dict | None]:
+    """Chunk one file's text. `relpath` is the id's path — the same string a
+    local-path ingest produced (`<fs-root-relative> › headings`), so an S3
+    ingest of a FUSE-written corpus reproduces every id byte for byte."""
     chunks = chunk_markdown(text)
     if not chunks:
         return [], None
@@ -97,13 +111,19 @@ def rows_for(path: Path, base: Path) -> tuple[list[dict], dict | None]:
         path_owner.setdefault(key, rid)
         rows.append({
             "id": rid, "file": relpath,
-            "name": c.headings[-1] if c.headings else path.name,
+            "name": c.headings[-1] if c.headings else name,
             "headings": c.headings, "start": c.start_line, "end": c.end_line,
             "parent": parent, "text": f"{breadcrumb}\n\n{c.body}", "vector": None,
         })
-    file_row = {"path": relpath, "corpus": "docs", "name": path.name,
+    file_row = {"path": relpath, "corpus": "docs", "name": name,
                 "lines": len(rust_lines(text)), "text": text}
     return rows, file_row
+
+
+def rows_for(path: Path, base: Path) -> tuple[list[dict], dict | None]:
+    text = path.read_bytes().decode("utf-8", errors="replace")
+    relpath = path.resolve().relative_to(base).as_posix()
+    return rows_for_text(text, relpath, path.name)
 
 
 def build(base: Path, index: str) -> tuple[list[dict], list[dict]]:
@@ -113,6 +133,35 @@ def build(base: Path, index: str) -> tuple[list[dict], list[dict]]:
     rows, files = [], []
     for p in collect(root):
         r, f = rows_for(p, base)
+        if f:
+            rows.extend(r)
+            files.append(f)
+    return rows, files
+
+
+def split_index(index: str) -> tuple[str, str]:
+    """`--index` is `<bucket>/<prefix>` in S3 mode: bucket = fs/'s first level.
+    A missing bucket is an error, not a default — the same rule the gateway's
+    URL mapping applies."""
+    bucket, _, prefix = index.lstrip("/").partition("/")
+    if not bucket or not prefix:
+        raise SystemExit(f"--index must be <bucket>/<prefix> in S3 mode: {index!r}")
+    return bucket, prefix
+
+
+def build_s3(gateway: Gateway, index: str) -> tuple[list[dict], list[dict]]:
+    """Read the corpus over the gateway instead of a filesystem. The ids and
+    file paths are `<bucket>/<key>` — the same strings a FUSE-mount ingest of
+    the same tree produced — so re-ingesting is never needed to move a table
+    between the two access paths."""
+    bucket, prefix = split_index(index)
+    rows, files = [], []
+    for key in gateway.list(bucket, prefix):
+        relpath = f"{bucket}/{key}"
+        if not is_indexable(relpath):
+            continue
+        text = gateway.get(bucket, key).decode("utf-8", errors="replace")
+        r, f = rows_for_text(text, relpath, key.rsplit("/", 1)[-1])
         if f:
             rows.extend(r)
             files.append(f)
@@ -149,19 +198,48 @@ def write(db, rows: list[dict], files: list[dict], tokenizer: str = "ngram-1-2",
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fs-root", required=True, type=Path, help="ids are relative to this")
-    ap.add_argument("--index", required=True, help="file or directory under --fs-root")
-    ap.add_argument("--db-path", required=True, type=Path,
-                    help="absolute LanceDB directory (production: below Autumn FUSE)")
+    ap.add_argument("--fs-root", type=Path, help="ids are relative to this; corpus on a local "
+                    "filesystem (omitted in S3 mode)")
+    ap.add_argument("--s3-endpoint", help="autumn-s3 gateway URL; corpus and db are read "
+                    "through it instead of a filesystem")
+    ap.add_argument("--index", required=True,
+                    help="file/directory under --fs-root, or <bucket>/<prefix> in S3 mode")
+    ap.add_argument("--db-path", required=True,
+                    help="absolute LanceDB directory, or s3://bucket/prefix in S3 mode")
     ap.add_argument("--table", default="docs")
     ap.add_argument("--tokenizer", choices=TOKENIZERS, default="ngram-1-2")
     ap.add_argument("--embed-url")
     ap.add_argument("--embed-model", default="bge-m3")
+    ap.add_argument("--marker", help="with --ensure: success marker. A filesystem path in "
+                    "local mode, s3://bucket/key in S3 mode")
+    ap.add_argument("--ensure", action="store_true",
+                    help="skip when --marker exists; write it last, after a successful "
+                    "ingest, so a replacement overwrites tables left by an interrupted one")
     args = ap.parse_args()
 
-    base = args.fs_root.expanduser().resolve()
+    s3 = Gateway(args.s3_endpoint) if args.s3_endpoint else None
+    if args.ensure:
+        if not args.marker:
+            ap.error("--ensure needs --marker")
+        if s3 is not None:
+            if not args.marker.startswith("s3://"):
+                ap.error("--marker must be s3://bucket/key in S3 mode")
+            mbucket, _, mkey = args.marker[len("s3://"):].partition("/")
+            done = s3.exists(mbucket, mkey)
+        else:
+            done = Path(args.marker).expanduser().exists()
+        if done:
+            print(f"marker {args.marker} present — index already written, nothing to do")
+            return
+
     t0 = time.monotonic()
-    rows, files = build(base, args.index)
+    if s3 is not None:
+        rows, files = build_s3(s3, args.index)
+    else:
+        if not args.fs_root:
+            ap.error("--fs-root is required without --s3-endpoint")
+        base = args.fs_root.expanduser().resolve()
+        rows, files = build(base, args.index)
     if not rows:
         raise SystemExit(f"no chunks under {args.index}: refusing to write an empty table")
     t_chunk = time.monotonic() - t0
@@ -171,7 +249,7 @@ def main() -> None:
         embed_rows(rows, Embedder(args.embed_url, args.embed_model))
     t_embed = time.monotonic() - t1
 
-    db = connect(args.db_path)
+    db = connect(args.db_path, storage_options=s3_storage_options(args.s3_endpoint) if s3 else None)
     t2 = time.monotonic()
     write(db, rows, files, args.tokenizer, args.table)
     t_write = time.monotonic() - t2
@@ -179,8 +257,15 @@ def main() -> None:
     n = db.open_table(args.table).count_rows()
     if n != len(rows):
         raise SystemExit(f"wrote {len(rows)} rows but the table reports {n}")
+    if args.ensure:
+        if s3 is not None:
+            s3.put(mbucket, mkey)
+        else:
+            m = Path(args.marker).expanduser()
+            m.parent.mkdir(parents=True, exist_ok=True)
+            m.touch()
     print(f"{len(files)} files → {n} chunks  (chunk {t_chunk:.1f}s, embed {t_embed:.1f}s, "
-          f"write+fts {t_write:.1f}s)  {args.db_path}/{args.table} "
+          f"embed {t_embed:.1f}s, write+fts {t_write:.1f}s)  {args.db_path}/{args.table} "
           f"tokenizer={args.tokenizer} "
           f"vectors={'bge-m3 via ' + args.embed_url if args.embed_url else 'none'}")
 

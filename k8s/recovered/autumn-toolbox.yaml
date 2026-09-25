@@ -50,7 +50,7 @@ spec:
         command:
         - bash
         - -lc
-        image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:aef13927e85e200ad314ff5ddaed926e442d6c75
+        image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:874a0bac1fe455151073598f70af0dc02e69b31e
         imagePullPolicy: IfNotPresent
         name: toolbox
         securityContext:

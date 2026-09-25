@@ -1,0 +1,73 @@
+# ⚠️ IMAGE_AUTUMN_RS needs the image tag the cluster is running (replace before
+# applying, same as memory-mcp.yaml / lance-mcp.yaml).
+#
+# The autumn-s3 gateway: an unauthenticated S3 endpoint over the fs/ tree.
+# Bucket = fs/'s first level, key = everything below it, so `s3://lancedb/buda`
+# IS `fs/lancedb/buda` — the same objects a FUSE mount of the same cluster
+# serves. Consumers (lance-mcp today) therefore need no credential and no FUSE
+# mount; the gateway itself is the fs/ client and carries fs.cred.
+#
+# Stateful in nothing — every object operation goes to the fs/ partitions — so
+# replicas can scale, but the Service is the only contract and one replica has
+# carried the whole lance-mcp workload. AUTUMN_S3_* tuning and the credential
+# file come from deploy/docker/entrypoint.sh's run_s3.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autumn-s3
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: autumn-s3 }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: autumn-s3 }
+  ports:
+    - { name: s3, port: 9100, targetPort: 9100 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autumn-s3
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: autumn-s3 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: autumn-s3 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: autumn-s3 }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      containers:
+        - name: autumn-s3
+          image: IMAGE_AUTUMN_RS
+          imagePullPolicy: Always
+          # No privileged, no FUSE: plain HTTP object traffic over the manager's
+          # data path.
+          args: ["s3"]
+          env:
+            - { name: AUTUMN_CREDENTIAL_FILE, value: /etc/autumn/cred/fs.cred }
+            - { name: AUTUMN_S3_LISTEN, value: "0.0.0.0" }
+            - { name: AUTUMN_S3_PORT, value: "9100" }
+          ports:
+            - { name: s3, containerPort: 9100 }
+          volumeMounts:
+            - { name: cred, mountPath: /etc/autumn/cred, readOnly: true }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          readinessProbe:
+            # The gateway has no HTTP health path of its own; a real request
+            # through the whole path is the probe. Bucket `lancedb` is
+            # pre-created (fs/lancedb) by the data that lives there.
+            exec:
+              command: ["bash", "-lc",
+                        'exec 3<>/dev/tcp/127.0.0.1/9100 && printf "GET /lancedb?list-type=2&max-keys=1 HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -1 <&3 | grep -q " 200 "']
+            periodSeconds: 10
+            failureThreshold: 6
+      volumes:
+        - name: cred
+          secret: { secretName: autumn-credential }

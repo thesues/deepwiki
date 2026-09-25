@@ -1,8 +1,12 @@
-"""The filesystem-backed LanceDB and the one table both ingesters share.
+"""The LanceDB store and the one table both ingesters share.
 
 `files` holds every indexed file's full text. It is what lets read_file work
 without reopening corpus files: search and reads both come from Lance tables
-whose directory is exposed by Autumn FUSE.
+that live in autumn — reached as an ordinary filesystem path (local dev, and
+the FUSE deployments this replaced) or as an `s3://` URI through the
+autumn-s3 gateway. The two see the same bytes: `s3://lancedb/buda` and the
+mount path `/mnt/autumn/lancedb/buda` are the same objects, so a table
+written by either is read by the other without re-ingesting.
 """
 from datetime import timedelta
 from pathlib import Path
@@ -11,6 +15,17 @@ import lancedb
 import pyarrow as pa
 
 DIM = 1024  # BGE-M3
+
+# object_store's AmazonS3 config, spelled the way lancedb forwards it. The
+# gateway neither checks signatures nor serves TLS, and path-style addressing
+# is the default.
+def s3_storage_options(endpoint: str) -> dict[str, str]:
+    return {"endpoint": endpoint.rstrip("/"), "region": "us-east-1",
+            "allow_http": "true", "skip_signature": "true"}
+
+
+def is_s3_uri(path: str | Path) -> bool:
+    return str(path).startswith("s3://")
 
 FILES_SCHEMA = pa.schema([
     pa.field("path", pa.string()),
@@ -22,12 +37,21 @@ FILES_SCHEMA = pa.schema([
 
 
 def connect(db_path: str | Path,
-            read_consistency_interval: timedelta | None = None):
-    """Open unmodified community LanceDB on an absolute filesystem path.
+            read_consistency_interval: timedelta | None = None,
+            storage_options: dict[str, str] | None = None):
+    """Open unmodified community LanceDB.
 
-    In production that path is below an Autumn FUSE mount. Keeping the storage
-    boundary here means LanceDB needs no Autumn provider, fork or Python binding.
+    `db_path` is either an absolute filesystem path (local dev, or the FUSE
+    deployments) or an `s3://bucket/prefix` URI against the autumn-s3
+    gateway, in which case `storage_options` carries the gateway endpoint.
+    Keeping the storage boundary here means LanceDB needs no Autumn provider,
+    fork or Python binding on either path.
     """
+    if is_s3_uri(db_path):
+        if storage_options is None:
+            raise ValueError("an s3:// db path needs the gateway's storage options")
+        return lancedb.connect(str(db_path), storage_options=storage_options,
+                               read_consistency_interval=read_consistency_interval)
     path = Path(db_path).expanduser()
     if not path.is_absolute():
         raise ValueError(f"LanceDB path must be absolute: {path}")

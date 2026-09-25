@@ -1,6 +1,7 @@
-"""lance-mcp — memory-mcp's retrieval tools over a FUSE-backed LanceDB.
+"""lance-mcp — memory-mcp's retrieval tools over a LanceDB on autumn.
 
     python server.py --db-path /mnt/autumn/lancedb/buda --embed-url http://llama-embed:8080
+    python server.py --db-path s3://lancedb/buda --s3-endpoint http://autumn-s3:9100 ...
     # MCP (JSON-RPC 2.0) at POST http://0.0.0.0:5102/mcp, health at GET /healthz
 
 A drop-in for the tools a hermes profile names: same tool names, arguments,
@@ -12,7 +13,10 @@ What is different is where things come from. Searches are Lance queries
 (full-text and vector legs, fused by the same reciprocal-rank rule and tie
 break as autumn-memory), call and outline edges are equality filters, and
 read_file reads the `files` table. Community LanceDB opens an ordinary local
-path; production exposes that path through Autumn FUSE, outside this code.
+path or an `s3://` URI against the autumn-s3 gateway (--s3-endpoint; the same
+objects the old FUSE mount exposed, so no re-ingest); the corpus the
+ingest_documents tool reads comes from the same place (--fs-root locally, the
+gateway in S3 mode).
 
 The transport is memory-mcp's too, and as small: POST /mcp takes one message
 or a batch, a notification gets 202 with no body, an unknown method -32601.
@@ -28,7 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from embed import Embedder
-from store import connect, lit, rust_lines, table_names
+from s3 import Gateway, S3Error
+from store import connect, is_s3_uri, lit, rust_lines, s3_storage_options, table_names
 
 log = logging.getLogger("lance-mcp")
 
@@ -44,10 +49,11 @@ class ToolError(Exception):
 
 class Retriever:
     def __init__(self, db, emb: Embedder | None, fs_root: Path | None = None,
-                 docs_table: str = "docs"):
+                 s3: Gateway | None = None, docs_table: str = "docs"):
         self.db = db
         self.emb = emb
         self.fs_root = fs_root
+        self.s3 = s3
         self.docs_table = docs_table
         self._lock = threading.Lock()  # ingest_documents: one writer at a time
 
@@ -248,16 +254,25 @@ class Retriever:
                  "start": 1} for r in rows[:500]]
 
     def ingest_documents(self, path: str) -> dict:
-        if self.fs_root is None:
-            raise ToolError("this instance was started without --fs-root and reads no local "
-                            "files; ingest with ingest_docs.py instead")
         import ingest_docs  # heavy and only needed here
 
         rel = path.strip("/")
-        try:
-            rows, files = ingest_docs.build(self.fs_root, rel)
-        except FileNotFoundError:
-            raise ToolError(f"path not found under --fs-root: {path}") from None
+        if self.s3 is not None:
+            # Same shape as --index: <bucket>/<prefix> under the fs/ tree.
+            try:
+                rows, files = ingest_docs.build_s3(self.s3, rel)
+            except S3Error as e:
+                raise ToolError(f"gateway read failed for {path}: {e}") from None
+            if not files:
+                raise ToolError(f"no .md/.txt files under {path} via the gateway")
+        else:
+            if self.fs_root is None:
+                raise ToolError("this instance was started without --fs-root or --s3-endpoint "
+                                "and reads no files; ingest with ingest_docs.py instead")
+            try:
+                rows, files = ingest_docs.build(self.fs_root, rel)
+            except FileNotFoundError:
+                raise ToolError(f"path not found under --fs-root: {path}") from None
         if rows and self.emb is not None:
             ingest_docs.embed_rows(rows, self.emb)
         with self._lock:
@@ -412,8 +427,10 @@ def make_handler(r: Retriever, info: dict):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db-path", required=True, type=Path,
-                    help="absolute LanceDB directory (production: below Autumn FUSE)")
+    ap.add_argument("--db-path", required=True,
+                    help="absolute LanceDB directory, or s3://bucket/prefix with --s3-endpoint")
+    ap.add_argument("--s3-endpoint", help="autumn-s3 gateway URL; db-path and the corpus the "
+                    "ingest_documents tool reads go through it")
     ap.add_argument("--embed-url", help="OpenAI-style embeddings server; unset = lexical only")
     ap.add_argument("--embed-model", default="bge-m3")
     ap.add_argument("--fs-root", type=Path, help="enables ingest_documents over this local tree")
@@ -422,16 +439,21 @@ def main() -> None:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    s3 = Gateway(args.s3_endpoint) if args.s3_endpoint else None
+    if s3 is None and is_s3_uri(args.db_path):
+        ap.error("--db-path is s3:// but --s3-endpoint is not set")
     # Tables are re-checked for new versions at most every few seconds, so an
     # ingest by another process shows up without a restart.
-    db = connect(args.db_path, read_consistency_interval=timedelta(seconds=5))
+    db = connect(args.db_path, read_consistency_interval=timedelta(seconds=5),
+                 storage_options=s3_storage_options(args.s3_endpoint) if s3 else None)
     emb = Embedder(args.embed_url, args.embed_model) if args.embed_url else None
     if emb is not None:
         # One vector before serving: a wrong URL fails here, at the mistake,
         # not on somebody's first search.
         emb.embed("lance-mcp startup probe")
         log.info("embedder ready: %s, %d dims", emb.url, emb.dim)
-    r = Retriever(db, emb, args.fs_root.expanduser().resolve() if args.fs_root else None)
+    r = Retriever(db, emb, args.fs_root.expanduser().resolve() if args.fs_root else None,
+                  s3=s3)
     tables = sorted(table_names(db))
     info = {"server": "lance-mcp", "db": str(args.db_path),
             "tables": tables, "embedder": args.embed_model if emb else "none"}
