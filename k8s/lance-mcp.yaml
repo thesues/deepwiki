@@ -43,6 +43,7 @@ spec:
         - name: lance-mcp
           image: IMAGE_LANCE_MCP
           imagePullPolicy: Always
+          command: ["bash", "-c"]
           args:
             - |
               set -euo pipefail
@@ -54,20 +55,11 @@ spec:
               # that the request fails and we retry. The list with limit=1 is
               # the cheapest request that proves the gateway serves objects.
               for i in $(seq 1 120); do
-                if .venv/bin/python -c "
-from s3 import Gateway
-from s3 import S3Error
-try:
-    Gateway('$S3').list('lancedb', 'buda', limit=1)
-except S3Error:
-    raise SystemExit(1)
-" 2>/dev/null; then break; fi
+                if .venv/bin/python -c "from s3 import Gateway; from s3 import S3Error; Gateway('$S3').list('lancedb', 'buda', limit=1)" 2>/dev/null; then break; fi
                 sleep 1
               done
-              .venv/bin/python -c "
-from s3 import Gateway
-Gateway('$S3').list('lancedb', 'buda', limit=1)
-" || { echo "gateway not serving after 120s"; exit 1; }
+              .venv/bin/python -c "from s3 import Gateway; Gateway('$S3').list('lancedb', 'buda', limit=1)" \
+                || { echo "gateway not serving after 120s"; exit 1; }
 
               # --ensure: skipped when the marker object exists (no re-ingest —
               # the table is already there), written LAST after a successful
