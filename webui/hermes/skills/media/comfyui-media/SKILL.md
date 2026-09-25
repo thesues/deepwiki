@@ -107,11 +107,15 @@ curl -s -o /tmp/out.png \
 
 ## 交付给用户（怎么引用生成的文件）
 
-生成的文件最终放到 `/app/static/`（先下载到工作目录，再 `cp` 过去；`/app/static` 已由 webui 直接对外服务）。
+生成的文件最终放到 `/opt/data/static/`（先下载到工作目录，再 `cp` 过去）。
+
+**为什么是这个目录**：它挂在持久卷上，pod 重建不丢；`/app/static` 是容器文件系统，pod 一重建全没——
+上一个 pod 的重建已经这样丢过一整套 storyboard（`webui` 以 `/static/` 前缀同时服务两处，
+`/opt/data/static/` 优先）。
 
 **回复里引用一律用相对路径**，形如：
 
 - 图片：`![封面](/static/cover.png)`
 - 视频：`/static/episode.mp4`
 
-**绝对不要写带域名的完整 URL**（如 `https://xxx.apigateway…volceapi.com/static/a.png`）。页面只认相对路径——写了域名，用户看到的会是一条死链接而不是一张图。不确定文件名时先 `ls /app/static/` 再引用。
+**绝对不要写带域名的完整 URL**（如 `https://xxx.apigateway…volceapi.com/static/a.png`）。页面只认相对路径——写了域名，用户看到的会是一条死链接而不是一张图。不确定文件名时先 `ls /opt/data/static/` 再引用。

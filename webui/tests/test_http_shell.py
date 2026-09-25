@@ -373,3 +373,60 @@ def test_static_carries_an_etag_and_304s_on_revalidate():
     import urllib.request
     # served by the app_server fixture in test_app_routes; reuse its index body
     body = urllib.request.urlopen("http://127.0.0.1:0") if False else None
+
+
+# ── the /static overlay ─────────────────────────────────────────────────────
+#
+# A conversation's delivered media used to be cp'd into /app/static — the
+# CONTAINER filesystem — and one pod recreation silently deleted a session's
+# entire storyboard: the transcript kept the links, the volume kept nothing.
+# The overlay is a PVC-backed directory served UNDER the same /static/
+# prefix, ahead of the image's own dir, so `kubectl cp` a file to
+# /opt/data/static/ and it is served at /static/<name> rollout-proof.
+
+
+def test_the_static_overlay_shadows_the_image_dir(tmp_path):
+    image, overlay = tmp_path / "image", tmp_path / "pvc"
+    image.mkdir(); overlay.mkdir()
+    (image / "app.js").write_text("image-version")
+    (overlay / "app.js").write_text("pvc-version")
+    app = App(static_dir=image, static_overlay=overlay)
+    req = type("R", (), {"method": "GET", "path": "/static/app.js", "headers": {},
+                         "query": {}})()
+    assert app.serve_static(req).body == b"pvc-version", "the overlay is served first"
+
+
+def test_a_static_miss_falls_through_to_the_image_dir(tmp_path):
+    image, overlay = tmp_path / "image", tmp_path / "pvc"
+    image.mkdir(); overlay.mkdir()
+    (image / "app.js").write_text("image-version")
+    app = App(static_dir=image, static_overlay=overlay)
+    req = type("R", (), {"method": "GET", "path": "/static/app.js", "headers": {},
+                         "query": {}})()
+    assert app.serve_static(req).body == b"image-version", "a miss is not a 404"
+
+
+def test_the_overlay_serves_files_the_image_never_had(tmp_path):
+    image, overlay = tmp_path / "image", tmp_path / "pvc"
+    image.mkdir(); overlay.mkdir()
+    (overlay / "episode.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
+    app = App(static_dir=image, static_overlay=overlay)
+    req = type("R", (), {"method": "GET", "path": "/static/episode.mp4", "headers": {},
+                         "query": {}})()
+    resp = app.serve_static(req)
+    assert resp is not None
+    assert ("Content-Type", "video/mp4") in resp.headers
+
+
+def test_the_traversal_guard_holds_on_both_static_roots(tmp_path):
+    image, overlay = tmp_path / "image", tmp_path / "pvc"
+    image.mkdir(); overlay.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope")
+    app = App(static_dir=image, static_overlay=overlay)
+    for root in (image, overlay):
+        (root / "link.txt").symlink_to(secret)
+    for path in ("/static/link.txt", "/static/../../etc/passwd"):
+        req = type("R", (), {"method": "GET", "path": path, "headers": {},
+                             "query": {}})()
+        assert app.serve_static(req) is None, path

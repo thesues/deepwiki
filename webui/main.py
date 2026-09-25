@@ -296,6 +296,13 @@ def main() -> None:
         # artifact has to outlive the pod that drew it — a link in a
         # transcript that 404s after the next rollout is worse than no link.
         artifacts_dir=artifacts,
+        # Media delivered to /static/ lives HERE: on the PVC, served AHEAD of
+        # the image's own static dir under the same prefix. The lesson is
+        # measured — one pod recreation silently deleted a session's entire
+        # storyboard, because the delivery target had been /app/static, the
+        # container filesystem. `kubectl cp` a file to /opt/data/static/ and
+        # it is served at /static/<name> forever, rollout-proof.
+        static_overlay=Path(os.environ.get("HERMES_HOME", "/opt/data")) / "static",
         index_html=HERE / "static" / "index.html",
         auth_user=os.environ.get("AUTH_USER", ""),
         auth_pass=os.environ.get("AUTH_PASS", ""),
