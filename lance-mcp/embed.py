@@ -12,11 +12,20 @@ import json
 import time
 import urllib.request
 
+import os
+
 import numpy as np
 
-EMBED_TOKEN_BUDGET = 7000
-BATCH_TOKEN_BUDGET = 7000
-BATCH_MAX_INPUTS = 64
+# Per-text clip and per-request batch budgets. Overridable by env: symbol
+# texts (whole fn/impl bodies) run far bigger than doc chunks, and a 7000-token
+# request against llama.cpp --ubatch-size 8192 spikes host+GPU memory hard
+# enough to OOM/wedge the 8Gi embed pod under sustained load (observed: three
+# restarts and two wedge-outs in one 6497-symbol ingest). 2048 keeps every
+# request a fraction of ctx-size 8192; throughput cost is one extra request
+# per couple of symbols.
+EMBED_TOKEN_BUDGET = int(os.environ.get("EMBED_TOKEN_BUDGET", "7000"))
+BATCH_TOKEN_BUDGET = int(os.environ.get("EMBED_BATCH_TOKENS", "7000"))
+BATCH_MAX_INPUTS = int(os.environ.get("EMBED_BATCH_INPUTS", "64"))
 ATTEMPTS = 3
 
 

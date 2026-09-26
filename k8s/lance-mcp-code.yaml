@@ -1,0 +1,98 @@
+# lance-mcp-code — the autumn-rs CODE corpus, lance-mcp image's third instance.
+#
+# Serves s3://lancedb/code: the `code` (tree-sitter-rust symbols) and `edges`
+# (CALLS/CONTAINS) tables written by the code-ingest Job (k8s/code-ingest-job.yaml)
+# from the pinned tarball at fs/code/autumn-rs.tar.gz, plus the repo's prose
+# (.md) in `docs` from the same tree. Symbol ids are `<relpath>::<qualname>`
+# — byte-compatible with the Rust memory-mcp indexer this replaces, so the
+# webui code-autumn-rs brief (read_file after a search_code hit,
+# find_callers for edges) works unchanged.
+#
+# Replaces the old code-index-mcp deployment (Rust memory-mcp binary + FUSE
+# mount + init-container tarball unpack): same tool surface, no privileged
+# container, no autumnfs credential in the pod, and code search gains the
+# vector mode the lexical-only Rust index never had.
+#
+# Read-only like the other lance-mcp instances: re-indexing is a Job rerun
+# after uploading a fresh tarball, not a pod-restart side effect.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lance-mcp-code
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+  ports:
+    - { name: http, port: 5104, targetPort: 5104 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lance-mcp-code
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      containers:
+        - name: lance-mcp
+          image: IMAGE_LANCE_MCP
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              S3="http://$(getent hosts autumn-s3 | awk '{print $1}'):9100"
+              DB="s3://lancedb/code"
+
+              # Wait for the ingest Job's output: the `code` table. A cheap
+              # marker-style probe: try opening the db and listing tables.
+              for i in $(seq 1 180); do
+                if .venv/bin/python -c "
+import sys
+from s3 import Gateway
+g = Gateway('$S3')
+keys = g.list('lancedb', 'code/code.lance/_versions/', limit=1)
+sys.exit(0 if keys else 1)
+" 2>/dev/null; then break; fi
+                sleep 1
+              done
+              .venv/bin/python -c "
+import sys
+from s3 import Gateway
+keys = Gateway('$S3').list('lancedb', 'code/code.lance/_versions/', limit=1)
+sys.exit(0 if keys else 1)
+" || { echo "s3://lancedb/code has no code table: run the code-ingest Job first"; exit 1; }
+
+              exec .venv/bin/python server.py \
+                --db-path "$DB" --s3-endpoint "$S3" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3 \
+                --host 0.0.0.0 --port 5104
+          ports:
+            - { name: http, containerPort: 5104 }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          startupProbe:
+            httpGet: { path: /healthz, port: 5104 }
+            periodSeconds: 15
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: { path: /healthz, port: 5104 }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 5104 }
+            periodSeconds: 30
+            failureThreshold: 3

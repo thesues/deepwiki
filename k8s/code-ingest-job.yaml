@@ -1,0 +1,79 @@
+# A one-shot Job that (re)builds the CODE corpus tables
+# (s3://lancedb/code: code / edges / files) from the pinned autumn-rs tarball
+# stored at fs/code/autumn-rs.tar.gz, then exits. Tables are written
+# mode="overwrite", so the Job is idempotent — rerun it after re-uploading a
+# newer tarball.
+#
+# Why a Job and not the Mac: the embed tier shares its node with
+# freetoken-l3, and a wedged llama-embed (restart cleared a backlog of
+# orphaned requests — task ids in the thousands) made a Mac-side run look
+# hung at 0.2 symbols/s through the port-forwards. In-cluster the same
+# server answers 64 inputs in ~0.12s.
+#
+# The tarball — not a git clone — is the shipping format, exactly as for the
+# old Rust code-index-mcp: pinned, reproducible, no egress needed. Refresh it
+# with:  git -C ~/upstream/autumn-rs archive HEAD --prefix=autumn-rs/ | gzip
+#        > /tmp/autumn-rs.tar.gz   (then upload via the gateway)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: code-ingest
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-code }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      volumes:
+        - name: repo
+          emptyDir: {}
+      initContainers:
+        # Unpack the pinned tarball: same shape the old code-index-mcp init
+        # container used, but over the gateway HTTP API instead of FUSE.
+        - name: unpack
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:e077ac1648af3cd0d42e2379d8d33ea5cb37422b
+          volumeMounts: [ { name: repo, mountPath: /repo } ]
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /repo/src
+              S3="http://$(getent hosts autumn-s3 | awk '{print $1}'):9100"
+              for i in $(seq 1 60); do
+                if .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.exists('code','autumn-rs.tar.gz') else 1)" 2>/dev/null; then break; fi
+                sleep 1
+              done
+              .venv/bin/python -c "
+              from s3 import Gateway
+              data = Gateway('$S3').get('code', 'autumn-rs.tar.gz')
+              open('/repo/repo.tar.gz', 'wb').write(data)
+              print(f'downloaded {len(data)} bytes')
+              "
+              tar xzf /repo/repo.tar.gz -C /repo/src
+              test -d /repo/src/autumn-rs/crates || { echo "unexpected tarball layout"; exit 1; }
+      containers:
+        - name: ingest
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:e077ac1648af3cd0d42e2379d8d33ea5cb37422b
+          volumeMounts: [ { name: repo, mountPath: /repo } ]
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              S3="http://$(getent hosts autumn-s3 | awk '{print $1}'):9100"
+              # Small embed requests: a 7k-token batch against the embed
+              # server's ubatch 8192 OOMs/wedges it under sustained load.
+              export EMBED_TOKEN_BUDGET=2048 EMBED_BATCH_TOKENS=2048 EMBED_BATCH_INPUTS=8
+              exec .venv/bin/python ingest_code.py \
+                --fs-root /repo/src --index autumn-rs \
+                --db-path s3://lancedb/code --s3-endpoint "$S3" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "2", memory: 4Gi }
