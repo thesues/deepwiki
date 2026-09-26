@@ -38,7 +38,7 @@ spec:
         # Unpack the pinned tarball: same shape the old code-index-mcp init
         # container used, but over the gateway HTTP API instead of FUSE.
         - name: unpack
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:e077ac1648af3cd0d42e2379d8d33ea5cb37422b
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:5c310271dc0e4ca509e738cb00c0ecd054d35418
           volumeMounts: [ { name: repo, mountPath: /repo } ]
           command: ["bash", "-c"]
           args:
@@ -60,7 +60,7 @@ spec:
               test -d /repo/src/autumn-rs/crates || { echo "unexpected tarball layout"; exit 1; }
       containers:
         - name: ingest
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:e077ac1648af3cd0d42e2379d8d33ea5cb37422b
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:5c310271dc0e4ca509e738cb00c0ecd054d35418
           volumeMounts: [ { name: repo, mountPath: /repo } ]
           command: ["bash", "-c"]
           args:
@@ -70,7 +70,15 @@ spec:
               # Small embed requests: a 7k-token batch against the embed
               # server's ubatch 8192 OOMs/wedges it under sustained load.
               export EMBED_TOKEN_BUDGET=2048 EMBED_BATCH_TOKENS=2048 EMBED_BATCH_INPUTS=8
-              exec .venv/bin/python ingest_code.py \
+              .venv/bin/python ingest_code.py \
+                --fs-root /repo/src --index autumn-rs \
+                --db-path s3://lancedb/code --s3-endpoint "$S3" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3
+              # Prose (.md/.txt) of the same tree into `docs`, so the code
+              # profile keeps search_docs/list_documents/document_outline —
+              # the old Rust code-index served those too. mode=overwrite:
+              # idempotent on rerun, no marker needed.
+              .venv/bin/python ingest_docs.py \
                 --fs-root /repo/src --index autumn-rs \
                 --db-path s3://lancedb/code --s3-endpoint "$S3" \
                 --embed-url http://llama-embed:8080 --embed-model bge-m3

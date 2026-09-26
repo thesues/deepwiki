@@ -233,13 +233,16 @@ def main() -> None:
             return
 
     t0 = time.monotonic()
-    if s3 is not None:
-        rows, files = build_s3(s3, args.index)
-    else:
-        if not args.fs_root:
-            ap.error("--fs-root is required without --s3-endpoint")
+    if args.fs_root is not None:
+        # --fs-root wins when both are given: local corpus, S3 db (the
+        # code-ingest Job reads the unpacked tarball and writes through the
+        # gateway). S3-corpus mode is --s3-endpoint WITHOUT --fs-root.
         base = args.fs_root.expanduser().resolve()
         rows, files = build(base, args.index)
+    elif s3 is not None:
+        rows, files = build_s3(s3, args.index)
+    else:
+        ap.error("--fs-root (local corpus) or --s3-endpoint (S3 corpus) is required")
     if not rows:
         raise SystemExit(f"no chunks under {args.index}: refusing to write an empty table")
     t_chunk = time.monotonic() - t0
