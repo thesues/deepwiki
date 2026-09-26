@@ -310,6 +310,7 @@ class App:
         if self.artifacts_dir is not None:
             pairs.append((ARTIFACTS_PREFIX, self.artifacts_dir))
         rel = None
+        target = None
         for prefix, root in pairs:
             if not req.path.startswith(prefix):
                 continue
@@ -320,7 +321,6 @@ class App:
                 target = (root / r).resolve()
                 if not target.is_relative_to(root.resolve()) or not target.is_file():
                     continue
-                body = target.read_bytes()
                 rel, matched_prefix = r, prefix
                 break
             except (OSError, ValueError):
@@ -339,9 +339,30 @@ class App:
         immutable = ctype.startswith("font/") or versioned
         cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
         headers = [("Content-Type", ctype), ("Cache-Control", cache)]
-        # A content-addressed URL is its own validator. Only mutable URLs need
-        # an ETag and therefore pay the hashing cost when they are requested.
-        etag = None if immutable else f'"{hashlib.sha256(body).hexdigest()[:16]}"'
+        body = None
+        if immutable:
+            # A content-addressed URL is its own validator.
+            etag = None
+        elif matched_prefix == ARTIFACTS_PREFIX:
+            # Runtime artifacts include large generated videos. A content hash
+            # would have to read the entire file even when If-None-Match lets us
+            # return no body. Match nginx's cheap metadata validator instead;
+            # weak is honest because equal metadata is not a byte-for-byte
+            # guarantee. Nanosecond mtime plus size changes whenever our media
+            # writers replace or rewrite an artifact in normal operation.
+            try:
+                st = target.stat()
+            except OSError:
+                return None
+            etag = f'W/"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        else:
+            # Unversioned shipped assets are small and retain their content
+            # validator. Versioned requests above never pay this hash cost.
+            try:
+                body = target.read_bytes()
+            except OSError:
+                return None
+            etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
         if etag is not None:
             headers.append(("ETag", etag))
         if matched_prefix == ARTIFACTS_PREFIX:
@@ -361,6 +382,11 @@ class App:
             headers.append(("X-Content-Type-Options", "nosniff"))
         if etag is not None and req.headers.get("If-None-Match") == etag:
             return Response(304, [("ETag", etag), ("Cache-Control", cache)])
+        if body is None:
+            try:
+                body = target.read_bytes()
+            except OSError:
+                return None
         return Response(200, headers, body)
 
 

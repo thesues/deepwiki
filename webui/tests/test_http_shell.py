@@ -436,6 +436,37 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     resp = app.serve_static(artifact_req)
     assert resp is not None
     assert ("Content-Type", "video/mp4") in resp.headers
+    assert ("Cache-Control", "no-cache") in resp.headers
+    assert next(v for k, v in resp.headers if k == "ETag").startswith('W/"')
+
+
+def test_artifact_304_uses_metadata_without_reading_the_file(tmp_path, monkeypatch):
+    """Revalidating a generated video must not read and hash the whole video."""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    video = artifacts / "episode.mp4"
+    video.write_bytes(b"large-video-placeholder")
+    app = App(artifacts_dir=artifacts)
+    request = lambda headers: type(
+        "R", (), {"method": "GET", "path": "/artifacts/episode.mp4",
+                   "headers": headers, "query": {}}
+    )()
+
+    first = app.serve_static(request({}))
+    assert first is not None and first.status == 200
+    etag = next(v for k, v in first.headers if k == "ETag")
+
+    original_read_bytes = Path.read_bytes
+    def refuse_video_read(path):
+        if path == video:
+            raise AssertionError("a matching artifact validator must return before read_bytes")
+        return original_read_bytes(path)
+    monkeypatch.setattr(Path, "read_bytes", refuse_video_read)
+
+    cached = app.serve_static(request({"If-None-Match": etag}))
+    assert cached is not None and cached.status == 304
+    assert cached.body == b""
+    assert ("ETag", etag) in cached.headers
 
 
 def test_the_traversal_guard_holds_on_static_and_artifacts(tmp_path):
