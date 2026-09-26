@@ -26,6 +26,7 @@ file is the transport.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -84,6 +85,68 @@ CONTENT_TYPES = {
 # detection. A cookie rather than a header because `EventSource` cannot set
 # headers, and a cookie rides every request including the SSE one.
 CLIENT_COOKIE = "deepwiki_cid"
+
+# Compress responses large enough for the saved transfer time to outweigh the
+# envelope and CPU cost. SSE is represented by `Streaming` and never reaches
+# this path; buffering it for gzip would destroy its first-token latency.
+GZIP_MIN_BYTES = 1024
+
+
+def _accepts_gzip(value: str) -> bool:
+    """Whether an RFC-style Accept-Encoding value permits gzip."""
+    accepted: dict[str, float] = {}
+    for raw in (value or "").split(","):
+        parts = [part.strip() for part in raw.split(";")]
+        coding = parts[0].lower()
+        if not coding:
+            continue
+        quality = 1.0
+        for param in parts[1:]:
+            name, sep, val = param.partition("=")
+            if sep and name.strip().lower() == "q":
+                try:
+                    quality = float(val.strip())
+                except ValueError:
+                    quality = 0.0
+        accepted[coding] = quality
+    # An explicit gzip entry wins over `*`, including `gzip;q=0`.
+    return accepted.get("gzip", accepted.get("*", 0.0)) > 0
+
+
+def _maybe_gzip(req: "Request", resp: "Response") -> "Response":
+    """Apply ordinary HTTP gzip content negotiation to a buffered response."""
+    if not resp.body or len(resp.body) < GZIP_MIN_BYTES:
+        return resp
+    content_type = next(
+        (v.lower() for k, v in resp.headers if k.lower() == "content-type"), ""
+    )
+    compressible = (
+        content_type.startswith("text/")
+        or content_type.startswith("application/json")
+        or content_type.startswith("application/javascript")
+        or content_type.startswith("image/svg+xml")
+    )
+    if not compressible:
+        return resp
+
+    # Shared caches must keep the compressed and identity representations apart.
+    vary_index = next(
+        (i for i, (k, _) in enumerate(resp.headers) if k.lower() == "vary"), None
+    )
+    if vary_index is None:
+        resp.headers.append(("Vary", "Accept-Encoding"))
+    else:
+        key, value = resp.headers[vary_index]
+        if "accept-encoding" not in {v.strip().lower() for v in value.split(",")}:
+            resp.headers[vary_index] = (key, value + ", Accept-Encoding")
+
+    if not _accepts_gzip(req.headers.get("Accept-Encoding", "")):
+        return resp
+    if any(k.lower() == "content-encoding" for k, _ in resp.headers):
+        return resp
+    resp.body = gzip.compress(resp.body, compresslevel=6)
+    resp.headers.append(("Content-Encoding", "gzip"))
+    return resp
 
 
 class Request:
@@ -266,24 +329,18 @@ class App:
                  or "application/octet-stream")
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
-        # no-cache + ETag, not no-store: the app's JS carries the fixes the
-        # reader is supposed to see, and a response with NO cache validator let
-        # browsers heuristically pin an old bundle — deploys shipped, the page
-        # kept running code from before them, and every client-side bug fix
-        # looked like it did nothing. no-cache revalidates every load; the
-        # content hash makes the revalidation a 304 unless the file changed.
-        etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
-        # The fonts are the exception, and they are the reason this branch
-        # exists: no-cache means a REVALIDATION round trip per file per
-        # navigation, which for ten woff2 files is ten of them in front of
-        # the first paint of every page. A font file is immutable at its name
-        # by convention here (style.css says so where it declares them), so it
-        # is safe to hand out for a year and never ask again.
-        if ctype.startswith("font/"):
-            cache = "public, max-age=31536000, immutable"
-        else:
-            cache = "no-cache"
-        headers = [("Content-Type", ctype), ("ETag", etag), ("Cache-Control", cache)]
+        # Fonts are immutable by filename convention. Other shipped assets are
+        # immutable only when addressed through the versioned URL emitted by
+        # `_versioned_page`; artifacts remain mutable even with a query string.
+        versioned = matched_prefix == STATIC_PREFIX and bool(req.query.get("v"))
+        immutable = ctype.startswith("font/") or versioned
+        cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        headers = [("Content-Type", ctype), ("Cache-Control", cache)]
+        # A content-addressed URL is its own validator. Only mutable URLs need
+        # an ETag and therefore pay the hashing cost when they are requested.
+        etag = None if immutable else f'"{hashlib.sha256(body).hexdigest()[:16]}"'
+        if etag is not None:
+            headers.append(("ETag", etag))
         if matched_prefix == ARTIFACTS_PREFIX:
             # An artifact is a page the MODEL wrote, served from this app's
             # own origin, and it carries its own inline script — that is what
@@ -299,7 +356,7 @@ class App:
                             "font-src data:; media-src blob: data:; "
                             "connect-src 'none'; frame-ancestors 'none'; base-uri 'none'"))
             headers.append(("X-Content-Type-Options", "nosniff"))
-        if req.headers.get("If-None-Match") == etag:
+        if etag is not None and req.headers.get("If-None-Match") == etag:
             return Response(304, [("ETag", etag), ("Cache-Control", cache)])
         return Response(200, headers, body)
 
@@ -367,6 +424,7 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
             return
 
+        resp = _maybe_gzip(req, resp)
         self.send_response(resp.status)
         for k, v in list(resp.headers) + cookie:
             self.send_header(k, v)

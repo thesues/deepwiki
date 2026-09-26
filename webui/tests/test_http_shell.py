@@ -8,6 +8,7 @@ it ends, and whether a cookie is decided before the handler runs.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import mimetypes
 import json
@@ -195,8 +196,8 @@ def test_static_files_are_served_under_the_static_prefix(server, tmp_path):
     r = _get(base + "/static/app.js")
     assert r.read() == b"console.log(1)"
     assert "javascript" in r.headers.get("Content-Type", "")
-    # Revalidation contract: ETag + no-cache, and a matching If-None-Match
-    # answers 304 so unchanged deploys cost one conditional request.
+    # An unversioned request remains the safe fallback: ETag + no-cache, and a
+    # matching If-None-Match answers 304.
     assert r.headers.get("Cache-Control") == "no-cache"
     etag = r.headers.get("ETag")
     assert etag == f'"{hashlib.sha256(b"console.log(1)").hexdigest()[:16]}"'
@@ -212,8 +213,8 @@ def test_static_files_are_served_under_the_static_prefix(server, tmp_path):
     assert _get(base + "/static/vendor/marked.min.js").read() == b"//marked"
 
 
-def test_a_font_is_cached_for_a_year_and_everything_else_revalidates(server, tmp_path):
-    """The one exception to no-cache, and the reason it exists.
+def test_fonts_and_versioned_assets_are_cached_for_a_year(server, tmp_path):
+    """Content-addressed resources never pay a revalidation round trip.
 
     no-cache means a REVALIDATION round trip per file per navigation. For the
     ten woff2 files the two display faces are subset into, that is ten
@@ -223,8 +224,10 @@ def test_a_font_is_cached_for_a_year_and_everything_else_revalidates(server, tmp
     replace a face by ADDING a file, never by overwriting one), so it can be
     handed out for a year.
 
-    Ablation: drop the font branch from `serve_static` and this goes red while
-    the no-cache contract above stays green.
+    Fonts are immutable by filename convention; JS/CSS become immutable only
+    with the content-derived `?v=` emitted by the page. Direct unversioned
+    requests keep the no-cache fallback so an old hand-written URL cannot pin
+    a mutable file forever.
     """
     (tmp_path / "vendor").mkdir()
     (tmp_path / "vendor" / "fonts").mkdir()
@@ -253,9 +256,37 @@ def test_a_font_is_cached_for_a_year_and_everything_else_revalidates(server, tmp
     finally:
         mimetypes.guess_type = saved
     assert r.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
-    # The code the fonts are served alongside must NOT be pinned that way: a
-    # deploy's fixes have to reach a browser that already has the old bundle.
+    assert r.headers.get("ETag") is None, "an immutable URL is already its own validator"
     assert _get(base + "/static/style.css").headers.get("Cache-Control") == "no-cache"
+    versioned = _get(base + "/static/style.css?v=abc123")
+    assert versioned.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+    assert versioned.headers.get("ETag") is None
+
+
+def test_large_text_responses_negotiate_gzip_without_touching_identity(server):
+    app = _app()
+    raw = json.dumps({"events": [{"kind": "tool", "detail": "result" * 4000}]}).encode()
+
+    @app.route("GET", "/api/history")
+    def _history(req):
+        return Response(200, [("Content-Type", "application/json; charset=utf-8")], raw)
+
+    base = server(app)
+    identity = _get(base + "/api/history", {"Accept-Encoding": "identity"})
+    assert identity.read() == raw
+    assert identity.headers.get("Content-Encoding") is None
+    assert identity.headers.get("Vary") == "Accept-Encoding"
+
+    compressed = _get(base + "/api/history", {"Accept-Encoding": "gzip"})
+    wire = compressed.read()
+    assert compressed.headers.get("Content-Encoding") == "gzip"
+    assert compressed.headers.get("Vary") == "Accept-Encoding"
+    assert gzip.decompress(wire) == raw
+    assert len(wire) < len(raw) / 2
+
+    refused = _get(base + "/api/history", {"Accept-Encoding": "gzip;q=0, *;q=1"})
+    assert refused.headers.get("Content-Encoding") is None
+    assert refused.read() == raw
 
 
 def test_a_file_outside_the_static_prefix_is_not_served(server, tmp_path):
@@ -301,7 +332,8 @@ def test_a_stream_reaches_the_client_before_it_ends(server):
         return Streaming([("Content-Type", "text/plain")], pump)
 
     base = server(app)
-    r = _get(base + "/api/stream")
+    r = _get(base + "/api/stream", {"Accept-Encoding": "gzip"})
+    assert r.headers.get("Content-Encoding") is None, "SSE must never be buffered for gzip"
 
     # Read on another thread with a deadline. Asserting only the CONTENT would
     # pass on a transport that buffers to the end: the read simply blocks until

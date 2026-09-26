@@ -136,6 +136,18 @@ def test_a_reload_reopens_the_conversation_not_a_stream_cursor():
     boot = src[src.index("async function boot()"):]
     assert "openSession(view)" in boot, "boot no longer reopens the conversation on screen"
 
+
+def test_boot_lists_sessions_once_and_opening_reuses_that_sidebar_state():
+    """Restoring or clicking a view must not re-fetch an unchanged sidebar."""
+    src = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+    boot = src[src.index("async function boot()"):src.index("\nboot();")]
+    assert boot.count("loadSessions()") == 1, boot
+    opened = src[
+        src.index("async function openSession("):src.index("\nasync function removeSession(")
+    ]
+    assert "loadSessions()" not in opened, opened
+    assert "renderSessions()" in opened, "local streaming changes still need repainting"
+
 def test_opening_a_session_is_not_gated_on_a_running_turn():
     """A reader may look wherever they like while a turn streams.
 

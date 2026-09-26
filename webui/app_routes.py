@@ -561,14 +561,14 @@ def build_app(
     # its project off the URL and falls back client-side (redirect home) for
     # an unknown key, which is what makes a renamed profile degrade to the
     # homepage instead of a 404.
-    home_html = static_dir / "home.html"
+    assets = (b"app.js", b"home.js", b"style.css", b"vendor/marked.min.js", b"vendor/purify.min.js")
 
-    def _versioned_page(req: Request, source: Path) -> Response:
+    def _prepare_page(source: Path) -> tuple[bytes, str] | None:
+        """Render one immutable-in-process HTML snapshot at application start."""
         try:
             body = source.read_bytes()
         except OSError:
-            return json_response({"error": "index missing"}, status=500)
-        assets = (b"app.js", b"home.js", b"style.css", b"vendor/marked.min.js", b"vendor/purify.min.js")
+            return None
         h = hashlib.sha256(body)
         for asset in assets:
             try:
@@ -581,14 +581,25 @@ def build_app(
                 b"/static/" + asset, b"/static/" + asset + b"?v=" + version.encode()
             )
         body = body.replace(b"@@BUILD@@", version.encode())
-        etag = f'"{version}"'
+        return body, f'"{version}"'
+
+    # These files ship in the read-only image and cannot change during this
+    # process. Precompute both pages and their validators once instead of
+    # rereading and rehashing the whole frontend bundle on every navigation.
+    home_page = _prepare_page(static_dir / "home.html")
+    chat_page = _prepare_page(index_html)
+
+    def _versioned_page(req: Request, page: tuple[bytes, str] | None) -> Response:
+        if page is None:
+            return json_response({"error": "index missing"}, status=500)
+        body, etag = page
         if req.headers.get("If-None-Match") == etag:
             return Response(304, [("ETag", etag), ("Cache-Control", "no-cache")])
         return Response(200, [("Content-Type", "text/html; charset=utf-8"),
                               ("ETag", etag), ("Cache-Control", "no-cache")], body)
 
-    app.route("GET", "/")(lambda req: _versioned_page(req, home_html))
+    app.route("GET", "/")(lambda req: _versioned_page(req, home_page))
     for p in profile_list:
-        app.route("GET", f"/{p.key}/")(lambda req, _src=index_html: _versioned_page(req, _src))
+        app.route("GET", f"/{p.key}/")(lambda req, _page=chat_page: _versioned_page(req, _page))
 
     return app

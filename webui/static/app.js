@@ -1687,7 +1687,11 @@ async function openSession(id) {
     // button drifted apart.
     status(S.blockedElsewhere ? "另一个会话仍在回复中" : "就绪");
   }
-  loadSessions();
+  // Opening changes only this browser's view. The sidebar rows were what made
+  // this id clickable and no server-side session state changed, so repaint the
+  // local streaming bit that the status check above may have cleared instead
+  // of paying for another SQLite list and network round trip.
+  renderSessions();
 }
 
 async function removeSession(s) {
@@ -1864,7 +1868,6 @@ async function send() {
 
 /* ---------- boot ---------- */
 async function boot() {
-  loadSessions();
   fetch("/api/status").then((r) => r.json()).then((j) => {
     // The profile this page serves comes off the URL (/buda/ → buda). The
     // server's list is the truth: an unknown key (renamed profile, stale
@@ -1900,6 +1903,9 @@ async function boot() {
   } catch (_) {}
   const view = recallView();
   const gen = S.viewGen;
+  // Exactly one initial list request. This used to start one above and then
+  // await a second one here; both queried the same SQLite snapshot, and the
+  // slower network copy delayed history replay after the first had finished.
   await loadSessions();
   if (gen !== S.viewGen) {
     // The reader already chose — the sidebar rendered during the await and

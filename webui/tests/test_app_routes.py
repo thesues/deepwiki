@@ -515,7 +515,11 @@ def test_index_versioned_the_static_urls(app_server):
     base, _, _ = app_server
     # The home page is served at / (deepwiki: cards first); the chat page at
     # /<profile>/. Both are versioned the same way.
-    home = urllib.request.urlopen(base + "/").read().decode()
+    home_response = urllib.request.urlopen(base + "/")
+    home_etag = home_response.headers.get("ETag")
+    assert home_response.headers.get("Cache-Control") == "no-cache"
+    assert home_etag, "the fixed HTML URL needs a validator"
+    home = home_response.read().decode()
     assert "home.js?v=" in home and "style.css?v=" in home, "statics must be versioned"
     assert "@@BUILD@@" not in home, "the build marker must be injected"
     chat = urllib.request.urlopen(base + "/buda/").read().decode()
@@ -523,12 +527,18 @@ def test_index_versioned_the_static_urls(app_server):
     # and the versioned URL still serves
     import re
     v = re.search(r"home\.js\?v=([0-9a-f]+)", home).group(1)
-    urllib.request.urlopen(f"{base}/static/home.js?v={v}")
+    asset = urllib.request.urlopen(f"{base}/static/home.js?v={v}")
+    assert asset.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+    assert asset.headers.get("ETag") is None
+
+    req = urllib.request.Request(base + "/", headers={"If-None-Match": home_etag})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req)
+    assert exc.value.code == 304
 
 
-def test_a_changed_bundle_changes_the_version(app_server, tmp_path):
-    """Most deploys change app.js and nothing else. Hashing only index.html
-    kept `?v=` identical across them, so the cache bust did not bust."""
+def test_the_bundle_version_is_a_startup_snapshot(app_server, tmp_path):
+    """The image is immutable while the process runs, so hash it only once."""
     import re
     base, _, _ = app_server
     get_v = lambda: re.search(
@@ -536,7 +546,7 @@ def test_a_changed_bundle_changes_the_version(app_server, tmp_path):
     ).group(1)
     before = get_v()
     (tmp_path / "home.js").write_text("console.log(2)")
-    assert get_v() != before, "home.js changed but its versioned URL did not"
+    assert get_v() == before, "a request unexpectedly re-read and rehashed the bundle"
 
 
 # ── compression chains collapse to one sidebar row ─────────────────────────
