@@ -65,6 +65,35 @@ def test_the_client_renders_a_loaded_transcript_in_full():
     r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr[-400:]
 
+
+def test_artifact_media_loads_only_after_the_final_render():
+    """A detached render and each streaming repaint must not fetch the video.
+
+    `renderMD` builds temporary DOM and returns its HTML. Giving those temporary
+    media nodes a `src` starts a request in Chromium; installing that HTML in
+    the transcript then starts the same request again. During streaming, every
+    animation-frame repaint multiplies it further.
+    """
+    src = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+    artifact_node = src[src.index("const artifactNode ="):src.index("const artifactAnchor =")]
+    assert 'setAttribute("data-artifact-src"' in artifact_node
+    assert not re.search(r"\b(?:v|img)\.src\s*=", artifact_node), (
+        "a media src on the detached node starts the first, unwanted request"
+    )
+
+    sanitizer = src[src.index('// DOMPurify returns a string'):src.index('// New-tab + no opener')]
+    assert 'removeAttribute("src")' in sanitizer, (
+        "markdown ![] media must also be parked before detached-DOM parsing"
+    )
+
+    final = src[src.index("function finalizeSeg()"):src.index("function activityGroup()")]
+    streaming = src[src.index("function scheduleRender()"):src.index("function appendThought(")]
+    assert "renderInto(seg.body, seg.text);" in final
+    assert "renderInto(S.seg.body, S.seg.text, false);" in streaming
+    assert 'media.setAttribute("src", src)' in artifact_node, (
+        "the final transcript node must activate the parked URL exactly once"
+    )
+
 def test_the_activity_row_sits_above_the_answer():
     """Reported from the UI: 7 tool rows UNDER a finished answer.
 

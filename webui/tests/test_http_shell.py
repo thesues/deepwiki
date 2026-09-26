@@ -440,6 +440,88 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     assert next(v for k, v in resp.headers if k == "ETag").startswith('W/"')
 
 
+def test_artifact_video_supports_browser_byte_ranges(server, tmp_path):
+    """`preload=metadata` must not download a whole generated video.
+
+    Browsers discover MP4 metadata with byte ranges. Ignoring Range answers
+    200 with the complete file, which is how a 900 KiB video appeared twice in
+    DevTools before playback had even started.
+    """
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    video = bytes(range(64))
+    (artifacts / "episode.mp4").write_bytes(video)
+    base = server(App(artifacts_dir=artifacts))
+
+    first = _get(
+        base + "/artifacts/episode.mp4",
+        {"Range": "bytes=8-15", "Accept-Encoding": "br"},
+    )
+    assert first.status == 206
+    assert first.read() == video[8:16]
+    assert first.headers.get("Accept-Ranges") == "bytes"
+    assert first.headers.get("Content-Range") == "bytes 8-15/64"
+    assert first.headers.get("Content-Length") == "8"
+    assert first.headers.get("Content-Encoding") is None, (
+        "a byte range is over the identity representation and must not be compressed"
+    )
+
+    suffix = _get(base + "/artifacts/episode.mp4", {"Range": "bytes=-5"})
+    assert suffix.status == 206
+    assert suffix.headers.get("Content-Range") == "bytes 59-63/64"
+    assert suffix.read() == video[-5:]
+
+
+def test_an_unsatisfiable_video_range_is_416(server, tmp_path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "episode.mp4").write_bytes(b"01234567")
+    base = server(App(artifacts_dir=artifacts))
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base + "/artifacts/episode.mp4", {"Range": "bytes=99-100"})
+    assert exc.value.code == 416
+    assert exc.value.headers.get("Content-Range") == "bytes */8"
+    assert exc.value.headers.get("Accept-Ranges") == "bytes"
+
+
+def test_artifact_etag_revalidation_precedes_a_range(server, tmp_path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "episode.mp4").write_bytes(b"01234567")
+    base = server(App(artifacts_dir=artifacts))
+    etag = _get(base + "/artifacts/episode.mp4").headers.get("ETag")
+
+    req = urllib.request.Request(
+        base + "/artifacts/episode.mp4",
+        headers={"If-None-Match": etag, "Range": "bytes=0-1"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 304
+    assert exc.value.headers.get("Accept-Ranges") == "bytes"
+    assert exc.value.read() == b""
+
+
+def test_weak_if_range_falls_back_to_a_complete_response(server, tmp_path):
+    """RFC If-Range comparison is strong; a weak metadata ETag cannot resume."""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    video = b"01234567"
+    (artifacts / "episode.mp4").write_bytes(video)
+    base = server(App(artifacts_dir=artifacts))
+    etag = _get(base + "/artifacts/episode.mp4").headers.get("ETag")
+    assert etag.startswith('W/"')
+
+    response = _get(
+        base + "/artifacts/episode.mp4",
+        {"Range": "bytes=0-1", "If-Range": etag},
+    )
+    assert response.status == 200
+    assert response.headers.get("Content-Range") is None
+    assert response.read() == video
+
+
 def test_artifact_304_uses_metadata_without_reading_the_file(tmp_path, monkeypatch):
     """Revalidating a generated video must not read and hash the whole video."""
     artifacts = tmp_path / "artifacts"

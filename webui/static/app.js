@@ -118,6 +118,24 @@ const artifactHref = (p) => p
   .replace(/^\/opt\/data/, "");
 const artifactLabel = (p) => artifactHref(p).split("/").pop();
 const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
+const artifactMediaHref = (u) => {
+  const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
+  return m ? m[1] : null;
+};
+
+// DOMPurify returns a string, which renderMD first installs in a detached
+// element and later installs again in the transcript. Browsers are allowed to
+// start fetching an <img>/<video> as soon as `src` is assigned even when the
+// node is detached, so a generated video used to be fetched once for each
+// element. Park artifact URLs in a data attribute while sanitizing; only the
+// final transcript node is activated below.
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (!/^(IMG|VIDEO|SOURCE)$/.test(node.tagName || "")) return;
+  const path = artifactMediaHref(node.getAttribute("src") || "");
+  if (!path || !MEDIA_FILE_RE.test(path)) return;
+  node.setAttribute("data-artifact-src", artifactHref(path));
+  node.removeAttribute("src");
+});
 // New-tab + no opener, set HERE and not by the DOMPurify hook that does it
 // for every other link: these anchors are built after sanitize returns, so
 // that hook never sees them. Measured by a target that came back empty.
@@ -132,14 +150,14 @@ const artifactNode = (path) => {
   const href = artifactHref(path);
   if (/\.(?:mp4|webm|mov|m4v)$/i.test(href)) {
     const v = document.createElement("video");
-    v.src = href;
+    v.setAttribute("data-artifact-src", href);
     v.controls = true;
     v.preload = "metadata";
     v.className = "artifact-media";
     return v;
   }
   const img = document.createElement("img");
-  img.src = href;
+  img.setAttribute("data-artifact-src", href);
   img.alt = artifactLabel(path);
   img.loading = "lazy";
   img.className = "artifact-media";
@@ -149,6 +167,14 @@ const artifactNode = (path) => {
   a.rel = "noopener noreferrer";
   a.appendChild(img);
   return a;
+};
+const activateArtifactMedia = (root) => {
+  for (const media of root.querySelectorAll("[data-artifact-src]")) {
+    const src = media.getAttribute("data-artifact-src");
+    if (!src) continue;
+    media.setAttribute("src", src);
+    media.removeAttribute("data-artifact-src");
+  }
 };
 const artifactAnchor = (path) => {
   const a = document.createElement("a");
@@ -210,22 +236,29 @@ const renderMD = (src) => {
   // 2. A markdown LINK to a media file — `[看视频](…/x.mp4)` arrives as an
   //    <a>, and a video the reader must CLICK AWAY to watch is the exact
   //    failure this page exists to prevent. Replaced by the element itself.
-  const mediaHref = (u) => {
-    const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
-    return m ? m[1] : null;
-  };
   for (const a of [...box.querySelectorAll("a[href]")]) {
-    const path = mediaHref(a.getAttribute("href"));
+    const path = artifactMediaHref(a.getAttribute("href"));
     if (!path) continue;
     if (MEDIA_FILE_RE.test(path)) a.replaceWith(artifactNode(path));
     else { a.href = artifactHref(path); a.textContent = a.textContent.trim() || artifactLabel(path); }
   }
   for (const media of box.querySelectorAll("img[src], video[src], source[src]")) {
-    const path = mediaHref(media.getAttribute("src") || "");
-    if (path) media.setAttribute("src", artifactHref(path));
+    const path = artifactMediaHref(media.getAttribute("src") || "");
+    if (path) {
+      media.setAttribute("data-artifact-src", artifactHref(path));
+      media.removeAttribute("src");
+    }
   }
   linkifyArtifacts(box);
   return box.innerHTML;
+};
+
+const renderInto = (target, src, activateMedia = true) => {
+  target.innerHTML = renderMD(src);
+  // Streaming reparses the whole answer once per animation frame. Starting a
+  // video before the segment is final would turn each repaint into another
+  // metadata request; the finished render activates it exactly once.
+  if (activateMedia) activateArtifactMedia(target);
 };
 
 /* ---------- mermaid ---------- */
@@ -745,7 +778,7 @@ function finalizeSeg() {
   // forEach and the only render is the deferred one -- showed an empty bubble
   // where the whole answer should be.
   if (seg.kind === "out") {
-    seg.body.innerHTML = renderMD(seg.text);
+    renderInto(seg.body, seg.text);
     renderMermaid(seg.body);   // async on purpose: the text is already on screen
   }
   S.seg = null;
@@ -835,7 +868,7 @@ function scheduleRender() {
   requestAnimationFrame(() => {
     renderPending = false;
     if (!S.seg || S.seg.kind !== "out") return;
-    S.seg.body.innerHTML = renderMD(S.seg.text);
+    renderInto(S.seg.body, S.seg.text, false);
     scroll();
   });
 }

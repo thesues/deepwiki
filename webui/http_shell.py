@@ -93,6 +93,35 @@ CLIENT_COOKIE = "deepwiki_cid"
 COMPRESSION_MIN_BYTES = 1024
 
 
+def _parse_byte_range(value: str, size: int) -> tuple[int, int]:
+    """Parse one RFC 9110 byte range into an inclusive ``(start, end)``.
+
+    Browser media requests use only a single range. Multipart ranges add a
+    different response body format and no benefit for this UI, so they are
+    rejected as unsatisfiable rather than accidentally answered with the whole
+    generated video.
+    """
+    unit, sep, raw = (value or "").partition("=")
+    if not sep or unit.strip().lower() != "bytes" or "," in raw or size <= 0:
+        raise ValueError("unsupported byte range")
+    first, dash, last = raw.strip().partition("-")
+    if not dash:
+        raise ValueError("malformed byte range")
+    try:
+        if first:
+            start = int(first)
+            end = int(last) if last else size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError("unsatisfiable byte range")
+            return start, min(end, size - 1)
+        suffix = int(last)
+        if suffix <= 0:
+            raise ValueError("empty suffix range")
+        return max(0, size - suffix), size - 1
+    except (TypeError, ValueError) as exc:
+        raise ValueError("malformed byte range") from exc
+
+
 def _accepts_encoding(value: str, encoding: str) -> bool:
     """Whether an RFC-style Accept-Encoding value permits one coding."""
     accepted: dict[str, float] = {}
@@ -116,6 +145,10 @@ def _accepts_encoding(value: str, encoding: str) -> bool:
 
 def _maybe_compress(req: "Request", resp: "Response") -> "Response":
     """Apply Brotli content negotiation to a buffered response."""
+    # A byte range is defined over the identity representation. Compressing a
+    # 206 body after Content-Range was calculated would make its offsets false.
+    if resp.status == 206:
+        return resp
     if not resp.body or len(resp.body) < COMPRESSION_MIN_BYTES:
         return resp
     content_type = next(
@@ -338,7 +371,11 @@ class App:
         versioned = matched_prefix == STATIC_PREFIX and bool(req.query.get("v"))
         immutable = ctype.startswith("font/") or versioned
         cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
-        headers = [("Content-Type", ctype), ("Cache-Control", cache)]
+        headers = [
+            ("Content-Type", ctype),
+            ("Cache-Control", cache),
+            ("Accept-Ranges", "bytes"),
+        ]
         body = None
         if immutable:
             # A content-addressed URL is its own validator.
@@ -381,7 +418,40 @@ class App:
                             "connect-src 'none'; frame-ancestors 'none'; base-uri 'none'"))
             headers.append(("X-Content-Type-Options", "nosniff"))
         if etag is not None and req.headers.get("If-None-Match") == etag:
-            return Response(304, [("ETag", etag), ("Cache-Control", cache)])
+            return Response(304, [
+                ("ETag", etag),
+                ("Cache-Control", cache),
+                ("Accept-Ranges", "bytes"),
+            ])
+
+        range_header = req.headers.get("Range")
+        if_range = req.headers.get("If-Range")
+        # If-Range requires a strong validator. Runtime artifacts deliberately
+        # use weak metadata ETags, so a resume guarded by one falls back to a
+        # complete 200 response instead of stitching potentially different
+        # file versions together.
+        range_allowed = not if_range or (
+            etag is not None and not etag.startswith("W/") and if_range == etag
+        )
+        if range_header and range_allowed:
+            try:
+                size = target.stat().st_size
+            except OSError:
+                return None
+            try:
+                start, end = _parse_byte_range(range_header, size)
+            except ValueError:
+                return Response(
+                    416, headers + [("Content-Range", f"bytes */{size}")]
+                )
+            try:
+                with target.open("rb") as f:
+                    f.seek(start)
+                    body = f.read(end - start + 1)
+            except OSError:
+                return None
+            range_headers = headers + [("Content-Range", f"bytes {start}-{end}/{size}")]
+            return Response(206, range_headers, body)
         if body is None:
             try:
                 body = target.read_bytes()
