@@ -205,7 +205,7 @@ spec:
 
       containers:
         - name: freetoken
-          image: IMAGE_FREETOKEN_L3
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/freetoken-l3:87141c68f1f46995cb09a0621e3686dad01fb33c
           # Always, not the IfNotPresent default: this tag is the deepwiki commit,
           # but the image ALSO embeds an autumn client chosen by a build-arg the
           # tag cannot see. Rebuilding at the same commit against a new
@@ -350,13 +350,21 @@ spec:
               # path, which is why autumn needs no code inside FreeToken. Built into a
               # variable rather than written inline, so the JSON stays readable and $M
               # (resolved above -- the Rust client is IP-only) interpolates exactly once.
+              # `ttl_secs` (7 days) is the ONLY reclamation knob for L3: page keys are
+              # content-addressed hashes that never invalidate on their own, so without
+              # a TTL every written page stays in autumnfs forever (observed 5.8 GiB
+              # written on one light day, reads only ~1.2 GiB). A missing/expired key is
+              # a clean miss — sglang recomputes the prefix — so the TTL trades a
+              # re-prefill for bounded storage. 7d: a single-user session's prefixes
+              # almost never get reused after a week.
               L3CFG='{"backend_name":"autumn",'
               L3CFG="$L3CFG"'"module_path":"autumn_kvcache.sglang_backend",'
               L3CFG="$L3CFG"'"class_name":"AutumnKVCacheStorage",'
               L3CFG="$L3CFG"'"interface_v1":1,'
               L3CFG="$L3CFG""\"endpoint\":\"$M\","
               L3CFG="$L3CFG"'"transport":"tcp",'
-              L3CFG="$L3CFG"'"auth_credential_file":"/etc/autumn/cred/kvc.cred"}'
+              L3CFG="$L3CFG"'"auth_credential_file":"/etc/autumn/cred/kvc.cred",'
+              L3CFG="$L3CFG"'"ttl_secs":604800}'
               echo "L3 config: $L3CFG"
               
               exec ft serve \
