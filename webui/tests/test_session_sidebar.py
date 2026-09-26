@@ -18,6 +18,7 @@ def test_session_sidebar_has_a_persistent_collapse_control():
     assert 'LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed"' in script
     assert "setSessionsCollapsed(sessionsCollapsed())" in script
     assert ".grid.sessions-collapsed .sessions { display:none; }" in styles
+    assert ".sessions-toggle { width:2rem; height:2rem; align-self:center;" in styles
 
 
 def test_media_skill_keeps_runtime_output_out_of_static():
