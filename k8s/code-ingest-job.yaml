@@ -38,7 +38,7 @@ spec:
         # Unpack the pinned tarball: same shape the old code-index-mcp init
         # container used, but over the gateway HTTP API instead of FUSE.
         - name: unpack
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:5c310271dc0e4ca509e738cb00c0ecd054d35418
+          image: IMAGE_LANCE_MCP
           volumeMounts: [ { name: repo, mountPath: /repo } ]
           command: ["bash", "-c"]
           args:
@@ -60,7 +60,7 @@ spec:
               test -d /repo/src/autumn-rs/crates || { echo "unexpected tarball layout"; exit 1; }
       containers:
         - name: ingest
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/lance-mcp:5c310271dc0e4ca509e738cb00c0ecd054d35418
+          image: IMAGE_LANCE_MCP
           volumeMounts: [ { name: repo, mountPath: /repo } ]
           command: ["bash", "-c"]
           args:

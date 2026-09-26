@@ -57,23 +57,13 @@ spec:
               DB="s3://lancedb/code"
 
               # Wait for the ingest Job's output: the `code` table. A cheap
-              # marker-style probe: try opening the db and listing tables.
+              # marker-style probe: the table's _versions/ manifest key.
               for i in $(seq 1 180); do
-                if .venv/bin/python -c "
-import sys
-from s3 import Gateway
-g = Gateway('$S3')
-keys = g.list('lancedb', 'code/code.lance/_versions/', limit=1)
-sys.exit(0 if keys else 1)
-" 2>/dev/null; then break; fi
+                if .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.list('lancedb','code/code.lance/_versions/', limit=1) else 1)" 2>/dev/null; then break; fi
                 sleep 1
               done
-              .venv/bin/python -c "
-import sys
-from s3 import Gateway
-keys = Gateway('$S3').list('lancedb', 'code/code.lance/_versions/', limit=1)
-sys.exit(0 if keys else 1)
-" || { echo "s3://lancedb/code has no code table: run the code-ingest Job first"; exit 1; }
+              .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.list('lancedb','code/code.lance/_versions/', limit=1) else 1)" \
+                || { echo "s3://lancedb/code has no code table: run the code-ingest Job first"; exit 1; }
 
               exec .venv/bin/python server.py \
                 --db-path "$DB" --s3-endpoint "$S3" \
