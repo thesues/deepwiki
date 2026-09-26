@@ -375,7 +375,11 @@ def build_app(
         if not sid or sessions is None:
             return json_response({"events": []})
         try:
-            events = sessions.history(sid, limit=400)  # type: ignore[attr-defined]
+            # The store already reads the complete row set before applying a
+            # limit, so truncating here saved no database work but silently
+            # removed the beginning of long, tool-heavy conversations. A
+            # transcript endpoint must return the transcript it names.
+            events = sessions.history(sid, limit=0)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             log.exception("could not read history for %s", sid)
             return json_response({"events": [], "error": "could not read this conversation"})

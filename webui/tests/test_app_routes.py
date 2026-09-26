@@ -38,12 +38,14 @@ class FakeSessions:
     def __init__(self):
         self.rows = [{"id": "s-old", "title": "昨天的问题", "messageCount": 4}]
         self.moved = []
+        self.history_limits = []
 
     def list_sessions(self, limit, include_empty):
         return [dict(r) for r in self.rows]
 
     def history(self, sid, limit):
         self.moved.append(sid)
+        self.history_limits.append(limit)
         return [{"kind": "history_user", "text": "before"}]
 
 
@@ -282,6 +284,13 @@ def test_reading_a_transcript_does_not_disturb_a_running_turn(app_server):
 
     state["gate"].set()
     _drain(mgr.stream(live["streamId"]))
+
+
+def test_history_is_not_silently_truncated(app_server):
+    """Long tool-heavy conversations must retain their earliest messages."""
+    base, _, state = app_server
+    _get(base, "/api/session/history?id=s-old")
+    assert state["sessions"].history_limits[-1] == 0
 
 
 def test_the_sidebar_marks_which_conversations_are_replying(app_server):

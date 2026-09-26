@@ -1657,10 +1657,14 @@ async function openSession(id) {
   // now only because the old URL 404'd before reaching this line.
   const events = j.events || [];
   HISTORY_CACHE.set(id, events);
-  // Paint the fetched events whenever the cached copy is empty — a session
-  // clicked once WHILE its first turn was running got cached as [], and the
-  // old `if (!cached)` guard turned that into an empty panel forever.
-  if (!cached || !cached.length) paintHistory(events);
+  // The cache is only a fast first paint. It may have been taken before a
+  // reply committed (especially when another tab continued this session), so
+  // the server result is authoritative even when the cache was non-empty.
+  // Clear the provisional paint before replaying, otherwise every cached row
+  // would appear twice.
+  $("#messages").textContent = "";
+  S.tools.clear(); S.seg = null; S.activity = null; S.turnTop = null; S.actIndex = 0;
+  paintHistory(events);
   // Not gated on S.busy any more: with several turns possible, the one that
   // matters is whether THIS conversation is streaming — which the map answers
   // directly. The old check asked "is anything streaming, and is it this one",
