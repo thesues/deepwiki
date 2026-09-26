@@ -8,7 +8,6 @@ it ends, and whether a cookie is decided before the handler runs.
 from __future__ import annotations
 
 import base64
-import gzip
 import hashlib
 import mimetypes
 import json
@@ -21,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import brotli  # noqa: E402
 import pytest  # noqa: E402
 
 from http_shell import App, Response, Streaming, json_response, serve  # noqa: E402
@@ -263,7 +263,7 @@ def test_fonts_and_versioned_assets_are_cached_for_a_year(server, tmp_path):
     assert versioned.headers.get("ETag") is None
 
 
-def test_large_text_responses_negotiate_gzip_without_touching_identity(server):
+def test_large_text_responses_negotiate_brotli_without_touching_identity(server):
     app = _app()
     raw = json.dumps({"events": [{"kind": "tool", "detail": "result" * 4000}]}).encode()
 
@@ -277,16 +277,20 @@ def test_large_text_responses_negotiate_gzip_without_touching_identity(server):
     assert identity.headers.get("Content-Encoding") is None
     assert identity.headers.get("Vary") == "Accept-Encoding"
 
-    compressed = _get(base + "/api/history", {"Accept-Encoding": "gzip"})
+    compressed = _get(base + "/api/history", {"Accept-Encoding": "br"})
     wire = compressed.read()
-    assert compressed.headers.get("Content-Encoding") == "gzip"
+    assert compressed.headers.get("Content-Encoding") == "br"
     assert compressed.headers.get("Vary") == "Accept-Encoding"
-    assert gzip.decompress(wire) == raw
+    assert brotli.decompress(wire) == raw
     assert len(wire) < len(raw) / 2
 
-    refused = _get(base + "/api/history", {"Accept-Encoding": "gzip;q=0, *;q=1"})
+    refused = _get(base + "/api/history", {"Accept-Encoding": "br;q=0, *;q=1"})
     assert refused.headers.get("Content-Encoding") is None
     assert refused.read() == raw
+
+    gzip_only = _get(base + "/api/history", {"Accept-Encoding": "gzip"})
+    assert gzip_only.headers.get("Content-Encoding") is None
+    assert gzip_only.read() == raw
 
 
 def test_a_file_outside_the_static_prefix_is_not_served(server, tmp_path):
@@ -332,8 +336,8 @@ def test_a_stream_reaches_the_client_before_it_ends(server):
         return Streaming([("Content-Type", "text/plain")], pump)
 
     base = server(app)
-    r = _get(base + "/api/stream", {"Accept-Encoding": "gzip"})
-    assert r.headers.get("Content-Encoding") is None, "SSE must never be buffered for gzip"
+    r = _get(base + "/api/stream", {"Accept-Encoding": "br"})
+    assert r.headers.get("Content-Encoding") is None, "SSE must never be buffered"
 
     # Read on another thread with a deadline. Asserting only the CONTENT would
     # pass on a transport that buffers to the end: the read simply blocks until

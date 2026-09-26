@@ -26,7 +26,6 @@ file is the transport.
 from __future__ import annotations
 
 import base64
-import gzip
 import hashlib
 import hmac
 import json
@@ -39,6 +38,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
+
+import brotli
 
 log = logging.getLogger("deepwiki.http")
 
@@ -88,12 +89,12 @@ CLIENT_COOKIE = "deepwiki_cid"
 
 # Compress responses large enough for the saved transfer time to outweigh the
 # envelope and CPU cost. SSE is represented by `Streaming` and never reaches
-# this path; buffering it for gzip would destroy its first-token latency.
-GZIP_MIN_BYTES = 1024
+# this path; buffering it for compression would destroy its first-token latency.
+COMPRESSION_MIN_BYTES = 1024
 
 
-def _accepts_gzip(value: str) -> bool:
-    """Whether an RFC-style Accept-Encoding value permits gzip."""
+def _accepts_encoding(value: str, encoding: str) -> bool:
+    """Whether an RFC-style Accept-Encoding value permits one coding."""
     accepted: dict[str, float] = {}
     for raw in (value or "").split(","):
         parts = [part.strip() for part in raw.split(";")]
@@ -109,13 +110,13 @@ def _accepts_gzip(value: str) -> bool:
                 except ValueError:
                     quality = 0.0
         accepted[coding] = quality
-    # An explicit gzip entry wins over `*`, including `gzip;q=0`.
-    return accepted.get("gzip", accepted.get("*", 0.0)) > 0
+    # An explicit entry wins over `*`, including an explicit q=0 refusal.
+    return accepted.get(encoding, accepted.get("*", 0.0)) > 0
 
 
-def _maybe_gzip(req: "Request", resp: "Response") -> "Response":
-    """Apply ordinary HTTP gzip content negotiation to a buffered response."""
-    if not resp.body or len(resp.body) < GZIP_MIN_BYTES:
+def _maybe_compress(req: "Request", resp: "Response") -> "Response":
+    """Apply Brotli content negotiation to a buffered response."""
+    if not resp.body or len(resp.body) < COMPRESSION_MIN_BYTES:
         return resp
     content_type = next(
         (v.lower() for k, v in resp.headers if k.lower() == "content-type"), ""
@@ -140,12 +141,14 @@ def _maybe_gzip(req: "Request", resp: "Response") -> "Response":
         if "accept-encoding" not in {v.strip().lower() for v in value.split(",")}:
             resp.headers[vary_index] = (key, value + ", Accept-Encoding")
 
-    if not _accepts_gzip(req.headers.get("Accept-Encoding", "")):
+    if not _accepts_encoding(req.headers.get("Accept-Encoding", ""), "br"):
         return resp
     if any(k.lower() == "content-encoding" for k, _ in resp.headers):
         return resp
-    resp.body = gzip.compress(resp.body, compresslevel=6)
-    resp.headers.append(("Content-Encoding", "gzip"))
+    # Quality 5 keeps dynamic-response CPU bounded while retaining most of
+    # Brotli's density advantage. Quality 11 is inappropriate for live JSON.
+    resp.body = brotli.compress(resp.body, quality=5)
+    resp.headers.append(("Content-Encoding", "br"))
     return resp
 
 
@@ -424,7 +427,7 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
             return
 
-        resp = _maybe_gzip(req, resp)
+        resp = _maybe_compress(req, resp)
         self.send_response(resp.status)
         for k, v in list(resp.headers) + cookie:
             self.send_header(k, v)
