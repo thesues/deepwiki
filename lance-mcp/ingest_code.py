@@ -220,8 +220,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fs-root", required=True, type=Path, help="ids are relative to this")
     ap.add_argument("--index", required=True, help="tree under --fs-root to index")
-    ap.add_argument("--db-path", required=True, type=Path,
-                    help="absolute LanceDB directory (production: below Autumn FUSE)")
+    ap.add_argument("--db-path", required=True,
+                    help="absolute LanceDB directory, or s3://bucket/prefix with --s3-endpoint")
+    ap.add_argument("--s3-endpoint",
+                    help="autumn-s3 gateway URL; required when --db-path is s3://")
     ap.add_argument("--embed-url")
     ap.add_argument("--embed-model", default="bge-m3")
     args = ap.parse_args()
@@ -237,13 +239,36 @@ def main() -> None:
     t_parse = time.monotonic() - t0
 
     t_e = time.monotonic()
+    from embed import Embedder, batches, clip
     if args.embed_url:
-        vecs = Embedder(args.embed_url, args.embed_model).embed_batch([s["text"] for s in symbols])
+        emb = Embedder(args.embed_url, args.embed_model)
+        texts = [clip(s["text"]) for s in symbols]
+        print(f"parse done: {len(files)} files, {len(symbols)} symbols, {len(edges)} edges "
+              f"({t_parse:.1f}s)\nembedding {len(texts)} symbols...", flush=True)
+        t_e = time.monotonic()
+        done = 0
+        vecs: list = []
+        for r in batches(texts):
+            vecs.extend(emb.embed_batch(texts[r.start:r.stop]))
+            done = r.stop
+            rate = done / max(time.monotonic() - t_e, 1e-9)
+            print(f"  embedded {done}/{len(texts)}  {rate:.1f}/s  "
+                  f"ETA {(len(texts) - done) / max(rate, 1e-9):.0f}s", flush=True)
         for s, v in zip(symbols, vecs, strict=True):
             s["vector"] = v
+    else:
+        print(f"parse done: {len(files)} files, {len(symbols)} symbols, {len(edges)} edges "
+              f"({t_parse:.1f}s); no --embed-url: lexical only", flush=True)
     t_embed = time.monotonic() - t_e
 
-    db = connect(args.db_path)
+    from store import is_s3_uri
+    if is_s3_uri(str(args.db_path)):
+        if not args.s3_endpoint:
+            raise SystemExit("an s3:// db path needs --s3-endpoint")
+        from store import s3_storage_options
+        db = connect(str(args.db_path), storage_options=s3_storage_options(args.s3_endpoint))
+    else:
+        db = connect(args.db_path)
     t1 = time.monotonic()
     code = db.create_table("code", pa.Table.from_pylist(symbols, schema=CODE_SCHEMA), mode="overwrite", on_bad_vectors="null")
     et = db.create_table("edges", pa.Table.from_pylist(edges, schema=EDGE_SCHEMA), mode="overwrite")
