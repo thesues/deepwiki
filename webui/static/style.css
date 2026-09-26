@@ -186,6 +186,11 @@ header h1 em { color:var(--accent); font-style:italic; }
         gap:1.2rem; align-items:stretch; flex:1; min-height:0; }
 .grid.sessions-collapsed { grid-template-columns:minmax(0,1fr); }
 .grid.sessions-collapsed .sessions { display:none; }
+/* Releasing the sidebar should make a transcript roomier, not turn a reading
+   column and composer into an edge-to-edge terminal. 1024px is deliberately
+   wider than the normal three-quarter chat pane, while keeping prose and the
+   input within one comfortable visual field on an ultrawide display. */
+.grid.sessions-collapsed .chat { width:min(100%, 1024px); justify-self:center; }
 @media (max-width:820px){ .grid { grid-template-columns:1fr; } .sessions { display:none; } }
 
 /* The session list is a useful navigator, not a permanent claim on reading
