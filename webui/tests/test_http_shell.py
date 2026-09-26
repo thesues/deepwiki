@@ -8,7 +8,6 @@ it ends, and whether a cookie is decided before the handler runs.
 from __future__ import annotations
 
 import base64
-import hashlib
 import mimetypes
 import json
 import sys
@@ -196,12 +195,14 @@ def test_static_files_are_served_under_the_static_prefix(server, tmp_path):
     r = _get(base + "/static/app.js")
     assert r.read() == b"console.log(1)"
     assert "javascript" in r.headers.get("Content-Type", "")
-    # An unversioned request remains the safe fallback: ETag + no-cache, and a
-    # matching If-None-Match answers 304.
+    # An unversioned request remains the safe fallback: Last-Modified +
+    # no-cache, and a matching If-Modified-Since answers 304.
     assert r.headers.get("Cache-Control") == "no-cache"
-    etag = r.headers.get("ETag")
-    assert etag == f'"{hashlib.sha256(b"console.log(1)").hexdigest()[:16]}"'
-    req = urllib.request.Request(base + "/static/app.js", headers={"If-None-Match": etag})
+    modified = r.headers.get("Last-Modified")
+    assert modified and r.headers.get("ETag") is None
+    req = urllib.request.Request(
+        base + "/static/app.js", headers={"If-Modified-Since": modified}
+    )
     try:
         with urllib.request.urlopen(req) as resp:
             code = resp.status
@@ -257,10 +258,12 @@ def test_fonts_and_versioned_assets_are_cached_for_a_year(server, tmp_path):
         mimetypes.guess_type = saved
     assert r.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
     assert r.headers.get("ETag") is None, "an immutable URL is already its own validator"
+    assert r.headers.get("Last-Modified") is None
     assert _get(base + "/static/style.css").headers.get("Cache-Control") == "no-cache"
     versioned = _get(base + "/static/style.css?v=abc123")
     assert versioned.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
     assert versioned.headers.get("ETag") is None
+    assert versioned.headers.get("Last-Modified") is None
 
 
 def test_large_text_responses_negotiate_brotli_without_touching_identity(server):
@@ -401,11 +404,10 @@ def test_requests_are_served_concurrently(server):
     t.join(timeout=3)
 
 
-def test_static_carries_an_etag_and_304s_on_revalidate():
+def test_static_carries_a_validator_and_304s_on_revalidate():
     """A response with NO cache validator let browsers heuristically pin an old
     app.js — deploys shipped while pages kept running pre-deploy code, and
     every client-side fix looked like it did nothing."""
-    import hashlib
     import urllib.request
     # served by the app_server fixture in test_app_routes; reuse its index body
     body = urllib.request.urlopen("http://127.0.0.1:0") if False else None
@@ -437,7 +439,8 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     assert resp is not None
     assert ("Content-Type", "video/mp4") in resp.headers
     assert ("Cache-Control", "no-cache") in resp.headers
-    assert next(v for k, v in resp.headers if k == "ETag").startswith('W/"')
+    assert any(k == "Last-Modified" for k, _ in resp.headers)
+    assert not any(k == "ETag" for k, _ in resp.headers)
 
 
 def test_artifact_video_supports_browser_byte_ranges(server, tmp_path):
@@ -485,16 +488,16 @@ def test_an_unsatisfiable_video_range_is_416(server, tmp_path):
     assert exc.value.headers.get("Accept-Ranges") == "bytes"
 
 
-def test_artifact_etag_revalidation_precedes_a_range(server, tmp_path):
+def test_artifact_last_modified_revalidation_precedes_a_range(server, tmp_path):
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     (artifacts / "episode.mp4").write_bytes(b"01234567")
     base = server(App(artifacts_dir=artifacts))
-    etag = _get(base + "/artifacts/episode.mp4").headers.get("ETag")
+    modified = _get(base + "/artifacts/episode.mp4").headers.get("Last-Modified")
 
     req = urllib.request.Request(
         base + "/artifacts/episode.mp4",
-        headers={"If-None-Match": etag, "Range": "bytes=0-1"},
+        headers={"If-Modified-Since": modified, "Range": "bytes=0-1"},
     )
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
@@ -503,26 +506,32 @@ def test_artifact_etag_revalidation_precedes_a_range(server, tmp_path):
     assert exc.value.read() == b""
 
 
-def test_weak_if_range_falls_back_to_a_complete_response(server, tmp_path):
-    """RFC If-Range comparison is strong; a weak metadata ETag cannot resume."""
+def test_if_range_date_only_resumes_an_unchanged_artifact(server, tmp_path):
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     video = b"01234567"
     (artifacts / "episode.mp4").write_bytes(video)
     base = server(App(artifacts_dir=artifacts))
-    etag = _get(base + "/artifacts/episode.mp4").headers.get("ETag")
-    assert etag.startswith('W/"')
+    modified = _get(base + "/artifacts/episode.mp4").headers.get("Last-Modified")
 
     response = _get(
         base + "/artifacts/episode.mp4",
-        {"Range": "bytes=0-1", "If-Range": etag},
+        {"Range": "bytes=0-1", "If-Range": modified},
     )
-    assert response.status == 200
-    assert response.headers.get("Content-Range") is None
-    assert response.read() == video
+    assert response.status == 206
+    assert response.headers.get("Content-Range") == "bytes 0-1/8"
+    assert response.read() == b"01"
+
+    stale = _get(
+        base + "/artifacts/episode.mp4",
+        {"Range": "bytes=0-1", "If-Range": "Thu, 01 Jan 1970 00:00:00 GMT"},
+    )
+    assert stale.status == 200
+    assert stale.headers.get("Content-Range") is None
+    assert stale.read() == video
 
 
-def test_artifact_304_uses_metadata_without_reading_the_file(tmp_path, monkeypatch):
+def test_artifact_304_uses_mtime_without_reading_the_file(tmp_path, monkeypatch):
     """Revalidating a generated video must not read and hash the whole video."""
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -536,7 +545,7 @@ def test_artifact_304_uses_metadata_without_reading_the_file(tmp_path, monkeypat
 
     first = app.serve_static(request({}))
     assert first is not None and first.status == 200
-    etag = next(v for k, v in first.headers if k == "ETag")
+    modified = next(v for k, v in first.headers if k == "Last-Modified")
 
     original_read_bytes = Path.read_bytes
     def refuse_video_read(path):
@@ -545,10 +554,10 @@ def test_artifact_304_uses_metadata_without_reading_the_file(tmp_path, monkeypat
         return original_read_bytes(path)
     monkeypatch.setattr(Path, "read_bytes", refuse_video_read)
 
-    cached = app.serve_static(request({"If-None-Match": etag}))
+    cached = app.serve_static(request({"If-Modified-Since": modified}))
     assert cached is not None and cached.status == 304
     assert cached.body == b""
-    assert ("ETag", etag) in cached.headers
+    assert ("Last-Modified", modified) in cached.headers
 
 
 def test_the_traversal_guard_holds_on_static_and_artifacts(tmp_path):

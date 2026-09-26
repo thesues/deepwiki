@@ -26,7 +26,6 @@ file is the transport.
 from __future__ import annotations
 
 import base64
-import hashlib
 import hmac
 import json
 import logging
@@ -34,6 +33,8 @@ import mimetypes
 import secrets
 import socketserver
 import threading
+from datetime import timezone
+from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -53,6 +54,13 @@ STATIC_PREFIX = "/static/"
 # and read-only. Keeping the two apart is what lets the CSP below apply to one
 # and not the other.
 ARTIFACTS_PREFIX = "/artifacts/"
+
+ARTIFACT_CSP = (
+    "default-src 'none'; img-src 'self' data: blob:; "
+    "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+    "font-src data:; media-src blob: data:; "
+    "connect-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+)
 
 # The media types this server actually serves, spelled out rather than asked
 # for. `mimetypes.guess_type` reads the PLATFORM's database — /etc/mime.types
@@ -120,6 +128,19 @@ def _parse_byte_range(value: str, size: int) -> tuple[int, int]:
         return max(0, size - suffix), size - 1
     except (TypeError, ValueError) as exc:
         raise ValueError("malformed byte range") from exc
+
+
+def _parse_http_timestamp(value: str | None) -> int | None:
+    """Parse an HTTP date as UTC seconds, or ignore an invalid validator."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:  # obsolete RFC 850/asctime forms
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _accepts_encoding(value: str, encoding: str) -> bool:
@@ -319,120 +340,143 @@ class App:
         return json_response({"error": "not found"}, status=404)
 
     def serve_static(self, req: Request) -> Response | None:
-        """Files under `static_dir` (`/static/`) or `artifacts_dir` (`/artifacts/`).
+        """Dispatch filesystem requests like nginx ``location`` prefixes."""
+        if req.path.startswith(STATIC_PREFIX):
+            target = self._resolve_location(req.path, STATIC_PREFIX, self.static_dir)
+            if target is None:
+                return None
+            ctype = self._content_type(target)
+            # Fonts are immutable by filename convention. Other shipped assets
+            # are immutable only through the version emitted by `_versioned_page`.
+            if ctype.startswith("font/") or bool(req.query.get("v")):
+                return self._serve_immutable_file(req, target, ctype)
+            return self._serve_revalidating_file(req, target, ctype)
 
-        The prefix is part of the contract, not decoration. `index.html` asks
-        for `/static/style.css`, `/static/app.js` and the two vendor scripts,
-        and the aiohttp server this replaced mounted them with
-        `add_static("/static/", STATIC)`. Serving the same bytes at the URL
-        root instead answers every one of those with 404 while `/` itself
-        still returns 200 — so the page loads, blank and unstyled, with a
-        working API behind it and nothing but console errors to say why.
+        if req.path.startswith(ARTIFACTS_PREFIX):
+            target = self._resolve_location(
+                req.path, ARTIFACTS_PREFIX, self.artifacts_dir
+            )
+            if target is None:
+                return None
+            return self._serve_revalidating_file(
+                req,
+                target,
+                self._content_type(target),
+                extra_headers=[
+                    ("Content-Security-Policy", ARTIFACT_CSP),
+                    ("X-Content-Type-Options", "nosniff"),
+                ],
+            )
 
-        The traversal guard is `resolve()` + `is_relative_to`, not a scan for
-        "..": a symlink inside the directory reaches outside it without the
-        string ever containing one.
+        return None
 
-        `/static/` is served only from the image. Runtime media and documents
-        belong in the PVC-backed `/artifacts/` mount; keeping the two namespaces
-        disjoint makes a frontend deploy atomic from the browser's perspective.
-        """
-        pairs: list[tuple[str, Path]] = []
-        if self.static_dir is not None:
-            pairs.append((STATIC_PREFIX, self.static_dir))
-        if self.artifacts_dir is not None:
-            pairs.append((ARTIFACTS_PREFIX, self.artifacts_dir))
-        rel = None
-        target = None
-        for prefix, root in pairs:
-            if not req.path.startswith(prefix):
-                continue
-            r = req.path[len(prefix):]
-            if not r:
-                continue
-            try:
-                target = (root / r).resolve()
-                if not target.is_relative_to(root.resolve()) or not target.is_file():
-                    continue
-                rel, matched_prefix = r, prefix
-                break
-            except (OSError, ValueError):
-                continue
-        if rel is None:
+    @staticmethod
+    def _resolve_location(path: str, prefix: str, root: Path | None) -> Path | None:
+        """Resolve one location without allowing traversal or escaping symlinks."""
+        if root is None:
             return None
+        rel = path[len(prefix):]
+        if not rel:
+            return None
+        try:
+            resolved_root = root.resolve()
+            target = (resolved_root / rel).resolve()
+            if target.is_relative_to(resolved_root) and target.is_file():
+                return target
+        except (OSError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _content_type(target: Path) -> str:
         ctype = (CONTENT_TYPES.get(target.suffix.lower())
                  or mimetypes.guess_type(str(target))[0]
                  or "application/octet-stream")
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
-        # Fonts are immutable by filename convention. Other shipped assets are
-        # immutable only when addressed through the versioned URL emitted by
-        # `_versioned_page`; artifacts remain mutable even with a query string.
-        versioned = matched_prefix == STATIC_PREFIX and bool(req.query.get("v"))
-        immutable = ctype.startswith("font/") or versioned
-        cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return ctype
+
+    @staticmethod
+    def _serve_immutable_file(req: Request, target: Path, ctype: str) -> Response | None:
+        """Serve a content-versioned file without a redundant validator."""
+        return App._send_file(
+            req,
+            target,
+            ctype,
+            "public, max-age=31536000, immutable",
+            use_last_modified=False,
+        )
+
+    @staticmethod
+    def _serve_revalidating_file(
+        req: Request,
+        target: Path,
+        ctype: str,
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> Response | None:
+        """Serve a mutable file that must be revalidated before cache reuse."""
+        return App._send_file(
+            req,
+            target,
+            ctype,
+            "no-cache",
+            use_last_modified=True,
+            extra_headers=extra_headers,
+        )
+
+    @staticmethod
+    def _send_file(
+        req: Request,
+        target: Path,
+        ctype: str,
+        cache: str,
+        *,
+        use_last_modified: bool,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> Response | None:
+        """Common response path: validator first, then Range, then full body."""
         headers = [
             ("Content-Type", ctype),
             ("Cache-Control", cache),
             ("Accept-Ranges", "bytes"),
         ]
-        body = None
-        if immutable:
-            # A content-addressed URL is its own validator.
-            etag = None
-        elif matched_prefix == ARTIFACTS_PREFIX:
-            # Runtime artifacts include large generated videos. A content hash
-            # would have to read the entire file even when If-None-Match lets us
-            # return no body. Match nginx's cheap metadata validator instead;
-            # weak is honest because equal metadata is not a byte-for-byte
-            # guarantee. Nanosecond mtime plus size changes whenever our media
-            # writers replace or rewrite an artifact in normal operation.
+        if extra_headers:
+            headers.extend(extra_headers)
+
+        mtime_secs = None
+        last_modified = None
+        if use_last_modified:
+            # Mutable filesystem-backed resources use the filesystem's own
+            # validator. This is O(1) even for generated videos and avoids
+            # reading an unversioned static asset merely to hash it. HTTP dates
+            # have one-second resolution; our writers do not replace the same
+            # pathname more than once within a second.
             try:
-                st = target.stat()
+                mtime_secs = int(target.stat().st_mtime)
             except OSError:
                 return None
-            etag = f'W/"{st.st_mtime_ns:x}-{st.st_size:x}"'
-        else:
-            # Unversioned shipped assets are small and retain their content
-            # validator. Versioned requests above never pay this hash cost.
-            try:
-                body = target.read_bytes()
-            except OSError:
-                return None
-            etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
-        if etag is not None:
-            headers.append(("ETag", etag))
-        if matched_prefix == ARTIFACTS_PREFIX:
-            # An artifact is a page the MODEL wrote, served from this app's
-            # own origin, and it carries its own inline script — that is what
-            # makes an Archify diagram explorable. Same origin means that
-            # script can reach `/api/*` as the reader, so it is boxed in:
-            # everything it needs is inline or a data: URI already, and this
-            # policy permits exactly that and no fetch, no frame, no origin
-            # but itself. The one thing it takes away from a self-contained
-            # artifact is the ability to call home.
-            headers.append(("Content-Security-Policy",
-                            "default-src 'none'; img-src 'self' data: blob:; "
-                            "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                            "font-src data:; media-src blob: data:; "
-                            "connect-src 'none'; frame-ancestors 'none'; base-uri 'none'"))
-            headers.append(("X-Content-Type-Options", "nosniff"))
-        if etag is not None and req.headers.get("If-None-Match") == etag:
-            return Response(304, [
-                ("ETag", etag),
-                ("Cache-Control", cache),
-                ("Accept-Ranges", "bytes"),
-            ])
+            last_modified = formatdate(mtime_secs, usegmt=True)
+            headers.append(("Last-Modified", last_modified))
+
+        if last_modified is not None:
+            modified_since = _parse_http_timestamp(req.headers.get("If-Modified-Since"))
+            if modified_since is not None and mtime_secs <= modified_since:
+                return Response(304, [
+                    ("Last-Modified", last_modified),
+                    ("Cache-Control", cache),
+                    ("Accept-Ranges", "bytes"),
+                ])
 
         range_header = req.headers.get("Range")
         if_range = req.headers.get("If-Range")
-        # If-Range requires a strong validator. Runtime artifacts deliberately
-        # use weak metadata ETags, so a resume guarded by one falls back to a
-        # complete 200 response instead of stitching potentially different
-        # file versions together.
-        range_allowed = not if_range or (
-            etag is not None and not etag.startswith("W/") and if_range == etag
-        )
+        # An If-Range date permits a partial response only while this is still
+        # the same filesystem version. Invalid dates fall back to a complete
+        # 200 response.
+        range_allowed = not if_range
+        if if_range and mtime_secs is not None:
+            if_range_time = _parse_http_timestamp(if_range)
+            range_allowed = if_range_time is not None and mtime_secs <= if_range_time
         if range_header and range_allowed:
             try:
                 size = target.stat().st_size
@@ -452,11 +496,10 @@ class App:
                 return None
             range_headers = headers + [("Content-Range", f"bytes {start}-{end}/{size}")]
             return Response(206, range_headers, body)
-        if body is None:
-            try:
-                body = target.read_bytes()
-            except OSError:
-                return None
+        try:
+            body = target.read_bytes()
+        except OSError:
+            return None
         return Response(200, headers, body)
 
 
