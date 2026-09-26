@@ -21,6 +21,9 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
          session list: the same action, two inches away, wearing the shape of
          a list row. The theme toggle sits last, at the far right, the way
          deepwiki places it. -->
+    <button id="sessions-toggle" class="sessions-toggle" type="button" title="收起会话列表" aria-label="收起会话列表" aria-expanded="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM9 5.5v13M12.5 10l-2 2 2 2"/></svg>
+    </button>
     <a id="home-link" class="btn ghost" href="/" title="返回首页 — 重新选择项目或会话">← 首页</a>
     <span class="proj-name" id="proj-name"></span>
     <span class="spacer"></span>

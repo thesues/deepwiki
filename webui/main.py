@@ -31,6 +31,7 @@ sys.path.insert(0, str(HERE))
 from app_routes import build_app  # noqa: E402
 from hermes_agent import AgentPool, load_endpoints, load_endpoints_env  # noqa: E402
 from http_shell import serve  # noqa: E402
+from mcp_resilience import install_semantic_error_guard  # noqa: E402
 from profiles import load_profiles  # noqa: E402
 from turns import TurnManager  # noqa: E402
 
@@ -265,10 +266,13 @@ def main() -> None:
     # `refresh_agent_mcp_tools` picks the tools up per turn from there.
     try:
         from hermes_cli.config import load_config
+        from tools import mcp_tool
         from tools.mcp_tool import register_mcp_servers
 
         servers = (load_config() or {}).get("mcp_servers") or {}
         if servers:
+            if install_semantic_error_guard(mcp_tool):
+                log.info("MCP breaker: semantic tool errors do not mark a server unreachable")
             added = register_mcp_servers(servers)
             log.info("registered %d MCP tool(s) from %s: %s",
                      len(added), list(servers), ", ".join(added[:4]) + ("…" if len(added) > 4 else ""))
@@ -286,24 +290,34 @@ def main() -> None:
     # Σ max_concurrent is the exact number of turns admission ever lets run,
     # so it is the exact worker count the turn pool needs.
     manager = TurnManager(AgentPool(), workers=sum(e.max_concurrent for e in endpoints))
+    # The image's SHIPPED pages and assets. In the cluster the boot command
+    # (k8s/webui.yaml) renames /app/static to /app/static.image and symlinks
+    # /app/static onto the PVC — so anything still pointing at /app/static
+    # reads the MEDIA overlay, not the app. Everything the IMAGE ships
+    # (home.html, index.html, app.js…) resolves here; only agent-written
+    # media goes through static_overlay below.
+    shipped = (HERE / "static.image") if (HERE / "static.image").is_dir() else HERE / "static"
     app = build_app(
         manager=manager,
         endpoints=endpoints,
         profiles=profiles,
-        static_dir=HERE / "static",
+        static_dir=shipped,
         # Where a drawn diagram lands. On the VOLUME, not in the image: the
         # agent writes here at runtime (skills/diagram/archify), and an
         # artifact has to outlive the pod that drew it — a link in a
         # transcript that 404s after the next rollout is worse than no link.
         artifacts_dir=artifacts,
         # Media delivered to /static/ lives HERE: on the PVC, served AHEAD of
-        # the image's own static dir under the same prefix. The lesson is
-        # measured — one pod recreation silently deleted a session's entire
-        # storyboard, because the delivery target had been /app/static, the
-        # container filesystem. `kubectl cp` a file to /opt/data/static/ and
-        # it is served at /static/<name> forever, rollout-proof.
+        # the pristine image dir under the same prefix. The lesson is measured
+        # — one pod recreation silently deleted a session's entire storyboard,
+        # because the delivery target had been /app/static, the container
+        # filesystem; and it happened AGAIN on 2026-09-25 after the agent was
+        # told the right path and used the wrong one, which is why the boot
+        # script now symlinks /app/static here as well. `kubectl cp` a file to
+        # /opt/data/static/ and it is served at /static/<name> forever,
+        # rollout-proof.
         static_overlay=Path(os.environ.get("HERMES_HOME", "/opt/data")) / "static",
-        index_html=HERE / "static" / "index.html",
+        index_html=shipped / "index.html",
         auth_user=os.environ.get("AUTH_USER", ""),
         auth_pass=os.environ.get("AUTH_PASS", ""),
         sessions=_sessions_module(),

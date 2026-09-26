@@ -184,7 +184,21 @@ header h1 em { color:var(--accent); font-style:italic; }
 /* ---------- layout ---------- */
 .grid { display:grid; grid-template-columns:minmax(230px,1fr) minmax(420px,3fr);
         gap:1.2rem; align-items:stretch; flex:1; min-height:0; }
+.grid.sessions-collapsed { grid-template-columns:minmax(0,1fr); }
+.grid.sessions-collapsed .sessions { display:none; }
 @media (max-width:820px){ .grid { grid-template-columns:1fr; } .sessions { display:none; } }
+
+/* The session list is a useful navigator, not a permanent claim on reading
+   width. This compact rail button mirrors the screenshot's control: it keeps
+   the page header stable while the chat grows into the released column. */
+.sessions-toggle { width:2rem; height:2rem; display:inline-flex; align-items:center; justify-content:center;
+                   border:1px solid var(--border); border-radius:var(--radius); background:transparent;
+                   color:var(--text-dim); cursor:pointer; padding:0; flex:none; transition:all .15s var(--ease); }
+.sessions-toggle:hover { color:var(--accent); border-color:var(--accent-dim); }
+.sessions-toggle svg { width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:1.5;
+                       stroke-linecap:round; stroke-linejoin:round; transition:transform .2s var(--ease); }
+.sessions-toggle[aria-expanded="false"] svg { transform:scaleX(-1); }
+@media (max-width:820px){ .sessions-toggle { display:none; } }
 
 .card { background:var(--surface);
         border:1px solid var(--border); border-radius:var(--radius);

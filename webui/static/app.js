@@ -29,6 +29,23 @@ const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessi
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
                         // still shows a conversation's model after a reload
 const LS_THEME = "hermes.theme";    // "light" | "dark"; unset = dark (the original look)
+const LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed";
+
+function sessionsCollapsed() {
+  try { return localStorage.getItem(LS_SESSIONS_COLLAPSED) === "1"; } catch (_) { return false; }
+}
+
+function setSessionsCollapsed(collapsed) {
+  const grid = $(".grid");
+  const button = $("#sessions-toggle");
+  if (grid) grid.classList.toggle("sessions-collapsed", collapsed);
+  if (button) {
+    button.setAttribute("aria-expanded", String(!collapsed));
+    button.title = collapsed ? "展开会话列表" : "收起会话列表";
+    button.setAttribute("aria-label", button.title);
+  }
+  try { localStorage.setItem(LS_SESSIONS_COLLAPSED, collapsed ? "1" : "0"); } catch (_) {}
+}
 
 // Keyed by session + the group's index in the transcript, which is stable for a
 // given conversation: reload it, switch away and back, and the rows you opened
@@ -1913,6 +1930,11 @@ async function boot() {
   // doing exactly the same thing. The key still works (Cmd/Ctrl+K).
   const nsBtn = $("#new-session");
   if (nsBtn) nsBtn.onclick = () => { newSession(); };
+  const sessionsBtn = $("#sessions-toggle");
+  if (sessionsBtn) {
+    setSessionsCollapsed(sessionsCollapsed());
+    sessionsBtn.onclick = () => setSessionsCollapsed(!sessionsCollapsed());
+  }
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
