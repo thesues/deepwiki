@@ -134,7 +134,9 @@ def test_a_reload_reopens_the_conversation_not_a_stream_cursor():
         "a stream cursor is being persisted for reload recovery again"
     )
     boot = src[src.index("async function boot()"):]
-    assert "openSession(view)" in boot, "boot no longer reopens the conversation on screen"
+    assert "openSession(view, prefetchedHistory)" in boot, (
+        "boot no longer reopens the conversation with its parallel history read"
+    )
 
 
 def test_boot_lists_sessions_once_and_opening_reuses_that_sidebar_state():

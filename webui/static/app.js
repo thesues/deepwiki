@@ -1559,7 +1559,19 @@ function paintHistory(history) {
   scroll(true);
 }
 
-async function openSession(id) {
+async function fetchHistory(id) {
+  try {
+    const response = await fetch(`/api/session/history?id=${encodeURIComponent(id)}`);
+    return { value: await response.json(), error: null };
+  } catch (error) {
+    // A boot-time prefetch can finish before boot has validated the saved view.
+    // Resolve failures as data so an abandoned prefetch never becomes an
+    // unhandled rejection; openSession reports it only if this view is used.
+    return { value: null, error };
+  }
+}
+
+async function openSession(id, prefetchedHistory = null) {
   // Every await below re-checks this. A second click on the row already
   // loading used to paint the transcript twice: both calls passed a "still
   // this session id" check. The first call's generation is stale, so it stops.
@@ -1623,16 +1635,16 @@ async function openSession(id) {
     if (gen !== S.viewGen) return;
   }
 
-  let j;
-  try {
-    // Query string, not a path segment. The server's router is an exact
+  // Query string, not a path segment. The server's router is an exact
   // (method, path) dict with no parameter support, so an id interpolated into
-  // the path matches no route and 404s.
-  j = await (await fetch(`/api/session/history?id=${encodeURIComponent(id)}`)).json();
-  } catch (_) {
+  // the path matches no route and 404s. On boot this request was started in
+  // parallel with /api/sessions; a sidebar click starts it here as before.
+  const loaded = await (prefetchedHistory || fetchHistory(id));
+  if (loaded.error) {
     if (gen === S.viewGen) { S.switching = null; status("载入会话失败"); }
     return;
   }
+  const j = loaded.value;
   // A switch the reader started and then abandoned: they are looking at another
   // view now, so painting this one's history would corrupt what they see. The
   // generation, not the id: 打开 A → 新会话 → 打开 A leaves the id equal while
@@ -1902,6 +1914,13 @@ async function boot() {
     localStorage.removeItem("hermes.streamId"); localStorage.removeItem("hermes.lastSeq");
   } catch (_) {}
   const view = recallView();
+  // The saved id is already scoped per project. Start its read before the
+  // sidebar list crosses the WAN; after the list returns, belongsHere remains
+  // authoritative and an invalid/deleted view simply discards this result.
+  // This overlaps two ~300 ms network waits without issuing either request
+  // twice. fetchHistory resolves errors as data, so a discarded prefetch is
+  // never an unhandled rejection.
+  const prefetchedHistory = view ? fetchHistory(view) : null;
   const gen = S.viewGen;
   // Exactly one initial list request. This used to start one above and then
   // await a second one here; both queried the same SQLite snapshot, and the
@@ -1915,7 +1934,7 @@ async function boot() {
     // for a conversation whose first turn has not persisted yet, carrying the
     // project it was started under — so a running turn in another project no
     // longer drags its transcript onto this page either.
-    openSession(view);
+    openSession(view, prefetchedHistory);
   } else {
     // Nothing to reopen: this IS a fresh conversation, so say so rather than
     // opening on a blank panel that reads as loading — and MEAN it, so the

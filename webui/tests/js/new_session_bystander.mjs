@@ -146,19 +146,20 @@ function page() {
 }
 
 /* ---------- a fake server ---------- */
-function harness({ current = null, streaming = {}, store = new Map(), server: shared = null } = {}) {
+function harness({ current = null, streaming = {}, store = new Map(), server: shared = null,
+                   sessions = [], history = {}, sessionsGate = null } = {}) {
   const { document } = page();
   const calls = [];
   const sources = [];
   // Pass `store` and `server` from a previous harness to model a RELOAD: same
   // localStorage, same server, fresh page.
   const server = shared || {
-    current, streaming: { ...streaming }, sessions: [], history: {}, events: {},
+    current, streaming: { ...streaming }, sessions: [...sessions], history: { ...history }, events: {},
     endpoints: [
       { key: "dsv4", label: "DSV4", model: "dsv4", maxConcurrent: 1, running: 0 },
       { key: "mm2", label: "MM2", model: "mm2", maxConcurrent: 1, running: 0 },
     ],
-    nextStream: 1,
+    nextStream: 1, sessionsGate,
   };
   // A JSON round trip, like the wire: handing the client the server's own
   // objects let a server-side change mutate client state behind its back.
@@ -169,7 +170,7 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     calls.push({ path: u.pathname, query: Object.fromEntries(u.searchParams), body });
     switch (u.pathname) {
       case "/api/sessions":
-        return reply({ defaultProfile: "default", sessions: server.sessions, current: server.current, streaming: server.streaming, endpoints: server.endpoints });
+        return (server.sessionsGate || Promise.resolve()).then(() => reply({ defaultProfile: "default", sessions: server.sessions, current: server.current, streaming: server.streaming, endpoints: server.endpoints }));
       case "/api/status":
         return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4", profiles: [{ key: "default", label: "默认" }], defaultProfile: "default" });
       case "/api/chat/start": return (server.startGate || Promise.resolve()).then(() => {
@@ -242,6 +243,32 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 const posts = (h, p) => h.calls.filter((c) => c.path === p);
+
+/* ---------- 0. reload overlaps the sidebar and transcript reads ---------- */
+{
+  let releaseSessions;
+  const sessionsGate = new Promise((resolve) => { releaseSessions = resolve; });
+  const store = new Map([["hermes.view", "old"]]);
+  const h = harness({
+    store,
+    sessionsGate,
+    sessions: [{ id: "old", title: "old question", messageCount: 2 }],
+    history: { old: [
+      { kind: "history_user", text: "old question" },
+      { kind: "delta", text: "old answer", thought: false },
+    ] },
+  });
+  await Promise.resolve();
+  assert.strictEqual(posts(h, "/api/sessions").length, 1);
+  assert.strictEqual(posts(h, "/api/session/history").length, 1,
+    "boot waited for the sidebar before starting the saved transcript request");
+  releaseSessions();
+  await settle(); await settle();
+  assert.strictEqual(posts(h, "/api/session/history").length, 1,
+    "openSession fetched history again instead of reusing the boot prefetch");
+  assert.ok(h.$("#messages").textContent.includes("old answer"),
+    "the prefetched transcript was not painted after sessions validated it");
+}
 
 /* ---------- 1. 发送 in a new session does not stop the bystander ---------- */
 {
