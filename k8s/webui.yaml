@@ -180,29 +180,11 @@ spec:
                 echo "installed $kind: $(cd "$src" && find . -name SKILL.md | wc -l) item(s)"
               done
 
-              # Media salvage: make /app/static a SYMLINK onto the PVC. The
-              # media skill tells the agent to deliver to /opt/data/static, and
-              # the agent does not always obey (observed 2026-09-25: it saved
-              # calico-wall_00001_.png to /app/static AND linked it as
-              # http://localhost:8080/static/... despite both rules; the file
-              # died with the old pod at the 22:44 rollout and the transcript
-              # rendered a broken image). The agent runs as root, so no
-              # permission can stop the write — the path itself is the guard.
-              #
-              # The image's shipped assets keep a pristine copy at
-              # /app/static.image, which is what main.py serves as the
-              # /static/ FALLBACK root (static_dir); /app/static itself points
-              # at the PVC overlay, so a file cp'd to /app/static lands on the
-              # volume. Idempotent: once the image dir is already a symlink
-              # (new image layers after the first rollout), only retarget it.
-              if [ ! -L /app/static ] && [ -d /app/static ]; then
-                mv /app/static /app/static.image
-              fi
-              mkdir -p "$H/static"
-              ln -sfn "$H/static" /app/static
-              # First boot on an older image that still has the real dir moved
-              # aside but no pristine copy to point at: nothing to do, main.py
-              # falls back to static.image when it exists.
+              # Frontend assets stay in /app/static, which is part of the image
+              # and never shares a PVC path. All runtime output — diagrams,
+              # generated images, videos and 3D files — goes to the persistent
+              # /opt/data/artifacts tree and is served at /artifacts/.
+              mkdir -p "$H/artifacts"
 
               # hermes' AIAgent refuses any model whose context window is under
               # MINIMUM_CONTEXT_LENGTH = 64_000, a constant in its `agent`

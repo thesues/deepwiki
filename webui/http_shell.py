@@ -150,23 +150,12 @@ class App:
         self,
         static_dir: Path | None = None,
         artifacts_dir: Path | None = None,
-        static_overlay: Path | None = None,
         auth_user: str = "",
         auth_pass: str = "",
     ) -> None:
         self.routes: dict[tuple[str, str], Callable[[Request], Response]] = {}
         self.static_dir = static_dir
         self.artifacts_dir = artifacts_dir
-        # A PVC-backed directory served UNDER the same /static/ prefix, ahead
-        # of the image's own static dir. Media a conversation delivered used to
-        # be cp'd into /app/static — the container filesystem — and a pod
-        # recreation silently deleted every one of those files (observed: a
-        # session's storyboard images, gone the day the pod was replaced,
-        # links in the transcript left pointing at nothing). Files under the
-        # overlay live on the volume: they survive restarts, and the same
-        # overlay is also how a static hot-fix can be cp'd in WITHOUT losing
-        # it to the next rollout.
-        self.static_overlay = static_overlay
         self.auth_user = auth_user
         self.auth_pass = auth_pass
 
@@ -245,18 +234,13 @@ class App:
         "..": a symlink inside the directory reaches outside it without the
         string ever containing one.
 
-        `/static/` is served from TWO roots, overlay first: a PVC-backed
-        directory (`static_overlay`) shadows the image's read-only dir for the
-        same relative path, and only a miss falls through to the image. The
-        overlay is where conversation-delivered media and hot-fixed assets
-        live — files that must survive a pod recreation.
+        `/static/` is served only from the image. Runtime media and documents
+        belong in the PVC-backed `/artifacts/` mount; keeping the two namespaces
+        disjoint makes a frontend deploy atomic from the browser's perspective.
         """
         pairs: list[tuple[str, Path]] = []
-        if self.static_dir is not None or self.static_overlay is not None:
-            if self.static_overlay is not None:
-                pairs.append((STATIC_PREFIX, self.static_overlay))
-            if self.static_dir is not None:
-                pairs.append((STATIC_PREFIX, self.static_dir))
+        if self.static_dir is not None:
+            pairs.append((STATIC_PREFIX, self.static_dir))
         if self.artifacts_dir is not None:
             pairs.append((ARTIFACTS_PREFIX, self.artifacts_dir))
         rel = None

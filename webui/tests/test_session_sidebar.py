@@ -18,3 +18,10 @@ def test_session_sidebar_has_a_persistent_collapse_control():
     assert 'LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed"' in script
     assert "setSessionsCollapsed(sessionsCollapsed())" in script
     assert ".grid.sessions-collapsed .sessions { display:none; }" in styles
+
+
+def test_media_skill_keeps_runtime_output_out_of_static():
+    skill = (ROOT / "hermes" / "skills" / "media" / "comfyui-media" / "SKILL.md").read_text()
+    assert "/opt/data/artifacts/" in skill
+    assert "/artifacts/<本会话>/cover.png" in skill
+    assert "`/static/` 只服务镜像中的 HTML/JS/CSS" in skill

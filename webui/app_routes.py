@@ -83,7 +83,6 @@ def build_app(
     static_dir: Path,
     index_html: Path,
     artifacts_dir: Path | None = None,
-    static_overlay: Path | None = None,
     auth_user: str = "",
     auth_pass: str = "",
     sessions: object | None = None,
@@ -91,7 +90,6 @@ def build_app(
     session_profiles: "SessionProfiles | None" = None,
 ) -> App:
     app = App(static_dir=static_dir, artifacts_dir=artifacts_dir,
-               static_overlay=static_overlay,
                auth_user=auth_user, auth_pass=auth_pass)
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]

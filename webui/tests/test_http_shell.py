@@ -375,58 +375,42 @@ def test_static_carries_an_etag_and_304s_on_revalidate():
     body = urllib.request.urlopen("http://127.0.0.1:0") if False else None
 
 
-# ── the /static overlay ─────────────────────────────────────────────────────
-#
-# A conversation's delivered media used to be cp'd into /app/static — the
-# CONTAINER filesystem — and one pod recreation silently deleted a session's
-# entire storyboard: the transcript kept the links, the volume kept nothing.
-# The overlay is a PVC-backed directory served UNDER the same /static/
-# prefix, ahead of the image's own dir, so `kubectl cp` a file to
-# /opt/data/static/ and it is served at /static/<name> rollout-proof.
-
-
-def test_the_static_overlay_shadows_the_image_dir(tmp_path):
-    image, overlay = tmp_path / "image", tmp_path / "pvc"
-    image.mkdir(); overlay.mkdir()
+def test_static_never_reads_the_pvc_artifact_tree(tmp_path):
+    """A stale PVC app.js must not be able to shadow a frontend deploy."""
+    image, artifacts = tmp_path / "image", tmp_path / "artifacts"
+    image.mkdir(); artifacts.mkdir()
     (image / "app.js").write_text("image-version")
-    (overlay / "app.js").write_text("pvc-version")
-    app = App(static_dir=image, static_overlay=overlay)
+    (artifacts / "app.js").write_text("pvc-version")
+    app = App(static_dir=image, artifacts_dir=artifacts)
     req = type("R", (), {"method": "GET", "path": "/static/app.js", "headers": {},
                          "query": {}})()
-    assert app.serve_static(req).body == b"pvc-version", "the overlay is served first"
+    assert app.serve_static(req).body == b"image-version"
 
 
-def test_a_static_miss_falls_through_to_the_image_dir(tmp_path):
-    image, overlay = tmp_path / "image", tmp_path / "pvc"
-    image.mkdir(); overlay.mkdir()
-    (image / "app.js").write_text("image-version")
-    app = App(static_dir=image, static_overlay=overlay)
-    req = type("R", (), {"method": "GET", "path": "/static/app.js", "headers": {},
-                         "query": {}})()
-    assert app.serve_static(req).body == b"image-version", "a miss is not a 404"
-
-
-def test_the_overlay_serves_files_the_image_never_had(tmp_path):
-    image, overlay = tmp_path / "image", tmp_path / "pvc"
-    image.mkdir(); overlay.mkdir()
-    (overlay / "episode.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
-    app = App(static_dir=image, static_overlay=overlay)
-    req = type("R", (), {"method": "GET", "path": "/static/episode.mp4", "headers": {},
-                         "query": {}})()
-    resp = app.serve_static(req)
+def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
+    image, artifacts = tmp_path / "image", tmp_path / "artifacts"
+    image.mkdir(); artifacts.mkdir()
+    (artifacts / "episode.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
+    app = App(static_dir=image, artifacts_dir=artifacts)
+    static_req = type("R", (), {"method": "GET", "path": "/static/episode.mp4", "headers": {},
+                                "query": {}})()
+    artifact_req = type("R", (), {"method": "GET", "path": "/artifacts/episode.mp4", "headers": {},
+                                  "query": {}})()
+    assert app.serve_static(static_req) is None
+    resp = app.serve_static(artifact_req)
     assert resp is not None
     assert ("Content-Type", "video/mp4") in resp.headers
 
 
-def test_the_traversal_guard_holds_on_both_static_roots(tmp_path):
-    image, overlay = tmp_path / "image", tmp_path / "pvc"
-    image.mkdir(); overlay.mkdir()
+def test_the_traversal_guard_holds_on_static_and_artifacts(tmp_path):
+    image, artifacts = tmp_path / "image", tmp_path / "artifacts"
+    image.mkdir(); artifacts.mkdir()
     secret = tmp_path / "secret.txt"
     secret.write_text("nope")
-    app = App(static_dir=image, static_overlay=overlay)
-    for root in (image, overlay):
+    app = App(static_dir=image, artifacts_dir=artifacts)
+    for root in (image, artifacts):
         (root / "link.txt").symlink_to(secret)
-    for path in ("/static/link.txt", "/static/../../etc/passwd"):
+    for path in ("/static/link.txt", "/artifacts/link.txt", "/static/../../etc/passwd"):
         req = type("R", (), {"method": "GET", "path": path, "headers": {},
                              "query": {}})()
         assert app.serve_static(req) is None, path

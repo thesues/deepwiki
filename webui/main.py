@@ -290,13 +290,11 @@ def main() -> None:
     # Σ max_concurrent is the exact number of turns admission ever lets run,
     # so it is the exact worker count the turn pool needs.
     manager = TurnManager(AgentPool(), workers=sum(e.max_concurrent for e in endpoints))
-    # The image's SHIPPED pages and assets. In the cluster the boot command
-    # (k8s/webui.yaml) renames /app/static to /app/static.image and symlinks
-    # /app/static onto the PVC — so anything still pointing at /app/static
-    # reads the MEDIA overlay, not the app. Everything the IMAGE ships
-    # (home.html, index.html, app.js…) resolves here; only agent-written
-    # media goes through static_overlay below.
-    shipped = (HERE / "static.image") if (HERE / "static.image").is_dir() else HERE / "static"
+    # The frontend is immutable image content. It must never share a path with
+    # the PVC: an old app.js on a volume can otherwise shadow a newly deployed
+    # page and leave visible controls without their handlers. Runtime output
+    # goes exclusively to ``artifacts`` below.
+    shipped = HERE / "static"
     app = build_app(
         manager=manager,
         endpoints=endpoints,
@@ -307,16 +305,6 @@ def main() -> None:
         # artifact has to outlive the pod that drew it — a link in a
         # transcript that 404s after the next rollout is worse than no link.
         artifacts_dir=artifacts,
-        # Media delivered to /static/ lives HERE: on the PVC, served AHEAD of
-        # the pristine image dir under the same prefix. The lesson is measured
-        # — one pod recreation silently deleted a session's entire storyboard,
-        # because the delivery target had been /app/static, the container
-        # filesystem; and it happened AGAIN on 2026-09-25 after the agent was
-        # told the right path and used the wrong one, which is why the boot
-        # script now symlinks /app/static here as well. `kubectl cp` a file to
-        # /opt/data/static/ and it is served at /static/<name> forever,
-        # rollout-proof.
-        static_overlay=Path(os.environ.get("HERMES_HOME", "/opt/data")) / "static",
         index_html=shipped / "index.html",
         auth_user=os.environ.get("AUTH_USER", ""),
         auth_pass=os.environ.get("AUTH_PASS", ""),

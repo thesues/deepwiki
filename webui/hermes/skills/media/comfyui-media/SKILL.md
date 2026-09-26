@@ -107,15 +107,21 @@ curl -s -o /tmp/out.png \
 
 ## 交付给用户（怎么引用生成的文件）
 
-生成的文件最终放到 `/opt/data/static/`（先下载到工作目录，再 `cp` 过去）。
+生成的图片、视频和 3D 文件最终放到当前会话的 artifact 目录（先下载到工作目录，再 `cp` 过去）。
+终端默认就在 `/opt/data/artifacts/<本会话>/`；若不在该目录，先创建一个唯一子目录，例如
+`mkdir -p /opt/data/artifacts/media-<uuid>`，**不要写入 `/app/static`、`/opt/data/static` 或 artifact 根目录**。
 
-**为什么是这个目录**：它挂在持久卷上，pod 重建不丢；`/app/static` 是容器文件系统，pod 一重建全没——
-上一个 pod 的重建已经这样丢过一整套 storyboard（`webui` 以 `/static/` 前缀同时服务两处，
-`/opt/data/static/` 优先）。
+**为什么必须这样做**：`/opt/data/artifacts/` 是 PVC，pod 重建不丢；`/app/static` 是随镜像部署的
+前端代码，`/static/` 只服务镜像中的 HTML/JS/CSS。媒体绝不能再与前端共享路径，否则旧 PVC 文件会覆盖
+新版本脚本。
+
+**引用前先 `ls -l <文件名>` 确认文件确实在当前 artifact 目录且大小非 0**，再在回复里引用。
 
 **回复里引用一律用相对路径**，形如：
 
-- 图片：`![封面](/static/cover.png)`
-- 视频：`/static/episode.mp4`
+- 图片：`![封面](/artifacts/<本会话>/cover.png)`
+- 视频：`/artifacts/<本会话>/episode.mp4`
 
-**绝对不要写带域名的完整 URL**（如 `https://xxx.apigateway…volceapi.com/static/a.png`）。页面只认相对路径——写了域名，用户看到的会是一条死链接而不是一张图。不确定文件名时先 `ls /opt/data/static/` 再引用。
+**绝对不要写带域名或 host 的完整 URL**——既不要写 `https://xxx.apigateway…/artifacts/a.png`，
+也不要写 `http://localhost:8080/artifacts/a.png`。只写以 `/artifacts/` 开头的相对路径；带 host 的链接在
+别的读者机器上一定是死链。
