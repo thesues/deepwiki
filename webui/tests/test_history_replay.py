@@ -189,6 +189,30 @@ def test_history_real_user_message_with_similar_opening_is_kept():
     assert [e["kind"] for e in events] == ["history_user"]
 
 
+def test_history_replays_the_full_compression_lineage(monkeypatch):
+    """The sidebar displays the compression tip, not just its final fragment."""
+    import sqlite3
+
+    class FakeDB:
+        def __init__(self):
+            self._conn = sqlite3.connect(":memory:")
+            self._conn.execute(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT)"
+            )
+            self._conn.executemany(
+                "INSERT INTO sessions VALUES (?, ?)",
+                [("root", None), ("middle", "root"), ("tip", "middle")],
+            )
+
+        @staticmethod
+        def get_messages(sid):
+            return [{"role": "user", "content": sid}]
+
+    monkeypatch.setattr(hs, "_db", lambda: FakeDB())
+    events = hs.history("tip", 0)
+    assert [event["text"] for event in events] == ["root", "middle", "tip"]
+
+
 # ── the todo checklist, replayed ────────────────────────────────────────────
 #
 # A reload must show the same checklist a live reader saw: the tool row with a

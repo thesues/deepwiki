@@ -236,6 +236,38 @@ def _is_compaction_summary(text: str) -> bool:
     return t.startswith("[CONTEXT COMPACTION") or t.startswith("[CONTEXT SUMMARY]:")
 
 
+def _history_lineage(db, sid: str) -> list[str]:
+    """Session ids in one compressed conversation, oldest first.
+
+    Hermes compression rotates a session id and links the child through
+    ``parent_session_id``. The sidebar deliberately shows only the newest tip,
+    but reading that row alone loses every pre-compression message. Hermes has
+    a public forward walk to the tip, not the inverse walk needed here, so use
+    its SQLite connection just as the delete path does. A malformed/older
+    database safely falls back to the requested row.
+    """
+    if not sid:
+        return []
+    try:
+        rows = db._conn.execute(
+            """
+            WITH RECURSIVE ancestors(id, parent, depth) AS (
+                SELECT id, parent_session_id, 0 FROM sessions WHERE id = ?
+              UNION ALL
+                SELECT s.id, s.parent_session_id, ancestors.depth + 1
+                  FROM sessions s JOIN ancestors ON s.id = ancestors.parent
+                 WHERE ancestors.depth < 63
+            )
+            SELECT id FROM ancestors ORDER BY depth DESC
+            """,
+            (sid,),
+        ).fetchall()
+        ids = [row[0] for row in rows]
+        return ids or [sid]
+    except Exception:  # noqa: BLE001 -- pre-lineage schemas are one-row sessions
+        return [sid]
+
+
 def history(sid: str, limit: int) -> list[dict]:
     """One session's transcript, in the UI's own event shape.
 
@@ -251,7 +283,13 @@ def history(sid: str, limit: int) -> list[dict]:
     this is a chat box, so assistant text and a one-line trace of tool activity
     is all of it.
     """
-    msgs = _db().get_messages(sid) or []
+    db = _db()
+    # The displayed id is normally the compression tip. Replay its ancestors
+    # first so a reader sees the one conversation they started, rather than a
+    # post-compression fragment beginning with Hermes' private summary.
+    msgs = []
+    for link in _history_lineage(db, sid):
+        msgs.extend(db.get_messages(link) or [])
     if limit and len(msgs) > limit:
         msgs = msgs[-limit:]
     out: list[dict] = []
