@@ -168,12 +168,46 @@ const artifactNode = (path) => {
   a.appendChild(img);
   return a;
 };
+const loadArtifactMedia = (media) => {
+  const src = media.getAttribute("data-artifact-src");
+  if (!src) return;
+  media.setAttribute("src", src);
+  media.removeAttribute("data-artifact-src");
+};
+const loadArtifactVideo = (video) => {
+  loadArtifactMedia(video);
+  for (const source of video.querySelectorAll("source[data-artifact-src]")) {
+    loadArtifactMedia(source);
+  }
+  video.load();
+};
+let artifactVideoObserver = null;
+const observeArtifactVideo = (video) => {
+  if (typeof IntersectionObserver !== "function") {
+    // Old browsers cannot tell us when an offscreen video approaches the
+    // viewport. Keep its URL usable, but do not preload even its metadata.
+    video.preload = "none";
+    loadArtifactVideo(video);
+    return;
+  }
+  if (!artifactVideoObserver) {
+    artifactVideoObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        artifactVideoObserver.unobserve(entry.target);
+        loadArtifactVideo(entry.target);
+      }
+    }, { rootMargin: "600px 0px" });
+  }
+  artifactVideoObserver.observe(video);
+};
 const activateArtifactMedia = (root) => {
   for (const media of root.querySelectorAll("[data-artifact-src]")) {
-    const src = media.getAttribute("data-artifact-src");
-    if (!src) continue;
-    media.setAttribute("src", src);
-    media.removeAttribute("data-artifact-src");
+    const video = media.tagName === "VIDEO"
+      ? media
+      : media.tagName === "SOURCE" ? media.closest("video") : null;
+    if (video) observeArtifactVideo(video);
+    else loadArtifactMedia(media);
   }
 };
 const artifactAnchor = (path) => {
