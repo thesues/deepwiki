@@ -358,7 +358,7 @@ class App:
             )
             if target is None:
                 return None
-            return self._serve_revalidating_file(
+            return self._serve_immutable_file(
                 req,
                 target,
                 self._content_type(target),
@@ -397,7 +397,13 @@ class App:
         return ctype
 
     @staticmethod
-    def _serve_immutable_file(req: Request, target: Path, ctype: str) -> Response | None:
+    def _serve_immutable_file(
+        req: Request,
+        target: Path,
+        ctype: str,
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> Response | None:
         """Serve a content-versioned file without a redundant validator."""
         return App._send_file(
             req,
@@ -405,6 +411,7 @@ class App:
             ctype,
             "public, max-age=31536000, immutable",
             use_last_modified=False,
+            extra_headers=extra_headers,
         )
 
     @staticmethod

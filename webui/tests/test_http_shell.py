@@ -438,8 +438,8 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     resp = app.serve_static(artifact_req)
     assert resp is not None
     assert ("Content-Type", "video/mp4") in resp.headers
-    assert ("Cache-Control", "no-cache") in resp.headers
-    assert any(k == "Last-Modified" for k, _ in resp.headers)
+    assert ("Cache-Control", "public, max-age=31536000, immutable") in resp.headers
+    assert not any(k == "Last-Modified" for k, _ in resp.headers)
     assert not any(k == "ETag" for k, _ in resp.headers)
 
 
@@ -486,78 +486,6 @@ def test_an_unsatisfiable_video_range_is_416(server, tmp_path):
     assert exc.value.code == 416
     assert exc.value.headers.get("Content-Range") == "bytes */8"
     assert exc.value.headers.get("Accept-Ranges") == "bytes"
-
-
-def test_artifact_last_modified_revalidation_precedes_a_range(server, tmp_path):
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    (artifacts / "episode.mp4").write_bytes(b"01234567")
-    base = server(App(artifacts_dir=artifacts))
-    modified = _get(base + "/artifacts/episode.mp4").headers.get("Last-Modified")
-
-    req = urllib.request.Request(
-        base + "/artifacts/episode.mp4",
-        headers={"If-Modified-Since": modified, "Range": "bytes=0-1"},
-    )
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(req, timeout=5)
-    assert exc.value.code == 304
-    assert exc.value.headers.get("Accept-Ranges") == "bytes"
-    assert exc.value.read() == b""
-
-
-def test_if_range_date_only_resumes_an_unchanged_artifact(server, tmp_path):
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    video = b"01234567"
-    (artifacts / "episode.mp4").write_bytes(video)
-    base = server(App(artifacts_dir=artifacts))
-    modified = _get(base + "/artifacts/episode.mp4").headers.get("Last-Modified")
-
-    response = _get(
-        base + "/artifacts/episode.mp4",
-        {"Range": "bytes=0-1", "If-Range": modified},
-    )
-    assert response.status == 206
-    assert response.headers.get("Content-Range") == "bytes 0-1/8"
-    assert response.read() == b"01"
-
-    stale = _get(
-        base + "/artifacts/episode.mp4",
-        {"Range": "bytes=0-1", "If-Range": "Thu, 01 Jan 1970 00:00:00 GMT"},
-    )
-    assert stale.status == 200
-    assert stale.headers.get("Content-Range") is None
-    assert stale.read() == video
-
-
-def test_artifact_304_uses_mtime_without_reading_the_file(tmp_path, monkeypatch):
-    """Revalidating a generated video must not read and hash the whole video."""
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    video = artifacts / "episode.mp4"
-    video.write_bytes(b"large-video-placeholder")
-    app = App(artifacts_dir=artifacts)
-    request = lambda headers: type(
-        "R", (), {"method": "GET", "path": "/artifacts/episode.mp4",
-                   "headers": headers, "query": {}}
-    )()
-
-    first = app.serve_static(request({}))
-    assert first is not None and first.status == 200
-    modified = next(v for k, v in first.headers if k == "Last-Modified")
-
-    original_read_bytes = Path.read_bytes
-    def refuse_video_read(path):
-        if path == video:
-            raise AssertionError("a matching artifact validator must return before read_bytes")
-        return original_read_bytes(path)
-    monkeypatch.setattr(Path, "read_bytes", refuse_video_read)
-
-    cached = app.serve_static(request({"If-Modified-Since": modified}))
-    assert cached is not None and cached.status == 304
-    assert cached.body == b""
-    assert ("Last-Modified", modified) in cached.headers
 
 
 def test_the_traversal_guard_holds_on_static_and_artifacts(tmp_path):
