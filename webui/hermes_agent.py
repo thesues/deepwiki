@@ -113,6 +113,26 @@ class _Db:
         return cls._db
 
 
+class UserSessionDB:
+    """Per-agent adapter stamping Hermes' existing sessions.user_id column.
+
+    Hermes 0.17's lazy writer explicitly passes user_id=None; compression omits
+    it. Wrapping that one write covers both without patching installed Hermes
+    or maintaining a separate ownership database.
+    """
+
+    def __init__(self, db, user_id: str):
+        self._db = db
+        self.user_id = user_id
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    def create_session(self, *, session_id, **kwargs):
+        kwargs["user_id"] = self.user_id
+        return self._db.create_session(session_id=session_id, **kwargs)
+
+
 def history_for(session_id: str) -> list[dict]:
     """The conversation to hand `run_conversation`, read from hermes' store.
 
@@ -316,11 +336,12 @@ def _register_input_image_tool() -> None:
 
     async def _open(args: dict, **_: Any) -> Any:
         import asyncio
-        from media_input import tool_result, valid_key
+        from media_input import tool_result, owned_key
+        from gateway.session_context import get_session_env
 
         key = str(args.get("object_key") or "").strip()
         question = str(args.get("question") or "").strip()
-        if not valid_key(key):
+        if not owned_key(key, get_session_env("HERMES_SESSION_USER_ID", "")):
             return tool_error("Invalid input image object_key", success=False)
         try:
             return await asyncio.to_thread(tool_result, key, question)
@@ -385,7 +406,12 @@ def _install_multimodal_persistence_guard(agent: Any) -> None:
     agent._deepwiki_multimodal_guard = True
 
 
-def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = None) -> Any:
+def build_agent(
+    session_id: str,
+    ep: Endpoint,
+    profile: AgentProfile | None = None,
+    user_id: str = "",
+) -> Any:
     """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
 
     The kwargs mirror what hermes' own ACP adapter passes, minus the parts that
@@ -431,6 +457,10 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     # per-turn trim would leave a cached agent (built for the old identity)
     # carrying tools its replacement dropped.
     toolsets, mcp_servers = scope_agent_tools(profile, toolsets, mcp_servers)
+    if user_id:
+        # Hermes built-in recall and memory read the shared home, bypassing
+        # the HTTP resource checks. Leave them disabled until they are scoped.
+        toolsets = [t for t in toolsets if t not in {"session_search", "memory"}]
 
     # Where this session's terminal starts, and the reason it is per-session.
     #
@@ -447,6 +477,9 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     # put this": the relative path the model types lands in its own folder,
     # and the URL is that folder minus /opt/data.
     #
+    if user_id:
+        (_artifacts_root() / session_id).mkdir(parents=True, exist_ok=True)
+
     # A profile that declares a workspace keeps it — that one is a corpus root
     # and belongs to the project, not to the conversation.
     if profile is not None and profile.workspace:
@@ -497,8 +530,8 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         "api_key": ep.api_key,
         "quiet_mode": True,
         "session_id": session_id,
-        "session_db": _Db.get(),
-        "enabled_toolsets": toolsets or None,
+        "session_db": UserSessionDB(_Db.get(), user_id) if user_id else _Db.get(),
+        "enabled_toolsets": toolsets if user_id else (toolsets or None),
         "mcp_server_names": mcp_servers or None,
         # A CEILING ON THE TOOL LOOP, because a turn must end where someone is
         # watching it. hermes defaults to 90 iterations; at the ~25 s an
@@ -511,11 +544,18 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         # hit the ceiling, which is a thing a reader can act on.
         "max_iterations": MAX_TOOL_ITERATIONS,
     }
+    if user_id:
+        candidate["user_id"] = user_id
+        candidate["skip_memory"] = True
+        candidate["gateway_session_key"] = session_id
     # Only when the endpoint declares one: hermes has its own default, and an
     # explicit 0 would be a ceiling of zero tokens rather than "unset".
     if ep.max_tokens:
         candidate["max_tokens"] = ep.max_tokens
-    agent = AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
+    kwargs = supported_kwargs(AIAgent.__init__, candidate)
+    if user_id and "user_id" not in kwargs:
+        raise RuntimeError("Hermes must support user_id when JWT auth is enabled")
+    agent = AIAgent(**kwargs)
     _install_multimodal_persistence_guard(agent)
     # Hermes' global config has one active-model vision flag, while this WebUI
     # keeps several endpoints in one process. Bind the capability to this
@@ -526,7 +566,7 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
         agent,
     )
     _set_context_window(agent, ep)
-    return _scope_tools(agent, profile, mcp_servers)
+    return _scope_tools(agent, profile, mcp_servers, user_id=user_id)
 
 
 def _set_context_window(agent: Any, ep: Endpoint) -> None:
@@ -575,7 +615,7 @@ def _set_context_window(agent: Any, ep: Endpoint) -> None:
         log.exception("could not set the context window for %s", ep.key)
 
 
-def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str]) -> Any:
+def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str], user_id: str = "") -> Any:
     """Hold the agent's tool list to the profile's `mcp_tools` allowlist.
 
     Filtering the list ONCE after construction does not hold: hermes rebuilds
@@ -592,29 +632,30 @@ def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str]) -
     writers that do not exist yet.
     """
     allow = getattr(profile, "mcp_tools", None)
-    if allow is None:
+    if allow is None and not user_id:
         return agent
 
     from profiles import allowed_mcp_names, tool_allowed
 
     allowed = allowed_mcp_names(allow, servers)
+    denied = {"session_search", "memory"} if user_id else set()
 
     def _tools_get(self):
         return self.__dict__.get("_scoped_tools", [])
 
     def _tools_set(self, value):
-        kept = [t for t in (value or []) if tool_allowed(t.get("function", {}).get("name", ""), allowed)]
+        kept = [t for t in (value or []) if tool_allowed(t.get("function", {}).get("name", ""), allowed) and t.get("function", {}).get("name", "") not in denied]
         dropped = len(value or []) - len(kept)
         if dropped:
             log.info("profile %s: %d MCP tool(s) withheld, %d kept",
-                     profile.key, dropped, len(kept))
+                     getattr(profile, "key", "default"), dropped, len(kept))
         self.__dict__["_scoped_tools"] = kept
 
     def _names_get(self):
         return self.__dict__.get("_scoped_names", set())
 
     def _names_set(self, value):
-        self.__dict__["_scoped_names"] = {n for n in (value or set()) if tool_allowed(n, allowed)}
+        self.__dict__["_scoped_names"] = {n for n in (value or set()) if tool_allowed(n, allowed) and n not in denied}
 
     cls = type(agent)
     scoped = type(
@@ -652,7 +693,7 @@ class AgentPool:
         self._max = max(1, max_size)
 
     def acquire(self, session_id: str, ep: Endpoint,
-                profile: AgentProfile | None = None) -> Any:
+                profile: AgentProfile | None = None, user_id: str = "") -> Any:
         """The agent for this (session, endpoint, profile), built on a miss.
 
         The profile key is part of the cache signature, reusing the endpoint
@@ -660,7 +701,7 @@ class AgentPool:
         signature, the cached agent misses, and one carrying the right
         identity is built. No separate 'switch profile' path to keep correct.
         """
-        sig = (*ep.signature(), profile.key if profile is not None else "")
+        sig = (*ep.signature(), profile.key if profile is not None else "", user_id)
         with self._lock:
             hit = self._cache.get(session_id)
             if hit is not None and hit[1] == sig:
@@ -673,7 +714,10 @@ class AgentPool:
             # the same 1.3 s the cache exists to avoid paying twice, not a new
             # cost.
             self._cache.pop(session_id, None)
-        agent = build_agent(session_id, ep, profile)
+        if user_id:
+            agent = build_agent(session_id, ep, profile, user_id=user_id)
+        else:
+            agent = build_agent(session_id, ep, profile)
         with self._lock:
             self._cache[session_id] = (agent, sig)
             self._cache.move_to_end(session_id)

@@ -13,11 +13,11 @@ import urllib.request
 MAX_IMAGE_BYTES = 8 << 20
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
 IMAGE_KEY_PATTERN = re.compile(
-    r"input/webui/[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
+    r"input/webui/(?:u_[A-Za-z0-9_-]+/)?[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
     re.IGNORECASE,
 )
 IMAGE_MARKER_PATTERN = re.compile(
-    r"\[输入图片 object_key:\s*(input/webui/[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]",
+    r"\[输入图片 object_key:\s*(input/webui/(?:u_[A-Za-z0-9_-]+/)?[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]",
     re.IGNORECASE,
 )
 
@@ -28,6 +28,11 @@ def endpoint() -> str:
 
 def valid_key(key: str) -> bool:
     return IMAGE_KEY_PATTERN.fullmatch(key) is not None
+
+
+def owned_key(key: str, user_id: str) -> bool:
+    """Authenticated keys must live below their deterministic user prefix."""
+    return valid_key(key) and (not user_id or key.startswith(f"input/webui/{user_id}/"))
 
 
 def put_object(endpoint_url: str, key: str, body: bytes, content_type: str) -> None:

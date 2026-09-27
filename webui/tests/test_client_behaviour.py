@@ -244,7 +244,7 @@ def test_deleting_a_conversation_asks_first():
     body = src[src.index("async function removeSession("):]
     body = body[:body.index("\n}") + 2]
     assert "confirm(" in body, f"delete still fires with no prompt:\n{body}"
-    assert body.index("confirm(") < body.index("fetch("), "it asks after deleting"
+    assert body.index("confirm(") < body.index("authFetch("), "it asks after deleting"
 
 def test_a_foreign_event_is_not_drawn():
     """Ablation: drop the `mine` check in `apply` and this goes red."""
@@ -354,8 +354,8 @@ def test_a_refused_send_puts_the_message_back():
     ends = [body.index(m) for m in ("\nasync function ", "\nfunction ") if m in body]
     body = body[:min(ends)] if ends else body
     guard = body[body.index("if (j.error)"):]
-    guard = guard[:guard.index("input.value = text") + 40]
-    assert "j.taken" in guard, (
+    guard = guard[:guard.index("input.value = draftText") + 40]
+    assert "j.taken" in guard and "j.user_busy" in guard, (
         "a refused send still eats what was typed:\n" + guard
     )
 

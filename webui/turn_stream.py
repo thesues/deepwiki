@@ -32,6 +32,7 @@ class TurnStream:
         session_id: str | None,
         client_id: str = "",
         backlog: int = BACKLOG_EVENTS,
+        *, user_id: str = "",
     ) -> None:
         self.stream_id = stream_id
         self.session_id = session_id
@@ -40,6 +41,9 @@ class TurnStream:
         # may still READ this stream, which is what makes "go back to the
         # conversation that is replying" work for whoever is looking.
         self.client_id = client_id
+        # Authenticated owner, present before Hermes creates the first DB row.
+        self.user_id = user_id
+        self.session_ids = {session_id}
         self.seq = 0
         self.events: deque[tuple[int, dict]] = deque(maxlen=backlog)
         self.dropped = 0

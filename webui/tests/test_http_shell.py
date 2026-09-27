@@ -420,7 +420,7 @@ def test_static_never_reads_the_pvc_artifact_tree(tmp_path):
     (image / "app.js").write_text("image-version")
     (artifacts / "app.js").write_text("pvc-version")
     app = App(static_dir=image, artifacts_dir=artifacts)
-    req = type("R", (), {"method": "GET", "path": "/static/app.js", "headers": {},
+    req = type("R", (), {"user_id": "", "method": "GET", "path": "/static/app.js", "headers": {},
                          "query": {}})()
     assert app.serve_static(req).body == b"image-version"
 
@@ -430,9 +430,9 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     image.mkdir(); artifacts.mkdir()
     (artifacts / "episode.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
     app = App(static_dir=image, artifacts_dir=artifacts)
-    static_req = type("R", (), {"method": "GET", "path": "/static/episode.mp4", "headers": {},
+    static_req = type("R", (), {"user_id": "", "method": "GET", "path": "/static/episode.mp4", "headers": {},
                                 "query": {}})()
-    artifact_req = type("R", (), {"method": "GET", "path": "/artifacts/episode.mp4", "headers": {},
+    artifact_req = type("R", (), {"user_id": "", "method": "GET", "path": "/artifacts/episode.mp4", "headers": {},
                                   "query": {}})()
     assert app.serve_static(static_req) is None
     resp = app.serve_static(artifact_req)
@@ -440,7 +440,7 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     assert ("Content-Type", "video/mp4") in resp.headers
     assert ("Cache-Control", "public, max-age=31536000, immutable") in resp.headers
     assert not any(k == "Last-Modified" for k, _ in resp.headers)
-    assert not any(k == "ETag" for k, _ in resp.headers)
+    assert any(k == "ETag" for k, _ in resp.headers)
 
 
 def test_artifact_poster_is_generated_lazily_from_same_name_video(tmp_path, monkeypatch):
@@ -457,7 +457,7 @@ def test_artifact_poster_is_generated_lazily_from_same_name_video(tmp_path, monk
     monkeypatch.setattr("http_shell.subprocess.run", fake_ffmpeg)
     app = App(artifacts_dir=artifacts)
     req = type("R", (), {
-        "method": "GET", "path": "/artifacts/episode.jpg", "headers": {}, "query": {},
+        "user_id": "", "method": "GET", "path": "/artifacts/episode.jpg", "headers": {}, "query": {},
     })()
 
     first = app.serve_static(req)
@@ -525,6 +525,6 @@ def test_the_traversal_guard_holds_on_static_and_artifacts(tmp_path):
     for root in (image, artifacts):
         (root / "link.txt").symlink_to(secret)
     for path in ("/static/link.txt", "/artifacts/link.txt", "/static/../../etc/passwd"):
-        req = type("R", (), {"method": "GET", "path": path, "headers": {},
+        req = type("R", (), {"user_id": "", "method": "GET", "path": path, "headers": {},
                              "query": {}})()
         assert app.serve_static(req) is None, path

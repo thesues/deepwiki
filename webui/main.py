@@ -295,6 +295,17 @@ def main() -> None:
     # page and leave visible controls without their handlers. Runtime output
     # goes exclusively to ``artifacts`` below.
     shipped = HERE / "static"
+    auth_user = os.environ.get("AUTH_USER", "")
+    auth_pass = os.environ.get("AUTH_PASS", "")
+    jwks_url = os.environ.get("AUTH_JWKS_URL", "").strip()
+    if jwks_url and (auth_user or auth_pass):
+        raise SystemExit("AUTH_JWKS_URL cannot be combined with AUTH_USER/AUTH_PASS")
+    authenticator = None
+    if jwks_url:
+        from auth import JWTAuthenticator
+
+        authenticator = JWTAuthenticator(jwks_url, audience="deepwiki")
+        log.info("JWT authentication enabled; JWKS=%s", jwks_url)
     app = build_app(
         manager=manager,
         endpoints=endpoints,
@@ -306,8 +317,9 @@ def main() -> None:
         # transcript that 404s after the next rollout is worse than no link.
         artifacts_dir=artifacts,
         index_html=shipped / "index.html",
-        auth_user=os.environ.get("AUTH_USER", ""),
-        auth_pass=os.environ.get("AUTH_PASS", ""),
+        auth_user=auth_user,
+        auth_pass=auth_pass,
+        authenticator=authenticator,
         sessions=_sessions_module(),
         mcp=(
             {"name": declared_servers[0][0], "url": declared_servers[0][1]}

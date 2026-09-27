@@ -1,0 +1,24 @@
+# Production builds run in Volcengine CP; mirror arguments match buda-webui.
+ARG BASE_REGISTRY=
+FROM ${BASE_REGISTRY}library/golang:1.26.5-bookworm AS build
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+WORKDIR /src
+COPY authd/go.mod authd/go.sum ./
+RUN go mod download
+COPY authd/ ./
+ENV CGO_ENABLED=1
+RUN go build -mod=readonly -trimpath -o /out/authd ./cmd/authd
+
+FROM ${BASE_REGISTRY}library/debian:bookworm-slim
+ARG APT_MIRROR=
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/authd && chown 10001:10001 /var/lib/authd
+COPY --from=build /out/authd /usr/local/bin/authd
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/authd"]

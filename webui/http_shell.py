@@ -40,9 +40,10 @@ from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import brotli
+from auth import AuthenticationError, AuthenticationUnavailable
 
 log = logging.getLogger("deepwiki.http")
 
@@ -231,15 +232,20 @@ def _maybe_compress(req: "Request", resp: "Response") -> "Response":
 class Request:
     """What a handler is given. Deliberately small."""
 
-    __slots__ = ("method", "path", "query", "headers", "body", "client_id", "_h")
+    __slots__ = (
+        "method", "path", "query", "headers", "body", "client_id",
+        "principal", "user_id", "_h",
+    )
 
-    def __init__(self, h: BaseHTTPRequestHandler, client_id: str) -> None:
+    def __init__(self, h: BaseHTTPRequestHandler, client_id: str, principal=None) -> None:
         parsed = urlparse(h.path)
         self.method = h.command
         self.path = parsed.path
         self.query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         self.headers = h.headers
         self.client_id = client_id
+        self.principal = principal
+        self.user_id = principal.user_id if principal is not None else ""
         self.body = b""
         self._h = h
         if h.command in ("POST", "PUT", "PATCH"):
@@ -294,12 +300,17 @@ class App:
         artifacts_dir: Path | None = None,
         auth_user: str = "",
         auth_pass: str = "",
+        authenticator=None,
     ) -> None:
         self.routes: dict[tuple[str, str], Callable[[Request], Response]] = {}
         self.static_dir = static_dir
         self.artifacts_dir = artifacts_dir
         self.auth_user = auth_user
         self.auth_pass = auth_pass
+        if authenticator is not None and (auth_user or auth_pass):
+            raise ValueError("JWT and Basic Auth cannot be combined")
+        self.authenticator = authenticator
+        self.artifact_authorizer = None
         # Poster creation is rare and ffmpeg is expensive. One process-wide
         # lock is simpler than a lock table that itself needs eviction; unique
         # artifact paths mean unrelated posters are not on a hot request path.
@@ -389,6 +400,13 @@ class App:
             return self._serve_revalidating_file(req, target, ctype)
 
         if req.path.startswith(ARTIFACTS_PREFIX):
+            if req.user_id:
+                candidate = self._resolve_candidate(req.path, ARTIFACTS_PREFIX, self.artifacts_dir)
+                if candidate is None or self.artifact_authorizer is None:
+                    return json_response({"error": "not found"}, status=404)
+                relative = candidate.relative_to(self.artifacts_dir.resolve())
+                if not relative.parts or not self.artifact_authorizer(req, relative.parts[0]):
+                    return json_response({"error": "not found"}, status=404)
             target = self._resolve_location(
                 req.path, ARTIFACTS_PREFIX, self.artifacts_dir
             )
@@ -525,7 +543,7 @@ class App:
             req,
             target,
             ctype,
-            "public, max-age=31536000, immutable",
+            "private, no-cache" if req.user_id else "public, max-age=31536000, immutable",
             use_last_modified=False,
             use_metadata_etag=True,
             extra_headers=extra_headers,
@@ -655,7 +673,42 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve(self) -> None:
         # The health endpoint stays open so a k8s probe needs no credential, and
         # the static assets are useless without the API behind them.
-        if self.path.split("?")[0] != "/healthz" and not self.app.authorised(self.headers):
+        path = self.path.split("?", 1)[0]
+        principal = None
+        if path != "/healthz" and self.app.authenticator is not None:
+            try:
+                principal = self.app.authenticator.authenticate(self.headers.get("Cookie"))
+            except (AuthenticationError, AuthenticationUnavailable) as exc:
+                # Reject before reading request bodies; close so unread bytes
+                # cannot be interpreted as the next HTTP request.
+                self.close_connection = True
+                if isinstance(exc, AuthenticationUnavailable):
+                    body = b'{"error":"authentication service unavailable"}'
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.command == "GET" and not path.startswith("/api/"):
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        "/auth/login?return=" + quote(self.path, safe=""),
+                    )
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = b'{"error":"unauthorized","login":"/auth/login"}'
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("X-Auth-Login", "/auth/login")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+        if path != "/healthz" and self.app.authenticator is None and not self.app.authorised(self.headers):
             body = b"unauthorized"
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="deepwiki"')
@@ -665,12 +718,28 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         cid, fresh = self.app.client_id_for(self.headers.get("Cookie"))
+        if principal is not None and self.command not in ("GET", "HEAD", "OPTIONS"):
+            origin = self.headers.get("Origin")
+            foreign_origin = origin and (
+                urlparse(origin).netloc.lower() != self.headers.get("Host", "").lower()
+                or urlparse(origin).scheme not in ("http", "https")
+            )
+            if foreign_origin or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                self.close_connection = True
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
         try:
-            req = Request(self, cid)
+            req = Request(self, cid, principal)
             resp = self.app.handle(req)
         except Exception:  # noqa: BLE001
             log.exception("handler raised for %s", self.path)
             resp = json_response({"error": "internal error"}, status=500)
+
+        if principal is not None and not path.startswith(STATIC_PREFIX):
+            resp.headers = [(k, v) for k, v in resp.headers if k.lower() != "cache-control"]
+            resp.headers.append(("Cache-Control", "private, no-store"))
 
         cookie = (
             [(

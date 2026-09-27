@@ -26,9 +26,9 @@ def _db():
     still runs only under hermes' interpreter; this just stops an unavailable
     dependency from making the transcript-shaping untestable, and that shaping
     is where the bug this file was last changed for actually lived."""
-    from hermes_state import SessionDB  # hermes venv only
+    from hermes_agent import _Db
 
-    return SessionDB()
+    return _Db.get()
 
 # Shared with the LIVE path on purpose. A reload used to re-render the raw
 # `{"output":…,"exit_code":…}` with no command above it -- the very shape the
@@ -65,7 +65,34 @@ def _provisional_title(preview: str) -> str:
     return head
 
 
-def list_sessions(limit: int, include_empty: bool) -> list[dict]:
+def _owner_from_db(db, session_id: str) -> str:
+    """Owner of this row or the nearest ancestor in its compression lineage."""
+    if not session_id:
+        return ""
+    try:
+        row = db._conn.execute(
+            """
+            WITH RECURSIVE lineage(id, parent, user_id) AS (
+                SELECT id, parent_session_id, user_id FROM sessions WHERE id = ?
+              UNION
+                SELECT s.id, s.parent_session_id, s.user_id
+                FROM sessions s JOIN lineage l ON s.id = l.parent
+            )
+            SELECT CASE WHEN COUNT(DISTINCT user_id) = 1 THEN MIN(user_id) ELSE '' END
+            FROM lineage WHERE COALESCE(user_id, '') <> ''
+            """,
+            (session_id,),
+        ).fetchone()
+        return str(row[0] or "") if row else ""
+    except Exception:  # noqa: BLE001 -- old schemas simply have no owner
+        return ""
+
+
+def owner(session_id: str) -> str:
+    return _owner_from_db(_db(), session_id)
+
+
+def list_sessions(limit: int, include_empty: bool, user_id: str = "") -> list[dict]:
     # exclude_sources=["tool"] mirrors the CLI's default: hide third-party tool
     # sessions, which are not conversations anyone opened.
     #
@@ -84,13 +111,28 @@ def list_sessions(limit: int, include_empty: bool) -> list[dict]:
     # ZERO messages (compression flushed nothing yet) — covered below by
     # `resolve_resume_session_id`, which walks the chain to the first
     # descendant that holds messages.
-    rows = _db().list_sessions_rich(
-        source=None, exclude_sources=["tool"], limit=limit,
-        include_children=False, project_compression_tips=True,
-        order_by_last_active=True,
-    )
+    db = _db()
+    def pages():
+        offset = 0
+        batch = max(100, limit) if user_id else limit
+        while True:
+            options = dict(
+                source=None, exclude_sources=["tool"], limit=batch,
+                include_children=False, project_compression_tips=True,
+                order_by_last_active=True,
+            )
+            if user_id:
+                options["offset"] = offset
+            rows = db.list_sessions_rich(**options)
+            yield from rows
+            if not user_id or len(rows) < batch:
+                return
+            offset += len(rows)
+    rows = pages()
     out = []
     for r in rows:
+        if user_id and _owner_from_db(db, str(r.get("id") or "")) != user_id:
+            continue
         # A session with no messages is a ghost — unless it is a compression
         # root whose messages live in a descendant (the tip flushed nothing
         # yet). `resolve_resume_session_id` (#15000) walks the chain forward;
@@ -130,6 +172,8 @@ def list_sessions(limit: int, include_empty: bool) -> list[dict]:
             "lastActive": r.get("last_active") or r.get("started_at") or 0,
             "messageCount": r.get("message_count") or 0,
         })
+        if len(out) >= limit:
+            break
     return out
 
 

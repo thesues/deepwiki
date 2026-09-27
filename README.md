@@ -152,3 +152,11 @@ storage path itself has been verified against the live cluster:
 - Reads from the mount sustain ~2.4 GB/s at 24-way concurrency (~97 MiB/s
   single-stream — this path scales with concurrency, not with one reader, so a
   serial measurement understates it by an order of magnitude).
+
+## Authentication and SSO
+
+[authd](authd/README.md) is an independent Go/Gin Pod providing Feishu login,
+central SSO and audience-specific JWT cookies. DeepWiki enables authentication
+with `AUTH_JWKS_URL`; `/auth/*` routes to authd through APIG. See
+[Python authentication reuse](webui/AUTH.md) for backends that only need login
+verification without Agent/session-history isolation.

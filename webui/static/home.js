@@ -1,4 +1,15 @@
 "use strict";
+// One authentication response policy for fetch and EventSource recovery probes.
+async function authFetch(...args) {
+  const response = await fetch(...args);
+  if (response.status === 401) {
+    const returnPath = window.location.pathname + window.location.search;
+    window.location.assign('/auth/login?return=' + encodeURIComponent(returnPath));
+    throw new Error('authentication required');
+  }
+  return response;
+}
+
 /* The HOME page: the project cards, deepwiki.com style, and nothing else.
  *
  * A card click is a NAVIGATION to /<key>/ — the chat page for that project.
@@ -26,8 +37,8 @@ async function boot() {
   // card that is otherwise correct.
   let j, sess = { sessions: [] };
   const [statusRes, sessRes] = await Promise.allSettled([
-    fetch("/api/status").then((r) => r.json()),
-    fetch("/api/sessions").then((r) => r.json()),
+    authFetch("/api/status").then((r) => r.json()),
+    authFetch("/api/sessions").then((r) => r.json()),
   ]);
   if (statusRes.status !== "fulfilled") {
     document.getElementById("home-error").hidden = false;

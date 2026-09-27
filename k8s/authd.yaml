@@ -1,0 +1,119 @@
+# Template: replace IMAGE_AUTHD, AUTH_HOST and DEEPWIKI_HOST before applying.
+# ConfigMap URLs use public browser Hosts. Ingress uses its separate routing
+# alias; do not put an auto-assigned *.volceapi.com domain in Ingress host.
+# Create authd-secrets separately; never commit private keys or Feishu secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authd-config
+  namespace: autumn
+data:
+  AUTH_PUBLIC_URL: "https://AUTH_HOST"
+  AUTH_APPS_JSON: '{"deepwiki":"https://DEEPWIKI_HOST"}'
+  AUTH_TENANT_KEY: default
+  AUTH_DB_PATH: /var/lib/authd/authd.db
+  JWT_PRIVATE_KEY_FILE: /var/run/authd/private.pem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: authd-data
+  namespace: autumn
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ebs-ssd
+  # This cluster's EBS StorageClass requires a minimum of 10Gi.
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authd
+  namespace: autumn
+spec:
+  selector: { app: authd }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authd
+  namespace: autumn
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: authd }
+  template:
+    metadata:
+      labels: { app: authd }
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: authd
+          image: IMAGE_AUTHD
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: authd-config }
+          env:
+            - name: FEISHU_APP_ID
+              valueFrom:
+                secretKeyRef: { name: authd-secrets, key: feishu-app-id }
+            - name: FEISHU_APP_SECRET
+              valueFrom:
+                secretKeyRef: { name: authd-secrets, key: feishu-app-secret }
+            - name: JWT_KID
+              valueFrom:
+                secretKeyRef: { name: authd-secrets, key: jwt-kid }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/authd }
+            - { name: keys, mountPath: /var/run/authd, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: authd-data }
+        - name: keys
+          secret:
+            secretName: authd-secrets
+            defaultMode: 0440
+            items:
+              - { key: jwt-private-key, path: private.pem }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: authd-apig
+  namespace: autumn
+  annotations:
+    ingress.vke.volcengine.com/apig-instance-name: gda7u922gbfvc539oufjg-apig-instance
+    ingress.vke.volcengine.com/loadbalancer-id: gda7u922gbfvc539oufjg
+spec:
+  ingressClassName: physicalai-apig
+  rules:
+    - host: authd.apig.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authd
+                port: { number: 8080 }

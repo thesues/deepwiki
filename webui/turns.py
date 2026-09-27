@@ -192,10 +192,21 @@ class TurnManager:
             stream = self._live.get(session_id)
         return (getattr(stream, "profile_key", "") or None) if stream is not None else None
 
-    def running(self) -> dict[str, str]:
+    def running(self, user_id: str = "") -> dict[str, str]:
         """session_id -> stream_id for every turn still going."""
         with self._lock:
-            return {sid: s.stream_id for sid, s in self._live.items() if s.running}
+            return {
+                sid: s.stream_id
+                for sid, s in self._live.items()
+                if s.running and (not user_id or s.user_id == user_id)
+            }
+
+    def owner_of(self, session_id: str) -> str | None:
+        with self._lock:
+            stream = self._live.get(session_id)
+            if stream is None:
+                stream = next((s for s in self._streams.values() if session_id in s.session_ids), None)
+        return stream.user_id if stream is not None else None
 
     def running_on(self, endpoint_key: str) -> int:
         with self._lock:
@@ -227,6 +238,7 @@ class TurnManager:
         text: str,
         endpoint: Endpoint,
         client_id: str = "",
+        user_id: str = "",
         profile: AgentProfile | None = None,
     ) -> TurnStream:
         """Admit and launch one turn. Raises `Refused` if it cannot start."""
@@ -239,6 +251,22 @@ class TurnManager:
                     sessionId=session_id,
                     streamId=current.stream_id,
                 )
+            if user_id:
+                other = next(
+                    (
+                        s
+                        for s in self._live.values()
+                        if s.running and s.user_id == user_id
+                    ),
+                    None,
+                )
+                if other is not None:
+                    raise Refused(
+                        "user_busy",
+                        "你已有一个会话正在回复，消息未发出",
+                        sessionId=other.session_id,
+                        streamId=other.stream_id,
+                    )
             running = sum(
                 1
                 for s in self._live.values()
@@ -255,7 +283,7 @@ class TurnManager:
             # This conversation is being tried again; whatever went wrong last
             # time is no longer what the reader needs to see.
             self._last_error.pop(session_id, None)
-            stream = TurnStream(secrets.token_hex(8), session_id, client_id)
+            stream = TurnStream(secrets.token_hex(8), session_id, client_id, user_id=user_id)
             # Which endpoint this turn is on, so the per-endpoint count above can
             # be taken without reaching back into the agent.
             stream.endpoint_key = endpoint.key  # type: ignore[attr-defined]
@@ -274,7 +302,7 @@ class TurnManager:
 
         self._turns.submit(
             f"turn-{stream.stream_id}", self._run_turn,
-            stream, session_id, text, endpoint, profile,
+            stream, session_id, text, endpoint, profile, user_id,
         )
         return stream
 
@@ -316,24 +344,10 @@ class TurnManager:
             # rotation the queue, the notify and the teardown all stay here.
             stream.approval_key = key  # type: ignore[attr-defined]
 
-            # BOTH, and the env var is the one that carries.
-            #
-            # `get_current_session_key()` resolves contextvar → HERMES_SESSION_KEY
-            # → "default". A contextvar is NOT inherited by a thread started with
-            # `threading.Thread`: a new thread begins with an EMPTY context, not a
-            # copy of its parent's. hermes dispatches tools on such threads, so it
-            # asked under "default" while the notify callback was registered under
-            # the conversation's id — no callback found, no card, and the turn
-            # waited forever. That is the same wedge as before wearing a different
-            # hat: the first was a thread-local callback, this is a thread-local
-            # KEY.
-            #
-            # os.environ is process-wide and therefore thread-visible. It is
-            # correct here because this app runs one turn at a time per endpoint
-            # (`maxConcurrent`), and a second concurrent turn WOULD cross the two
-            # keys — if that limit is ever raised, this has to become a per-thread
-            # binding installed on hermes' side instead.
-            os.environ["HERMES_SESSION_KEY"] = key
+            # Hermes 0.17 propagates contextvars to tool workers. A process-wide
+            # HERMES_SESSION_KEY would cross users when turns run concurrently.
+            if not stream.user_id:  # legacy mode compatibility
+                os.environ["HERMES_SESSION_KEY"] = key
             self._approval_tokens[stream.stream_id] = ap.set_current_session_key(key)
             ap.register_gateway_notify(key, lambda data: self._notify_approval(stream, key, data))
             log.info("approval hook armed for %s (gateway)", key)
@@ -353,6 +367,13 @@ class TurnManager:
         live = self.live_for(session_id)
         return self._approval_key(live) if live is not None else session_id
 
+    def owner_of_approval_key(self, key: str) -> str | None:
+        with self._lock:
+            for stream in self._live.values():
+                if self._approval_key(stream) == key:
+                    return stream.user_id
+        return None
+
     def _notify_approval(self, stream: TurnStream, key: str, data: dict) -> None:
         """hermes has something to ask. Put it on this turn's stream.
 
@@ -364,7 +385,7 @@ class TurnManager:
             {"optionId": "once", "name": "允许一次"},
             {"optionId": "session", "name": "本次会话都允许"},
         ]
-        if data.get("allow_permanent", True):
+        if not stream.user_id and data.get("allow_permanent", True):
             opts.append({"optionId": "always", "name": "始终允许"})
         opts.append({"optionId": "deny", "name": "拒绝"})
         title = str(data.get("description") or data.get("command") or "需要确认")
@@ -408,6 +429,7 @@ class TurnManager:
         row stays in the store as the parent; nothing here deletes it.
         """
         with self._lock:
+            stream.session_ids.update((old, new))
             if self._live.get(old) is stream:
                 self._live.pop(old, None)
                 self._live[new] = stream
@@ -416,11 +438,19 @@ class TurnManager:
 
     def _run_turn(
         self, stream: TurnStream, session_id: str, text: str,
-        endpoint: Endpoint, profile: AgentProfile | None = None,
+        endpoint: Endpoint, profile: AgentProfile | None = None, user_id: str = "",
     ) -> None:
         agent = None
+        session_tokens = None
         try:
-            agent = self._pool.acquire(session_id, endpoint, profile)
+            if user_id:
+                from gateway.session_context import set_session_vars
+                session_tokens = set_session_vars(
+                    platform="deepwiki", user_id=user_id,
+                    session_key=session_id, session_id=session_id,
+                )
+            agent = (self._pool.acquire(session_id, endpoint, profile, user_id=user_id)
+                     if user_id else self._pool.acquire(session_id, endpoint, profile))
             self._pool.note_running(stream.stream_id, agent)
             self._install_approval(stream)
             # After the approval key is pinned: it stays the id the hook was
@@ -438,7 +468,9 @@ class TurnManager:
             # Only the current turn's image markers are hydrated. Historical
             # messages remain lightweight object-key references until the
             # model explicitly calls input_image_open for one of them.
-            from media_input import model_user_content
+            from media_input import model_user_content, marker_keys, owned_key
+            if user_id and any(not owned_key(k, user_id) for k in marker_keys(text)):
+                raise ValueError("input image is not owned by this user")
 
             model_message = model_user_content(text)
             # The profile's brief, on every turn, for the same reason
@@ -448,9 +480,17 @@ class TurnManager:
             # any session whose first turn predates it. `directive` is None
             # for a profile that declares none — run_turn then falls back to
             # CHAT_DIRECTIVE exactly as before.
+            directive = profile.directive if profile is not None else None
+            if user_id:
+                from hermes_agent import CHAT_DIRECTIVE, _artifacts_root
+                directive = (CHAT_DIRECTIVE if directive is None else directive) + (
+                    f"\nStore generated artifacts under {_artifacts_root() / session_id}/. "
+                    f"Link to them as /artifacts/{session_id}/<filename>. "
+                    "Files outside this session directory are not published to the user."
+                )
             self._run(
                 agent, session_id=session_id, user_message=model_message, history=history,
-                system_message=profile.directive if profile is not None else None,
+                system_message=directive,
                 persist_user_message=text,
             )
             stream.finish()
@@ -469,6 +509,9 @@ class TurnManager:
         finally:
             self._release_approval(stream)
             self._pool.clear_running(stream.stream_id)
+            if session_tokens is not None:
+                from gateway.session_context import clear_session_vars
+                clear_session_vars(session_tokens)
 
     def last_error(self, session_id: str) -> dict | None:
         """How this conversation's most recent turn failed, if it did.

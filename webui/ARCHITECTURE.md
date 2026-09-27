@@ -1,6 +1,12 @@
 # hermes webui — architecture and known issues
 
-Session management and a chat box. Nothing else, deliberately.
+Session management and a chat box.
+
+JWT authentication and multi-user ownership are described in [AUTH.md](AUTH.md).
+With `AUTH_JWKS_URL` set, all business requests authenticate through the standalone
+`auth.py` verifier. The application then authorizes resources using Hermes'
+`sessions.user_id` and pending TurnStream owners. The historical anonymous/shared
+session description below applies only when JWT authentication is disabled.
 
 > **STALENESS NOTE (2026-09-13).** The sections below describing the turn
 > transport as an `hermes acp` subprocess predate 7ba0e96, which drove

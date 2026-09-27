@@ -1,4 +1,15 @@
 "use strict";
+// One authentication response policy for fetch and EventSource recovery probes.
+async function authFetch(...args) {
+  const response = await fetch(...args);
+  if (response.status === 401) {
+    const returnPath = window.location.pathname + window.location.search;
+    window.location.assign('/auth/login?return=' + encodeURIComponent(returnPath));
+    throw new Error('authentication required');
+  }
+  return response;
+}
+
 /* hermes webui client.
  *
  * Two rules shape this file.
@@ -120,7 +131,7 @@ const artifactLabel = (p) => artifactHref(p).split("/").pop();
 const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
 const VIDEO_FILE_RE = /\.(?:mp4|webm|mov|m4v)$/i;
 const videoPosterHref = (href) => href.replace(VIDEO_FILE_RE, ".jpg");
-const INPUT_IMAGE_RE = /\[输入图片 object_key:\s*(input\/webui\/[A-Za-z0-9_.-]+\/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]/i;
+const INPUT_IMAGE_RE = /\[输入图片 object_key:\s*(input\/webui\/(?:u_[A-Za-z0-9_-]+\/)?[A-Za-z0-9_.-]+\/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]/i;
 const artifactMediaHref = (u) => {
   const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
   return m ? m[1] : null;
@@ -1164,7 +1175,7 @@ async function answerApproval(id, optionId, card) {
   } else {
     clearApprovalDock();
   }
-  await fetch("/api/approval/answer", {
+  await authFetch("/api/approval/answer", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, optionId }),
   }).catch(() => {});
@@ -1179,7 +1190,7 @@ async function pollApprovals() {
     // checks the client only asks for paths the router serves — cannot tell a
     // query from a path segment when the separator is hidden inside `${…}`.
     const q = S.sessionId ? `session=${encodeURIComponent(S.sessionId)}` : "";
-    const j = await (await fetch(`/api/approval/pending?${q}`)).json();
+    const j = await (await authFetch(`/api/approval/pending?${q}`)).json();
     const p = (j.pending || [])[0];
     if (p) showApproval(p);
     else S.awaitingPerm = false;
@@ -1408,7 +1419,7 @@ function attach(streamId, afterSeq, opts) {
     if (!S.busy) return;
     status("连接中断,重连中…");
     try {
-      const st = await (await fetch(
+      const st = await (await authFetch(
         `/api/chat/status?stream_id=${encodeURIComponent(streamId)}`
       )).json();
       if (!st.known) {
@@ -1485,7 +1496,7 @@ function cancelTurn() {
   };
   // Name the target. The server refuses to guess between two live turns, and it
   // should: stopping the wrong conversation is worse than not stopping.
-  fetch("/api/chat/cancel", {
+  authFetch("/api/chat/cancel", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId: S.sessionId || "", streamId: S.streamId || "" }),
   }).then(async (r) => {
@@ -1663,7 +1674,7 @@ function watchWhileOthersRun() {
 
 async function loadSessions() {
   let j;
-  try { j = await (await fetch("/api/sessions")).json(); } catch (_) { return; }
+  try { j = await (await authFetch("/api/sessions")).json(); } catch (_) { return; }
   // `j.current` is deliberately NOT adopted. Setting S.sessionId here moved the
   // sidebar highlight without painting that transcript, and aimed the next
   // send at a conversation the reader could not see. Only openSession and a
@@ -1712,7 +1723,7 @@ function paintHistory(history) {
 
 async function fetchHistory(id) {
   try {
-    const response = await fetch(`/api/session/history?id=${encodeURIComponent(id)}`);
+    const response = await authFetch(`/api/session/history?id=${encodeURIComponent(id)}`);
     return { value: await response.json(), error: null };
   } catch (error) {
     // A boot-time prefetch can finish before boot has validated the saved view.
@@ -1780,7 +1791,7 @@ async function openSession(id, prefetchedHistory = null) {
   let liveStream = S.streaming[id] || null;
   if (liveStream) {
     try {
-      const st = await (await fetch(`/api/chat/status?stream_id=${encodeURIComponent(liveStream)}`)).json();
+      const st = await (await authFetch(`/api/chat/status?stream_id=${encodeURIComponent(liveStream)}`)).json();
       if (!st.running) { delete S.streaming[id]; liveStream = null; }
     } catch (_) { /* unreachable: trust the map, the replay reports what it finds */ }
     if (gen !== S.viewGen) return;
@@ -1872,7 +1883,7 @@ async function removeSession(s) {
   // with `.catch(() => {})` on the end, so every delete 404'd silently and the
   // row reappeared with no explanation.
   try {
-    const r = await fetch("/api/session/delete", {
+    const r = await authFetch("/api/session/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: id }),
@@ -1951,7 +1962,7 @@ async function send() {
   const gen = S.viewGen;    // the view this send was typed into
   let j;
   try {
-    j = await (await fetch("/api/chat/start", {
+    j = await (await authFetch("/api/chat/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
@@ -1986,7 +1997,7 @@ async function send() {
     // sidebar marks it live and opening it replays the reply from the top.
     S.skipUserEcho = false;
     if (j.error) {
-      if ((j.busy || j.taken) && !input.value) input.value = draftText;   // never eat what was typed
+      if ((j.busy || j.taken || j.user_busy) && !input.value) input.value = draftText;   // never eat what was typed
       status(j.error);
     } else if (j.sessionId && j.streamId) {
       clearPendingMedia(media);
@@ -2001,7 +2012,7 @@ async function send() {
     // `busy` is the server at capacity (the composer should already have been
     // blocked, so this is the race backstop), `taken` is someone else already
     // replying in this conversation.
-    if (j.busy || j.taken) { input.value = draftText; dropLastUser(); }
+    if (j.busy || j.taken || j.user_busy) { input.value = draftText; dropLastUser(); }
     status(j.error);
     if (j.taken) loadSessions();   // the sidebar did not know it was streaming
     return;
@@ -2043,7 +2054,7 @@ async function send() {
 
 /* ---------- boot ---------- */
 async function boot() {
-  fetch("/api/status").then((r) => r.json()).then((j) => {
+  authFetch("/api/status").then((r) => r.json()).then((j) => {
     // The profile this page serves comes off the URL (/buda/ → buda). The
     // server's list is the truth: an unknown key (renamed profile, stale
     // bookmark) sends the reader back to the home page's cards, the same
@@ -2224,7 +2235,7 @@ async function boot() {
       sessionId: S.sessionId || "",
     });
     try {
-      const response = await fetch(`/api/media/input?${q}`, {
+      const response = await authFetch(`/api/media/input?${q}`, {
         method: "POST", headers: { "Content-Type": file.type }, body: file,
       });
       const result = await response.json();

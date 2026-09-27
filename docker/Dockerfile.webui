@@ -87,7 +87,8 @@ RUN set -eux; \
     VIRTUAL_ENV=/opt/hermes/.venv uv pip install --no-cache-dir \
         $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
         "hermes-agent[acp,mcp]==${HERMES_VERSION}" \
-        "Brotli==1.1.0"; \
+        "Brotli==1.1.0" \
+        "PyJWT[crypto]==2.10.1"; \
     ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
     hermes acp --check
 

@@ -32,8 +32,8 @@ from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint, profile_of_source
 from media_input import get_object as _get_media_object
 from media_input import marker_keys as _media_marker_keys
+from media_input import owned_key as _owned_media_key
 from media_input import put_object as _put_media_object
-from media_input import valid_key as _valid_media_key
 from profiles import AgentProfile, allowed_endpoint, build_profiles
 from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_stream
@@ -94,12 +94,18 @@ def build_app(
     artifacts_dir: Path | None = None,
     auth_user: str = "",
     auth_pass: str = "",
+    authenticator=None,
     sessions: object | None = None,
     mcp: dict | None = None,
     session_profiles: "SessionProfiles | None" = None,
 ) -> App:
-    app = App(static_dir=static_dir, artifacts_dir=artifacts_dir,
-               auth_user=auth_user, auth_pass=auth_pass)
+    app = App(
+        static_dir=static_dir,
+        artifacts_dir=artifacts_dir,
+        auth_user=auth_user,
+        auth_pass=auth_pass,
+        authenticator=authenticator,
+    )
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]
     # The project cards. A deploy that declares none gets the built-in default
@@ -115,6 +121,30 @@ def build_app(
     # one moment the profile is known for certain), read by the sidebar so a
     # project page lists only its own conversations.
     session_profiles = session_profiles or SessionProfiles()
+
+    def _browser_key(req: Request) -> str:
+        return f"{req.user_id}:{req.client_id}" if req.user_id else req.client_id
+
+    def _owns_session(req: Request, session_id: str) -> bool:
+        """Authorize persisted and not-yet-persisted conversations alike."""
+        if not req.user_id:
+            return True
+        live_owner = manager.owner_of(session_id)
+        if live_owner is not None:
+            return live_owner == req.user_id
+        if sessions is None or not hasattr(sessions, "owner"):
+            return False
+        try:
+            return sessions.owner(session_id) == req.user_id  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 -- unknown ownership denies, never opens
+            log.exception("could not resolve owner for %s", session_id)
+            return False
+
+    app.artifact_authorizer = _owns_session
+
+    def _not_found() -> Response:
+        # Do not disclose whether a session/stream exists for another user.
+        return json_response({"error": "not found"}, status=404)
 
     def _endpoint(req: Request, session_hint: str = "") -> Endpoint:
         return by_key.get(req.json().get("endpoint") or req.query.get("endpoint", ""), default_ep)
@@ -138,9 +168,9 @@ def build_app(
 
     @app.route("GET", "/api/status")
     def _status(req: Request) -> Response:
-        running = manager.running()
+        running = (manager.running(req.user_id) if req.user_id else manager.running())
         return json_response({
-            "session": last_session.get(req.client_id),
+            "session": last_session.get(_browser_key(req)),
             "mcp": mcp,
             "turns": [{"session": sid, "streamId": st} for sid, st in running.items()],
             "endpoints": [e.as_json() for e in endpoints],
@@ -153,7 +183,7 @@ def build_app(
     def _media_input_get(req: Request) -> Response:
         """Serve a persisted input image through the authenticated origin."""
         key = req.query.get("objectKey", "")
-        if not _valid_media_key(key):
+        if not _owned_media_key(key, req.user_id):
             return json_response({"error": "invalid image key"}, status=400)
         endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
         try:
@@ -168,7 +198,7 @@ def build_app(
             return json_response({"error": "media storage unavailable"}, status=503)
         return Response(200, [
             ("Content-Type", content_type),
-            ("Cache-Control", "private, max-age=31536000, immutable"),
+            ("Cache-Control", "private, no-cache" if req.user_id else "private, max-age=31536000, immutable"),
             ("X-Content-Type-Options", "nosniff"),
         ], body)
 
@@ -199,7 +229,8 @@ def build_app(
         expected = mimetypes.guess_extension(content_type) or ".bin"
         if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}:
             suffix = expected
-        key = f"input/webui/{sid}/{secrets.token_hex(16)}{suffix}"
+        owner_prefix = f"{req.user_id}/" if req.user_id else ""
+        key = f"input/webui/{owner_prefix}{sid}/{secrets.token_hex(16)}{suffix}"
         endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
         try:
             _put_media_object(endpoint, key, req.body, content_type)
@@ -225,6 +256,8 @@ def build_app(
             import secrets
 
             session_id = secrets.token_hex(8)
+        elif not _owns_session(req, session_id):
+            return _not_found()
         # WHICH PROJECT ANSWERS is the CONVERSATION's property, not the
         # sending page's. The page carries the project off its own URL, and a
         # page can legitimately be showing a conversation that belongs to
@@ -249,7 +282,10 @@ def build_app(
         wanted_ep = by_key.get(body.get("endpoint") or "", default_ep)
         ep_key = allowed_endpoint(profile, wanted_ep.key, default_ep.key)
         endpoint = by_key.get(ep_key, default_ep)
-        if _media_marker_keys(text) and not endpoint.supports_vision:
+        media_keys = _media_marker_keys(text)
+        if req.user_id and any(not _owned_media_key(key, req.user_id) for key in media_keys):
+            return _not_found()
+        if media_keys and not endpoint.supports_vision:
             allowed_keys = set(profile.endpoints) if profile.endpoints else None
             vision_endpoint = next(
                 (
@@ -269,14 +305,17 @@ def build_app(
         try:
             stream = manager.start(
                 session_id=session_id, text=text, endpoint=endpoint,
-                client_id=req.client_id, profile=profile,
+                client_id=req.client_id, user_id=req.user_id, profile=profile,
             )
         except Refused as r:
             # 409 for a conversation already replying, 429 for a full endpoint —
             # the client branches on the flag, not the code, but the codes are
             # the honest ones.
-            return json_response(r.as_json(), status=409 if r.reason == "taken" else 429)
-        last_session[req.client_id] = session_id
+            return json_response(
+                r.as_json(),
+                status=409 if r.reason in {"taken", "user_busy"} else 429,
+            )
+        last_session[_browser_key(req)] = session_id
         # The conversation is pinned to the project it was opened under — the
         # card the reader clicked. Every later turn may omit `profile`; the
         # pin is what the sidebar and the page title read.
@@ -295,6 +334,8 @@ def build_app(
             # 404 rather than an empty stream: the client must be able to tell
             # "that turn is gone" from "that turn has said nothing yet".
             return json_response({"error": "unknown stream"}, status=404)
+        if req.user_id and stream.user_id != req.user_id:
+            return _not_found()
         try:
             after = int(req.query.get("after_seq", "0"))
         except ValueError:
@@ -310,6 +351,8 @@ def build_app(
         stream = manager.stream(req.query.get("stream_id", ""))
         if stream is None:
             return json_response({"known": False})
+        if req.user_id and stream.user_id != req.user_id:
+            return json_response({"known": False})
         return json_response({
             "known": True,
             "running": stream.running,
@@ -320,7 +363,11 @@ def build_app(
 
     @app.route("POST", "/api/chat/cancel")
     def _cancel(req: Request) -> Response:
-        return json_response({"ok": manager.cancel(req.json().get("streamId", ""))})
+        stream_id = req.json().get("streamId", "")
+        stream = manager.stream(stream_id)
+        if stream is not None and req.user_id and stream.user_id != req.user_id:
+            return _not_found()
+        return json_response({"ok": manager.cancel(stream_id)})
 
     def _pins_by_tip() -> dict[str, str]:
         """{ id the sidebar lists : project }, for PRE-MARK conversations only.
@@ -396,10 +443,17 @@ def build_app(
         rows = []
         if sessions is not None:
             try:
-                rows = sessions.list_sessions(limit=100, include_empty=False)  # type: ignore[attr-defined]
+                if req.user_id:
+                    rows = sessions.list_sessions(  # type: ignore[attr-defined]
+                        limit=100, include_empty=False, user_id=req.user_id,
+                    )
+                else:
+                    rows = sessions.list_sessions(limit=100, include_empty=False)  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001 -- an unreadable sidebar must not 500 the app
                 log.exception("could not list sessions")
-        running = manager.running()
+        if req.user_id:
+            rows = [r for r in rows if _owns_session(req, str(r.get("id") or ""))]
+        running = (manager.running(req.user_id) if req.user_id else manager.running())
         pins = _pins_by_tip()
         for r in rows:
             r["is_streaming"] = r.get("id") in running
@@ -440,7 +494,7 @@ def build_app(
             })
         return json_response({
             "sessions": rows,
-            "current": last_session.get(req.client_id),
+            "current": last_session.get(_browser_key(req)),
             "streaming": running,
             "profiles": [p.as_json() for p in profile_list],
             "defaultProfile": default_profile.key,
@@ -459,6 +513,8 @@ def build_app(
         sid = req.query.get("id", "")
         if not sid or sessions is None:
             return json_response({"events": []})
+        if not _owns_session(req, sid):
+            return _not_found()
         try:
             # The store already reads the complete row set before applying a
             # limit, so truncating here saved no database work but silently
@@ -485,8 +541,10 @@ def build_app(
         """Remember where this browser is. Deliberately does nothing else —
         opening a conversation must not disturb one that is replying."""
         sid = (req.json().get("sessionId") or "").strip()
+        if sid and not _owns_session(req, sid):
+            return _not_found()
         if sid:
-            last_session[req.client_id] = sid
+            last_session[_browser_key(req)] = sid
         return json_response({"ok": True, "current": sid or None})
 
     @app.route("POST", "/api/session/delete")
@@ -516,6 +574,8 @@ def build_app(
         sid = (req.json().get("sessionId") or "").strip()
         if not sid:
             return json_response({"error": "sessionId is required"}, status=400)
+        if not _owns_session(req, sid):
+            return _not_found()
         try:
             from hermes_agent import _Db, hermes_home
 
@@ -523,13 +583,15 @@ def build_app(
         except Exception:  # noqa: BLE001 -- an unreadable chain still deletes its tip
             log.exception("could not resolve the lineage of %s", sid)
             ids = [sid]
+        if req.user_id and any(not _owns_session(req, item) for item in ids):
+            return _not_found()
         # Deleting a conversation that is mid-reply would leave the turn
         # writing into a store row that no longer exists. `running()` is
         # session_id -> stream_id for exactly the turns still going, and the
         # live turn may be writing into ANY link of the chain — compression
         # rotates the id underneath it, so the running id is often not the one
         # the sidebar showed and the user clicked.
-        running = manager.running()
+        running = (manager.running(req.user_id) if req.user_id else manager.running())
         if any(i in running for i in ids):
             return json_response(
                 {"error": "这个会话正在回复中，先停止再删除"}, status=409,
@@ -544,7 +606,7 @@ def build_app(
         # Idempotent, like the CLI it replaced: `hermes sessions delete` on an
         # already-gone id printed "not found" and exited 0. A second tab's
         # delete racing the first's must read as success — the goal is achieved.
-        last_session.pop(req.client_id, None)
+        last_session.pop(_browser_key(req), None)
         for i in ids:
             session_profiles.forget(i)   # the conversation is gone; its pins go too
         return json_response(
@@ -575,6 +637,8 @@ def build_app(
         sid = req.query.get("session", "")
         if not sid:
             return json_response({"pending": []})
+        if not _owns_session(req, sid):
+            return _not_found()
         try:
             from tools import approval as ap  # noqa: PLC0415
             # A rotated turn still queues under the id it started with.
@@ -592,7 +656,7 @@ def build_app(
             title = str(data.get("description") or data.get("command") or "需要确认")
             opts = [{"optionId": "once", "name": "允许一次"},
                     {"optionId": "session", "name": "本次会话都允许"}]
-            if data.get("allow_permanent", True):
+            if not req.user_id and data.get("allow_permanent", True):
                 opts.append({"optionId": "always", "name": "始终允许"})
             opts.append({"optionId": "deny", "name": "拒绝"})
             # The id IS the session key: that is what `resolve_gateway_approval`
@@ -613,10 +677,13 @@ def build_app(
         body = req.json()
         sid = str(body.get("id") or body.get("sessionId") or "")
         choice = str(body.get("optionId") or "deny")
-        if choice not in ("once", "session", "always", "deny"):
+        if choice not in ("once", "session", "always", "deny") or (req.user_id and choice == "always"):
             return json_response({"error": f"unknown choice: {choice}"}, status=400)
         if not sid:
             return json_response({"error": "id is required"}, status=400)
+        approval_owner = manager.owner_of_approval_key(sid)
+        if req.user_id and approval_owner != req.user_id:
+            return _not_found()
         try:
             from tools import approval as ap  # noqa: PLC0415
             n = ap.resolve_gateway_approval(sid, choice)

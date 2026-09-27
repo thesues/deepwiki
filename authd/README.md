@@ -1,0 +1,125 @@
+# authd
+
+A standalone Go 1.26 / Gin 1.12 service for Feishu login and central SSO.
+SQLite uses `mattn/go-sqlite3` (CGO), queries are generated with sqlc 1.30,
+and embedded schema migrations run through goose on startup.
+
+## Flow and endpoints
+
+```text
+DeepWiki /auth/login -> authd (DeepWiki Host)
+  -> AUTH_HOST/sso/authorize
+  -> Feishu (only if the central SSO cookie is absent/expired)
+  -> AUTH_HOST/oauth/feishu/callback
+  -> DEEPWIKI_HOST/auth/callback?code=...
+  -> DeepWiki /
+```
+
+APIG sends `AUTH_HOST/*` and each application's `/auth/*` directly to authd.
+The backend only verifies its audience-specific JWT using the JWKS endpoint.
+`/.well-known/jwks.json` is public; `/healthz` is an anonymous process probe.
+
+* `__Host-auth_sso`: central Host only, `aud=authd-sso`.
+* `__Host-auth_access`: each app Host separately, `aud=<registered app ID>`.
+* Both are RS256 JWTs, eight hours, `Secure; HttpOnly; SameSite=Lax; Path=/`,
+  no Domain attribute and no refresh token/session.
+* Temporary `__Host-auth_request` (app Host, five minutes) and `__Host-auth_flow`
+  (central Host, 60 seconds) bind redirects to the initiating browser. They are
+  removed after callback. They are not additional long-lived login credentials.
+* Codes and OAuth state expire after 60 seconds. SQLite stores hashes only.
+  Code consumption atomically checks app, Host, browser binding, expiry and
+  single use. URLs and cookies are never included in request logs.
+
+JWT claims: `iss=buda-authd`, deterministic `sub`, application `aud`, `iat`,
+`nbf`, `exp`, `jti`, `tenant=default`, `ver=1`. Subject is the unpadded base64url
+SHA-256 of `authd:v1\0<tenant_key>\0<union_id or open_id>`, prefixed with `u_`.
+Keep the Feishu application/identifier policy stable: changing from open_id to
+union_id changes the derived subject. No SQLite user-ID mapping is needed.
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `AUTH_PUBLIC_URL` | HTTPS central SSO origin, no path |
+| `AUTH_APPS_JSON` | App-ID to HTTPS origin map, e.g. `{"deepwiki":"https://wiki.example.com","lerobot":"https://robot.example.com"}` |
+| `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Feishu application credentials |
+| `JWT_PRIVATE_KEY_FILE`, `JWT_KID` | RSA PEM signing key file and unique key ID |
+| `JWT_PREVIOUS_JWKS_FILE` | Optional JSON file of previous public keys for rotation |
+| `AUTH_DB_PATH` | Default `/var/lib/authd/authd.db` |
+| `AUTH_TENANT_KEY` | Default `default`; must match backend policy |
+| `LISTEN_ADDR` | Default `:8080` |
+
+Register `https://AUTH_HOST/oauth/feishu/callback` as the Feishu redirect URL.
+Feishu v2 token exchange uses `client_id`, `client_secret`, `redirect_uri` and
+`grant_type=authorization_code`; no Feishu access/refresh token is persisted.
+The deployment's Feishu application visibility determines who may authorize.
+
+For key rotation, save the current JWKS, mount it as `JWT_PREVIOUS_JWKS_FILE`,
+then deploy the new private key and a new `JWT_KID`. Keep previous keys for at
+least eight hours plus 30 seconds after the last old-key issuance. Removing an
+old public key takes up to five minutes to reach backend caches. Old keys can
+verify SSO while being retained; only the new private key signs fresh JWTs.
+
+SQLite loss invalidates in-progress redirects. Signed JWTs, subjects and Hermes
+history survive if the signing Secret and identity configuration survive. Back
+up signing Secrets separately. This version has no immediate per-user revocation
+or global logout: tokens expire after eight hours. Clearing a single app cookie
+does not clear the central SSO cookie.
+
+## Build and tests
+
+```sh
+cd authd
+go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0 generate
+go test -race ./...
+go build ./cmd/authd
+```
+
+Production images are built and pushed through Volcengine CP. Inspect the live
+pipeline before starting a run and verify its source commit and output image.
+The existing `dongmao-workspace / buda-webui` pipeline builds
+`docker/Dockerfile.webui`; authd uses `docker/Dockerfile.authd`. When reusing this
+fixed pipeline for authd, use an isolated build ref with the authd Dockerfile at
+the pipeline's expected path, and deploy the resulting image by its own commit
+SHA. Keep the application branch's WebUI Dockerfile unchanged.
+
+The builder has a C compiler; the Debian runtime supplies libc and TLS roots.
+The deployment is one non-root Pod with a dedicated EBS RWO PVC and Recreate
+strategy. Multiple replicas require a shared code/state store first.
+
+## Rollout
+
+1. Build/push authd and WebUI images. Replace `IMAGE_AUTHD`, `IMAGE_WEBUI`,
+   `AUTH_HOST`, `DEEPWIKI_HOST` in the authd ConfigMap with public HTTPS Hosts.
+   Keep the Ingress aliases `authd.apig.local` and `deepwiki.apig.local`: APIG
+   assigns the public domains separately; using those reserved domains as
+   Ingress hosts can break TLS. Add LeRobot to `AUTH_APPS_JSON` when its
+   `/auth` route and audience verifier are ready; its source is not in this repo.
+2. Create `authd-secrets` in `autumn` with keys `feishu-app-id`,
+   `feishu-app-secret`, `jwt-kid`, `jwt-private-key`. Generate an RSA key of at
+   least 2048 bits locally and import it from a file; do not put secrets in YAML.
+3. Deploy authd. Configure APIG HTTPS/certificates for all public Hosts. Ingress
+   YAML alone does not provision a public domain or certificate. Preserve the
+   browser's original Host upstream, query parameters, Set-Cookie and Location;
+   authd intentionally does not trust arbitrary X-Forwarded-Host headers.
+4. Verify APIG `/auth` Prefix takes precedence over `/`, and verify the real
+   Feishu callback and per-Host cookies with a browser. Do not share a Domain
+   cookie on the provider's public parent domain.
+5. Stop/drain WebUI before the first authenticated rollout. Back up state.db
+   using SQLite's backup API and back up transcript files. Run
+   `k8s/scripts/clear-anonymous-sessions.py` with Hermes' interpreter from a
+   maintenance Pod mounting the WebUI PVC: first dry-run, then `--apply`.
+   Never assign old anonymous sessions to a new identity.
+6. Deploy WebUI with `AUTH_JWKS_URL=http://authd.autumn.svc:8080/.well-known/jwks.json`.
+   Confirm two users cannot list/read/delete/stream each other's resources,
+   input images and artifacts work, and SSE/Range still pass through APIG.
+7. Add a second app Host and confirm it obtains its own audience-specific JWT
+   through central SSO without another Feishu login.
+
+Roll back with the retained images/config and backup, while keeping the public
+endpoint protected. Do not restore an anonymous image behind an open gateway.
+Local tests use an in-process fake Feishu provider; a real Feishu/APIG smoke test
+requires actual app credentials, registered public Hosts and TLS configuration.
+
+Python backend integration (including authentication-only services) is documented
+in [webui/AUTH.md](../webui/AUTH.md).
