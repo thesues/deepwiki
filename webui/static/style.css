@@ -302,7 +302,9 @@ header h1 em { color:var(--accent); font-style:italic; }
 
 .msg.user .bubble { background:var(--surface-raised); border:1px solid var(--border);
                     border-radius:var(--radius); padding:0.6rem 0.85rem;
-                    margin-left:auto; width:fit-content; max-width:88%; white-space:pre-wrap; }
+                    margin-left:auto; width:fit-content; max-width:88%; white-space:normal; }
+/* Markdown emits newlines between HTML blocks; preserve input line breaks via
+   its <br> elements, not pre-wrap, which adds a blank line after </p>. */
 .msg.note .bubble { color:var(--text-dim); font-size:0.74rem; }
 .msg.error .bubble { color:var(--danger); font-size:0.78rem; }
 
