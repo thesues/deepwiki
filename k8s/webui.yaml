@@ -297,7 +297,7 @@ spec:
                  {"key":"doubao","label":"Doubao-Seed","model":"doubao-seed-evolving",
                   "base_url":"https://ark.cn-beijing.volces.com/api/v3",
                   "api_key_env":"ARK_API_KEY","maxConcurrent":64,
-                  "context":1048576,"max_tokens":131072}]
+                  "context":1048576,"max_tokens":131072,"supportsVision":true}]
             # The two model ids are the served names each engine reports on
             # /v1/models (the --model path's basename): dsv4-flash-ftw's pod was
             # later reverted to dsv4-flash, and sglang echoes any requested name

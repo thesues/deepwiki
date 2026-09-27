@@ -27,44 +27,19 @@ from pathlib import Path
 import re
 import secrets
 import urllib.error
-import urllib.parse
-import urllib.request
 
 from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint, profile_of_source
+from media_input import get_object as _get_media_object
+from media_input import marker_keys as _media_marker_keys
+from media_input import put_object as _put_media_object
+from media_input import valid_key as _valid_media_key
 from profiles import AgentProfile, allowed_endpoint, build_profiles
 from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_stream
 from turns import Refused, TurnManager
 
 log = logging.getLogger("deepwiki.routes")
-
-
-def _put_media_object(endpoint: str, key: str, body: bytes, content_type: str) -> None:
-    """One narrow S3 operation, split out so the HTTP contract is testable."""
-    url = endpoint.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-    upstream = urllib.request.Request(
-        url, data=body, method="PUT", headers={"Content-Type": content_type}
-    )
-    with urllib.request.urlopen(upstream, timeout=120) as response:
-        if response.status // 100 != 2:
-            raise RuntimeError(f"unexpected S3 status {response.status}")
-
-
-def _get_media_object(endpoint: str, key: str) -> tuple[bytes, str]:
-    """Read one browser-uploaded image without exposing the S3 endpoint."""
-    url = endpoint.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-    upstream = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(upstream, timeout=120) as response:
-        if response.status // 100 != 2:
-            raise RuntimeError(f"unexpected S3 status {response.status}")
-        body = response.read((8 << 20) + 1)
-        if len(body) > (8 << 20):
-            raise RuntimeError("stored image exceeds 8 MiB")
-        content_type = response.headers.get_content_type()
-        if content_type not in {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}:
-            content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
-    return body, content_type
 
 
 def _lineage_ids(db, sid: str) -> list[str]:
@@ -178,11 +153,7 @@ def build_app(
     def _media_input_get(req: Request) -> Response:
         """Serve a persisted input image through the authenticated origin."""
         key = req.query.get("objectKey", "")
-        if not re.fullmatch(
-            r"input/webui/[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
-            key,
-            re.IGNORECASE,
-        ):
+        if not _valid_media_key(key):
             return json_response({"error": "invalid image key"}, status=400)
         endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
         try:
@@ -278,6 +249,23 @@ def build_app(
         wanted_ep = by_key.get(body.get("endpoint") or "", default_ep)
         ep_key = allowed_endpoint(profile, wanted_ep.key, default_ep.key)
         endpoint = by_key.get(ep_key, default_ep)
+        if _media_marker_keys(text) and not endpoint.supports_vision:
+            allowed_keys = set(profile.endpoints) if profile.endpoints else None
+            vision_endpoint = next(
+                (
+                    candidate
+                    for candidate in endpoints
+                    if candidate.supports_vision
+                    and (allowed_keys is None or candidate.key in allowed_keys)
+                ),
+                None,
+            )
+            if vision_endpoint is None:
+                return json_response(
+                    {"error": "当前项目没有可用的视觉模型，无法发送图片"},
+                    status=400,
+                )
+            endpoint = vision_endpoint
         try:
             stream = manager.start(
                 session_id=session_id, text=text, endpoint=endpoint,

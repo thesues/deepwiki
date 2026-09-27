@@ -75,7 +75,10 @@ def app_server(monkeypatch, tmp_path):
     mgr = TurnManager(ha.AgentPool(), history=lambda sid: [], run=run)
     eps = [
         ha.Endpoint("dsv4", "DSV4", "m1", "http://a/v1", max_concurrent=1),
-        ha.Endpoint("vision", "Vision", "m2", "http://b/v1", max_concurrent=1),
+        ha.Endpoint(
+            "vision", "Vision", "m2", "http://b/v1",
+            max_concurrent=1, supports_vision=True,
+        ),
     ]
     pfs = pr.build_profiles([
         {"key": "buda", "label": "佛典检索"},
@@ -195,6 +198,20 @@ def test_the_endpoint_named_by_the_client_is_the_one_used(app_server):
     shows one model's name and another model answers."""
     base, mgr, _ = app_server
     code, body = _post(base, "/api/chat/start", {"text": "hi", "endpoint": "vision"})
+    assert code == 200 and body["endpoint"] == "vision"
+    _drain(mgr.stream(body["streamId"]))
+
+
+def test_an_image_turn_is_redirected_to_a_vision_endpoint(app_server, monkeypatch):
+    """A stale text-model picker must not silently discard image pixels."""
+    base, mgr, _ = app_server
+    monkeypatch.setattr(routes, "_media_marker_keys", lambda text: ["image-key"])
+    monkeypatch.setattr("media_input.model_user_content", lambda text: text)
+    marker = "[输入图片 object_key: input/webui/draft-a/0123456789abcdef0123456789abcdef.png]"
+    code, body = _post(base, "/api/chat/start", {
+        "text": f"看这张图\n{marker}",
+        "endpoint": "dsv4",
+    })
     assert code == 200 and body["endpoint"] == "vision"
     _drain(mgr.stream(body["streamId"]))
 

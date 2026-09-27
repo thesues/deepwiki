@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: E402
 
 import hermes_agent as ha  # noqa: E402
+import media_input  # noqa: E402
 from turns import Refused, TurnManager  # noqa: E402
 
 
@@ -83,6 +84,30 @@ def test_the_history_read_is_what_the_agent_is_given(monkeypatch):
     s = m.start(session_id="s1", text="and now", endpoint=_ep())
     assert _wait_done(s)
     assert seen["history"] == [{"role": "user", "content": "before"}]
+
+
+def test_only_the_current_image_marker_is_hydrated(monkeypatch):
+    seen = {}
+    old = "[输入图片 object_key: input/webui/s/00000000000000000000000000000000.png]"
+    current = "[输入图片 object_key: input/webui/s/11111111111111111111111111111111.png]"
+    history = [{"role": "user", "content": old}]
+    live = [
+        {"type": "text", "text": current},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    monkeypatch.setattr(media_input, "model_user_content", lambda text: live)
+
+    def run(agent, **kw):
+        seen.update(kw)
+        return {}
+
+    m = _mgr(monkeypatch, run=run, history=lambda sid: history)
+    s = m.start(session_id="s1", text=current, endpoint=_ep())
+    assert _wait_done(s)
+    assert seen["user_message"] is live
+    assert seen["persist_user_message"] == current
+    assert seen["history"] == history
+    assert "base64" not in str(seen["history"])
 
 
 # ── admission ───────────────────────────────────────────────────────────────

@@ -63,6 +63,7 @@ def test_the_endpoint_is_in_the_signature_so_switching_rebuilds():
     talking to the old one — with the UI showing the new name."""
     assert _ep(base_url="http://a/v1").signature() != _ep(base_url="http://b/v1").signature()
     assert _ep(model="m1").signature() != _ep(model="m2").signature()
+    assert _ep(supports_vision=True).signature() != _ep(supports_vision=False).signature()
     assert _ep().signature() == _ep().signature()
 
 
@@ -255,6 +256,57 @@ def test_the_directive_never_touches_what_the_user_typed(monkeypatch):
     ha.run_turn(Agent(), session_id="s", user_message="问题", history=[])
     assert seen["user_message"] == "问题"
     assert seen["persist_user_message"] == "问题"
+
+
+def test_multimodal_turn_persists_the_object_key_marker_not_base64():
+    seen = {}
+
+    class Agent:
+        def run_conversation(self, user_message, persist_user_message=None, **kw):
+            seen.update(
+                user_message=user_message,
+                persist_user_message=persist_user_message,
+            )
+            return {}
+
+    live = [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    marker = "看图\n[输入图片 object_key: input/webui/draft/a.png]"
+    ha.run_turn(
+        Agent(), session_id="s", user_message=live, history=[],
+        persist_user_message=marker,
+    )
+    assert seen["user_message"] is live
+    assert seen["persist_user_message"] == marker
+
+
+def test_persistence_guard_copies_a_multimodal_turn_before_rewriting_it():
+    persisted = {}
+
+    class Agent:
+        _persist_user_message_idx = 0
+        _persist_user_message_override = "[输入图片 object_key: input/webui/draft/a.png]"
+
+        def _persist_session(self, messages, conversation_history=None):
+            persisted["messages"] = messages
+
+    agent = Agent()
+    ha._install_multimodal_persistence_guard(agent)
+    live = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "看图"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }]
+
+    agent._persist_session(live, [])
+
+    assert isinstance(live[0]["content"], list), "live provider request lost its image"
+    assert persisted["messages"][0]["content"].startswith("[输入图片 object_key:")
+    assert "base64" not in str(persisted["messages"])
 
 
 def test_a_caller_can_suppress_the_brief_but_only_by_saying_so(monkeypatch):

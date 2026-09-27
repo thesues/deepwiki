@@ -43,6 +43,7 @@ import inspect
 import logging
 import os
 import threading
+import types
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
@@ -152,7 +153,7 @@ class Endpoint:
     """
 
     __slots__ = ("key", "label", "model", "base_url", "provider", "api_key",
-                 "max_concurrent", "context", "max_tokens")
+                 "max_concurrent", "context", "max_tokens", "supports_vision")
 
     def __init__(
         self,
@@ -165,6 +166,7 @@ class Endpoint:
         max_concurrent: int = 4,
         context: int = 0,
         max_tokens: int = 0,
+        supports_vision: bool = False,
     ) -> None:
         self.key = key
         self.label = label
@@ -187,17 +189,25 @@ class Endpoint:
         # not derivable from it: a 1M-context model may answer in at most
         # 128K. 0 leaves it to hermes' own default.
         self.max_tokens = max(0, int(max_tokens))
+        self.supports_vision = bool(supports_vision)
 
     def as_json(self) -> dict:
         return {"key": self.key, "label": self.label, "model": self.model,
-                "maxConcurrent": self.max_concurrent}
+                "maxConcurrent": self.max_concurrent,
+                "supportsVision": self.supports_vision}
 
     def signature(self) -> tuple:
         """What makes a built agent reusable. `base_url` and `provider` are in
         here, which is the whole multi-endpoint mechanism: switching endpoint
         changes the signature, the cached agent misses, and a correctly-wired
         one is built. No separate 'switch model' path to keep correct."""
-        return (self.model, self.base_url, self.provider, self.api_key)
+        return (
+            self.model,
+            self.base_url,
+            self.provider,
+            self.api_key,
+            self.supports_vision,
+        )
 
 
 def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoint]:
@@ -232,6 +242,7 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
                     max_concurrent=int(e.get("maxConcurrent") or 4),
                     context=int(e.get("context") or 0),
                     max_tokens=int(e.get("max_tokens") or e.get("maxTokens") or 0),
+                    supports_vision=bool(e.get("supports_vision") or e.get("supportsVision")),
                 )
                 for e in items
             ]
@@ -296,6 +307,84 @@ def _artifacts_root() -> Path:
     return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
 
 
+def _register_input_image_tool() -> None:
+    """Expose one S3 image at a time as a native multimodal tool result."""
+    from tools.registry import registry, tool_error
+
+    if registry.get_entry("input_image_open") is not None:
+        return
+
+    async def _open(args: dict, **_: Any) -> Any:
+        import asyncio
+        from media_input import tool_result, valid_key
+
+        key = str(args.get("object_key") or "").strip()
+        question = str(args.get("question") or "").strip()
+        if not valid_key(key):
+            return tool_error("Invalid input image object_key", success=False)
+        try:
+            return await asyncio.to_thread(tool_result, key, question)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("input_image_open(%s) failed: %s", key, exc)
+            return tool_error(f"Could not load input image: {exc}", success=False)
+
+    registry.register(
+        name="input_image_open",
+        toolset="skills",
+        schema={
+            "name": "input_image_open",
+            "description": (
+                "Load exactly one browser-uploaded image from Autumn S3 into your "
+                "visual context. User history contains markers like "
+                "[输入图片 object_key: input/webui/...]. When the user refers to a "
+                "historical image (for example 上一张图, 第一张图, or a specific "
+                "object_key), resolve the intended marker from conversation order "
+                "and call this tool. Do not open every historical image speculatively; "
+                "ask for clarification when the reference is ambiguous."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "object_key": {
+                        "type": "string",
+                        "description": "Exact input/webui/... object_key copied from conversation history.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "What the user wants determined from this image.",
+                    },
+                },
+                "required": ["object_key", "question"],
+            },
+        },
+        handler=_open,
+        is_async=True,
+        emoji="🖼️",
+    )
+
+
+def _install_multimodal_persistence_guard(agent: Any) -> None:
+    """Persist an image turn's object-key marker, never its temporary base64."""
+    if getattr(agent, "_deepwiki_multimodal_guard", False):
+        return
+    original = agent._persist_session
+
+    def guarded(self, messages, conversation_history=None):
+        idx = getattr(self, "_persist_user_message_idx", None)
+        override = getattr(self, "_persist_user_message_override", None)
+        if idx is None or override is None or not (0 <= idx < len(messages)):
+            return original(messages, conversation_history)
+        current = messages[idx]
+        if not isinstance(current, dict) or not isinstance(current.get("content"), list):
+            return original(messages, conversation_history)
+        clean = list(messages)
+        clean[idx] = {**current, "content": override}
+        return original(clean, conversation_history)
+
+    agent._persist_session = types.MethodType(guarded, agent)
+    agent._deepwiki_multimodal_guard = True
+
+
 def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = None) -> Any:
     """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
 
@@ -312,6 +401,8 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     the session id the same way ACP's session/load registers a project root).
     """
     from run_agent import AIAgent
+
+    _register_input_image_tool()
 
     mcp_servers = []
     cfg: dict = {}
@@ -425,6 +516,15 @@ def build_agent(session_id: str, ep: Endpoint, profile: AgentProfile | None = No
     if ep.max_tokens:
         candidate["max_tokens"] = ep.max_tokens
     agent = AIAgent(**supported_kwargs(AIAgent.__init__, candidate))
+    _install_multimodal_persistence_guard(agent)
+    # Hermes' global config has one active-model vision flag, while this WebUI
+    # keeps several endpoints in one process. Bind the capability to this
+    # endpoint so image parts are neither stripped from Doubao nor sent to a
+    # text-only model merely because another endpoint is vision-capable.
+    agent._model_supports_vision = types.MethodType(
+        lambda _self: ep.supports_vision,
+        agent,
+    )
     _set_context_window(agent, ep)
     return _scope_tools(agent, profile, mcp_servers)
 
@@ -694,6 +794,7 @@ def run_turn(
     user_message: Any,
     history: list[dict],
     system_message: str | None = None,
+    persist_user_message: str | None = None,
 ) -> dict:
     """One blocking turn. Call it off the request path if the caller is async.
 
@@ -707,12 +808,14 @@ def run_turn(
     """
     if system_message is None:
         system_message = CHAT_DIRECTIVE
+    if persist_user_message is None and isinstance(user_message, str):
+        persist_user_message = user_message
     candidate = {
         "user_message": user_message,
         "system_message": system_message or None,
         "conversation_history": history,
         "task_id": session_id,
-        "persist_user_message": user_message if isinstance(user_message, str) else None,
+        "persist_user_message": persist_user_message,
     }
     kwargs = supported_kwargs(agent.run_conversation, candidate)
     return agent.run_conversation(**kwargs) or {}

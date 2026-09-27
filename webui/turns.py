@@ -435,6 +435,12 @@ class TurnManager:
             # previous turn's callbacks, which captured a stream nobody reads.
             bind_callbacks(agent, EventSink(stream))
             history = self._history(session_id)
+            # Only the current turn's image markers are hydrated. Historical
+            # messages remain lightweight object-key references until the
+            # model explicitly calls input_image_open for one of them.
+            from media_input import model_user_content
+
+            model_message = model_user_content(text)
             # The profile's brief, on every turn, for the same reason
             # CHAT_DIRECTIVE is: hermes replays the system prompt verbatim to
             # keep the upstream prompt cache warm, so a constant string costs
@@ -443,8 +449,9 @@ class TurnManager:
             # for a profile that declares none — run_turn then falls back to
             # CHAT_DIRECTIVE exactly as before.
             self._run(
-                agent, session_id=session_id, user_message=text, history=history,
+                agent, session_id=session_id, user_message=model_message, history=history,
                 system_message=profile.directive if profile is not None else None,
+                persist_user_message=text,
             )
             stream.finish()
         except Exception as e:  # noqa: BLE001
