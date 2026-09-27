@@ -11,6 +11,9 @@ ENV CGO_ENABLED=1
 RUN go build -mod=readonly -trimpath -o /out/authd ./cmd/authd
 
 FROM ${BASE_REGISTRY}library/debian:bookworm-slim
+# Bootstrap HTTPS APT from the builder's trusted CA bundle: Debian slim has
+# no CA certificates yet, so installing them from an HTTPS mirror needs this.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ARG APT_MIRROR=
 RUN if [ -n "${APT_MIRROR}" ]; then \
       mirror="${APT_MIRROR%/}"; mirror="${mirror%/debian}"; \
