@@ -108,10 +108,14 @@ curl -s -o /tmp/out.png \
 
 ## 交付给用户（怎么引用生成的文件）
 
-生成的图片、视频和 3D 文件最终放到 artifact 目录。每一轮生成都先产生一个新的 UUID，创建
-`/opt/data/artifacts/media-<uuid>/`；即使是同一会话重跑，也不能复用上一轮目录。下载或复制前用
-`test ! -e "$dest"` 确认目标从未存在，检查失败就换新 UUID，不能使用覆盖选项。**不要写入
-`/app/static`、`/opt/data/static` 或 artifact 根目录**。
+生成的图片、视频和 3D 文件最终放到**当前会话**的 artifact 目录。WebUI 启动 terminal 时的工作目录
+就是 `/opt/data/artifacts/<当前会话 id>/`；先用 `pwd -P` 确认它，再在其中创建新的
+`media-<uuid>/`。完整路径应为
+`/opt/data/artifacts/<当前会话 id>/media-<uuid>/`，绝不能创建同级的
+`/opt/data/artifacts/media-<uuid>/`：JWT 模式只发布属于当前用户会话的目录，后者即使文件存在也会
+返回 404。即使是同一会话重跑，也不能复用上一轮目录。下载或复制前用 `test ! -e "$dest"`
+确认目标从未存在，检查失败就换新 UUID，不能使用覆盖选项。**不要写入 `/app/static`、
+`/opt/data/static` 或 artifact 根目录**。
 
 Artifact URL 会进入聊天历史；一旦发出就把它当作不可变标识。服务端会把 `/artifacts/...` 缓存为
 `immutable`，所以覆盖同名文件不仅会破坏历史，也不会让已经打开的页面自动看到新内容。
@@ -120,12 +124,12 @@ Artifact URL 会进入聊天历史；一旦发出就把它当作不可变标识�
 前端代码，`/static/` 只服务镜像中的 HTML/JS/CSS。媒体绝不能再与前端共享路径，否则旧 PVC 文件会覆盖
 新版本脚本。
 
-**引用前先 `ls -l <文件名>` 确认文件确实在本轮新建的 artifact 目录且大小非 0**，再在回复里引用。
+**引用前先 `ls -l <文件名>` 确认文件确实在本轮新建的会话 artifact 目录且大小非 0**，再在回复里引用。
 
 **回复里引用一律用相对路径**，形如：
 
-- 图片：`![封面](/artifacts/media-<uuid>/cover.png)`
-- 视频：`/artifacts/media-<uuid>/episode.mp4`
+- 图片：`![封面](/artifacts/<当前会话 id>/media-<uuid>/cover.png)`
+- 视频：`/artifacts/<当前会话 id>/media-<uuid>/episode.mp4`
 
 **绝对不要写带域名或 host 的完整 URL**——既不要写 `https://xxx.apigateway…/artifacts/a.png`，
 也不要写 `http://localhost:8080/artifacts/a.png`。只写以 `/artifacts/` 开头的相对路径；带 host 的链接在

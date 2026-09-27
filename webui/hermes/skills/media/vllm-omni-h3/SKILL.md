@@ -34,16 +34,18 @@ metadata:
    vLLM。不要把 `s3://` 字符串直接传给模型——Video API 不承诺支持 S3 URI；
 4. 将 MP4 与旁路 JSON 元数据写进当前会话 artifact 目录。
 
-每次调用都必须选择一个从未使用过的输出路径，例如
-`/opt/data/artifacts/media-<run-uuid>/h3.mp4`。同一提示词重跑也要换新的 `run-uuid`；禁止覆盖
-已经生成或已经回复给用户的 MP4/JSON。客户端会在推理开始前拒绝任何已存在的输出路径。
+每次调用都必须选择当前会话目录中一个从未使用过的输出路径，例如
+`/opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3.mp4`。WebUI 启动 terminal 时的工作目录
+就是该会话目录，可先用 `pwd -P` 确认。不要使用同级的 `/opt/data/artifacts/media-<run-uuid>/`：
+JWT 模式不会发布无会话归属的文件。同一提示词重跑也要换新的 `run-uuid`；禁止覆盖已经生成或
+已经回复给用户的 MP4/JSON。客户端会在推理开始前拒绝任何已存在的输出路径。
 
 文生视频：
 
 ```bash
 python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '镜头和音频描述' \
-  --output /opt/data/artifacts/media-<run-uuid>/h3.mp4 \
+  --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3.mp4 \
   --session-id '<当前会话 id>'
 ```
 
@@ -53,7 +55,7 @@ python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
 python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '让主体自然运动，描述环境声' \
   --input ./first-frame.png \
-  --output /opt/data/artifacts/media-<run-uuid>/h3-i2v.mp4 \
+  --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3-i2v.mp4 \
   --session-id '<当前会话 id>'
 ```
 
@@ -63,7 +65,7 @@ python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
 python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '让主体自然运动，描述环境声' \
   --input-object-key 'input/webui/<session-id>/<uuid>.png' \
-  --output /opt/data/artifacts/media-<run-uuid>/h3-i2v.mp4 \
+  --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3-i2v.mp4 \
   --session-id '<当前会话 id>'
 ```
 
@@ -77,8 +79,8 @@ shift 3。只有用户明确要求时才改。与 ComfyUI 做 A/B 时必须同�
 - 历史重放只使用 object key，脚本每次重新 GET；不依赖 ComfyUI input 目录或 pod 本地盘。
 - 默认不自动删除输入。只要会话还可回放，就不能 GC 对应 `input/webui/<session-id>/`
   前缀。未来会话删除工作流可以按该前缀显式清理；当前不要做隐式过期。
-- 每次输出放新的 `/opt/data/artifacts/media-<run-uuid>/`，回复使用对应的 `/artifacts/...`
-  相对链接；任何旧输出路径都不能被后续生成复用。
+- 每次输出放新的 `/opt/data/artifacts/<当前会话 id>/media-<run-uuid>/`，回复使用对应的
+  `/artifacts/<当前会话 id>/media-<run-uuid>/...` 相对链接；任何旧输出路径都不能被后续生成复用。
 
 ## 失败处理
 
