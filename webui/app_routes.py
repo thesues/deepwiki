@@ -646,7 +646,10 @@ def build_app(
     # its project off the URL and falls back client-side (redirect home) for
     # an unknown key, which is what makes a renamed profile degrade to the
     # homepage instead of a 404.
-    assets = (b"app.js", b"home.js", b"style.css", b"vendor/marked.min.js", b"vendor/purify.min.js")
+    assets = (
+        b"app.js", b"home.js", b"style.css", b"favicon.svg",
+        b"vendor/marked.min.js", b"vendor/purify.min.js",
+    )
 
     def _prepare_page(source: Path) -> tuple[bytes, str] | None:
         """Render one immutable-in-process HTML snapshot at application start."""

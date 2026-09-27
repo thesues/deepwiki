@@ -50,6 +50,11 @@ log = logging.getLogger("deepwiki.http")
 # reference `/static/...`, and the aiohttp server this module replaced mounted
 # them with `add_static("/static/", STATIC)`.
 STATIC_PREFIX = "/static/"
+# Browsers still probe this conventional root URL when opening an old page or
+# restoring a tab that predates the explicit <link rel="icon">. Keep one
+# canonical SVG on disk and expose this as a compatibility alias, rather than
+# shipping two icon files that can drift apart.
+FAVICON_PATH = "/favicon.ico"
 # Where a diagram the agent drew is served from. A second mount rather than a
 # subdirectory of `static/`: these files are WRITTEN BY THE AGENT at runtime and
 # live on the volume, while everything under `static/` is shipped in the image
@@ -143,6 +148,21 @@ def _parse_http_timestamp(value: str | None) -> int | None:
         return int(parsed.timestamp())
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _if_none_match_matches(value: str | None, etag: str) -> bool:
+    """Apply If-None-Match's weak comparison to one current strong ETag."""
+    if value is None:
+        return False
+    for candidate in value.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].lstrip()
+        if candidate == etag:
+            return True
+    return False
 
 
 def _accepts_encoding(value: str, encoding: str) -> bool:
@@ -347,6 +367,16 @@ class App:
 
     def serve_static(self, req: Request) -> Response | None:
         """Dispatch filesystem requests like nginx ``location`` prefixes."""
+        if req.path == FAVICON_PATH:
+            target = self._resolve_location(
+                f"{STATIC_PREFIX}favicon.svg", STATIC_PREFIX, self.static_dir
+            )
+            if target is None:
+                return None
+            # `/favicon.ico` is a stable, unversioned compatibility URL, so it
+            # must revalidate. The page itself uses the versioned SVG below.
+            return self._serve_revalidating_file(req, target, "image/svg+xml")
+
         if req.path.startswith(STATIC_PREFIX):
             target = self._resolve_location(req.path, STATIC_PREFIX, self.static_dir)
             if target is None:
@@ -366,7 +396,7 @@ class App:
                 target = self._generate_artifact_poster(req.path)
             if target is None:
                 return None
-            return self._serve_immutable_file(
+            return self._serve_immutable_artifact(
                 req,
                 target,
                 self._content_type(target),
@@ -478,6 +508,26 @@ class App:
             ctype,
             "public, max-age=31536000, immutable",
             use_last_modified=False,
+            use_metadata_etag=False,
+            extra_headers=extra_headers,
+        )
+
+    @staticmethod
+    def _serve_immutable_artifact(
+        req: Request,
+        target: Path,
+        ctype: str,
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> Response | None:
+        """Serve a unique artifact with a cheap strong validator for ranges."""
+        return App._send_file(
+            req,
+            target,
+            ctype,
+            "public, max-age=31536000, immutable",
+            use_last_modified=False,
+            use_metadata_etag=True,
             extra_headers=extra_headers,
         )
 
@@ -496,6 +546,7 @@ class App:
             ctype,
             "no-cache",
             use_last_modified=True,
+            use_metadata_etag=False,
             extra_headers=extra_headers,
         )
 
@@ -507,9 +558,15 @@ class App:
         cache: str,
         *,
         use_last_modified: bool,
+        use_metadata_etag: bool,
         extra_headers: list[tuple[str, str]] | None = None,
     ) -> Response | None:
         """Common response path: validator first, then Range, then full body."""
+        try:
+            file_stat = target.stat()
+        except OSError:
+            return None
+
         headers = [
             ("Content-Type", ctype),
             ("Cache-Control", cache),
@@ -518,7 +575,7 @@ class App:
         if extra_headers:
             headers.extend(extra_headers)
 
-        mtime_secs = None
+        mtime_secs = int(file_stat.st_mtime)
         last_modified = None
         if use_last_modified:
             # Mutable filesystem-backed resources use the filesystem's own
@@ -526,12 +583,24 @@ class App:
             # reading an unversioned static asset merely to hash it. HTTP dates
             # have one-second resolution; our writers do not replace the same
             # pathname more than once within a second.
-            try:
-                mtime_secs = int(target.stat().st_mtime)
-            except OSError:
-                return None
             last_modified = formatdate(mtime_secs, usegmt=True)
             headers.append(("Last-Modified", last_modified))
+
+        etag = None
+        if use_metadata_etag:
+            # Artifact paths are UUID/content-unique and never overwritten, so
+            # this O(1) identity is strong without reading and hashing a video.
+            etag = f'"{file_stat.st_mtime_ns:x}-{file_stat.st_size:x}"'
+            headers.append(("ETag", etag))
+
+        if etag is not None and _if_none_match_matches(
+            req.headers.get("If-None-Match"), etag
+        ):
+            return Response(304, [
+                ("ETag", etag),
+                ("Cache-Control", cache),
+                ("Accept-Ranges", "bytes"),
+            ] + (extra_headers or []))
 
         if last_modified is not None:
             modified_since = _parse_http_timestamp(req.headers.get("If-Modified-Since"))
@@ -544,18 +613,17 @@ class App:
 
         range_header = req.headers.get("Range")
         if_range = req.headers.get("If-Range")
-        # An If-Range date permits a partial response only while this is still
-        # the same filesystem version. Invalid dates fall back to a complete
-        # 200 response.
+        # If-Range uses strong ETag comparison. Date comparison is available
+        # only for resources that expose Last-Modified. Anything stale or
+        # unverifiable falls back to a complete 200 response.
         range_allowed = not if_range
-        if if_range and mtime_secs is not None:
+        if if_range and etag is not None:
+            range_allowed = not if_range.startswith("W/") and if_range == etag
+        elif if_range and last_modified is not None:
             if_range_time = _parse_http_timestamp(if_range)
             range_allowed = if_range_time is not None and mtime_secs <= if_range_time
         if range_header and range_allowed:
-            try:
-                size = target.stat().st_size
-            except OSError:
-                return None
+            size = file_stat.st_size
             try:
                 start, end = _parse_byte_range(range_header, size)
             except ValueError:
