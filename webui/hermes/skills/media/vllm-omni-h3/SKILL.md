@@ -18,7 +18,7 @@ metadata:
 ## 服务约束
 
 - API：`http://vllm-omni-h3.autumn.svc:8000/v1/videos/sync`
-- 当前服务是单张 RTX 4090、`--task-type fl2va`、model-level CPU offload。
+- 当前服务是单张 RTX 4090，加载 `FL2VA` 模型目录并使用 model-level CPU offload。
 - 支持 `t2va` 文生视频，以及 `fl2va` 单首帧图生视频。当前服务不提供 Ref2VA。
 - 单服务一次只执行一个 diffusion request；长请求要耐心等待，不要重复提交。
 - 24 GB 起步形状是 1024×576、5 秒。输出固定 24 FPS，时长会对齐到 H3 合法帧网格。
