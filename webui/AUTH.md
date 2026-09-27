@@ -1,7 +1,7 @@
 # Reusing Python authentication
 
 `auth.py` is a standalone authd JWT verifier. Its only third-party dependency is
-`PyJWT[crypto]==2.10.1`. Copy this one file into another Python backend; it imports
+`PyJWT[crypto]==2.13.0`. Copy this one file into another Python backend; it imports
 no DeepWiki, Hermes, database or HTTP framework code.
 
 Construct **one verifier per process**, then authenticate each protected request:

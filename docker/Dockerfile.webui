@@ -44,7 +44,8 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 
 RUN set -eux; \
     if [ -n "${APT_MIRROR}" ]; then \
-      sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources || true; \
+      mirror="${APT_MIRROR%/}"; mirror="${mirror%/debian}"; \
+      sed -i "s|http://deb.debian.org|${mirror}|g" /etc/apt/sources.list.d/debian.sources; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git tini; \
@@ -88,7 +89,7 @@ RUN set -eux; \
         $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
         "hermes-agent[acp,mcp]==${HERMES_VERSION}" \
         "Brotli==1.1.0" \
-        "PyJWT[crypto]==2.10.1"; \
+        "PyJWT[crypto]==2.13.0"; \
     ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
     hermes acp --check
 

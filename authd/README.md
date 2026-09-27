@@ -78,10 +78,11 @@ go build ./cmd/authd
 Production images are built and pushed through Volcengine CP. Inspect the live
 pipeline before starting a run and verify its source commit and output image.
 The existing `dongmao-workspace / buda-webui` pipeline builds
-`docker/Dockerfile.webui`; authd uses `docker/Dockerfile.authd`. When reusing this
-fixed pipeline for authd, use an isolated build ref with the authd Dockerfile at
-the pipeline's expected path, and deploy the resulting image by its own commit
-SHA. Keep the application branch's WebUI Dockerfile unchanged.
+`docker/Dockerfile.webui`. The user creates a **dedicated authd pipeline** for
+`docker/Dockerfile.authd`, using the application's normal `main` branch.
+Do not use ref/resource-reference overrides or temporary build branches, and
+do not repurpose the WebUI pipeline. Deploy the image tagged with the source
+commit SHA after CP confirms it has been pushed.
 
 The builder has a C compiler; the Debian runtime supplies libc and TLS roots.
 The deployment is one non-root Pod with a dedicated EBS RWO PVC and Recreate
