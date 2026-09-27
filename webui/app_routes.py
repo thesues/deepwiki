@@ -20,8 +20,14 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import mimetypes
 import json
+import os
 from pathlib import Path
+import re
+import secrets
+import urllib.parse
+import urllib.request
 
 from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint, profile_of_source
@@ -31,6 +37,17 @@ from sse import SSE_HEADERS, write_stream
 from turns import Refused, TurnManager
 
 log = logging.getLogger("deepwiki.routes")
+
+
+def _put_media_object(endpoint: str, key: str, body: bytes, content_type: str) -> None:
+    """One narrow S3 operation, split out so the HTTP contract is testable."""
+    url = endpoint.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
+    upstream = urllib.request.Request(
+        url, data=body, method="PUT", headers={"Content-Type": content_type}
+    )
+    with urllib.request.urlopen(upstream, timeout=120) as response:
+        if response.status // 100 != 2:
+            raise RuntimeError(f"unexpected S3 status {response.status}")
 
 
 def _lineage_ids(db, sid: str) -> list[str]:
@@ -139,6 +156,42 @@ def build_app(
             "profiles": [p.as_json() for p in profile_list],
             "defaultProfile": default_profile.key,
         })
+
+    @app.route("POST", "/api/media/input")
+    def _media_input(req: Request) -> Response:
+        """Persist one browser image and return only its replay-safe object key.
+
+        The S3 endpoint is cluster-internal and unauthenticated today.  Keeping
+        this proxy boundary is still important: the browser never learns the
+        endpoint, and adding credentials later does not change the public API.
+        """
+        declared = int(req.headers.get("Content-Length") or 0)
+        if declared <= 0 or declared != len(req.body) or declared > (8 << 20):
+            return json_response({"error": "image must be 1..8 MiB"}, status=413)
+        content_type = (req.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}:
+            return json_response({"error": "unsupported image type"}, status=415)
+
+        sid = re.sub(r"[^A-Za-z0-9_.-]", "-", req.query.get("sessionId", ""))[:128]
+        # A new conversation has no Hermes row until its first turn.  Its
+        # upload prefix is therefore a durable draft id; the exact key is put
+        # into that first user message and remains replayable after the real
+        # session id is allocated.
+        if not sid or sid in {".", ".."}:
+            sid = f"draft-{req.client_id}"
+        supplied = Path(req.query.get("filename", "image")).name
+        suffix = Path(supplied).suffix.lower()
+        expected = mimetypes.guess_extension(content_type) or ".bin"
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}:
+            suffix = expected
+        key = f"input/webui/{sid}/{secrets.token_hex(16)}{suffix}"
+        endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
+        try:
+            _put_media_object(endpoint, key, req.body, content_type)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("media upload to Autumn S3 failed: %s", exc)
+            return json_response({"error": "media storage unavailable"}, status=503)
+        return json_response({"objectKey": key, "bytes": len(req.body), "contentType": content_type})
 
     # ── chat ───────────────────────────────────────────────────────────────
 

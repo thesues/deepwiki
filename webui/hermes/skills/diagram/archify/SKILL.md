@@ -48,16 +48,17 @@ know, and every one of them has cost a retry when guessed:
    commands as `cd /opt/data/skills/diagram/archify && node bin/archify.mjs …`
    or spell the path out; `node bin/archify.mjs` alone will not find itself.
 
-2. **Where the diagram goes: right where you are standing.** Your terminal
-   starts in `/opt/data/artifacts/<this session>/`, a directory that belongs
-   to this conversation alone. Write the candidate JSON and the delivered
-   HTML there with plain relative names — `read-path.architecture.json`,
-   `read-path.architecture.html`.
+2. **Where the diagram goes: a new UUID directory below where you are
+   standing.** Your terminal starts in `/opt/data/artifacts/<this session>/`.
+   For every render, create a fresh UUID subdirectory and write the candidate
+   JSON and delivered HTML there — for example
+   `<run-uuid>/read-path.architecture.json` and
+   `<run-uuid>/read-path.architecture.html`.
 
-   It is per-session because the names are not unique: two conversations
-   asked for "the autumn-rs architecture" would pick the same filename, and
-   the second delivery would replace the first — leaving the older
-   transcript's link serving a picture nobody in it drew.
+   The session directory alone is not enough: the same conversation can render
+   twice with the same name. Artifact URLs are cached as immutable, so every
+   run needs a new UUID path. Before writing, `test ! -e "$dest"`; never
+   overwrite a URL that may already be present in the transcript.
 
    Do not write to `/opt/data/artifacts/` itself, and do not invent a path
    somewhere else: the web UI serves that tree and nothing besides.
@@ -66,14 +67,14 @@ know, and every one of them has cost a retry when guessed:
    `/opt/data` taken off the front. Get it exactly, do not reconstruct it:
 
    ```bash
-   echo "${PWD#/opt/data}/read-path.architecture.html"
-   # -> /artifacts/20260919_203612_ab12cd/read-path.architecture.html
+   echo "${PWD#/opt/data}/<run-uuid>/read-path.architecture.html"
+   # -> /artifacts/20260919_203612_ab12cd/<run-uuid>/read-path.architecture.html
    ```
 
    End your answer with a markdown LINK to that path:
 
    ```
-   [autumn-rs 读路径架构图](/artifacts/20260919_203612_ab12cd/read-path.architecture.html)
+   [autumn-rs 读路径架构图](/artifacts/20260919_203612_ab12cd/<run-uuid>/read-path.architecture.html)
    ```
 
    A markdown link, not `a code span` — the first delivery that worked came
@@ -130,7 +131,7 @@ know, and every one of them has cost a retry when guessed:
    Then write a small map and apply it:
 
    ```bash
-   cat > /opt/data/artifacts/map.json <<'JSON'
+   cat > /opt/data/artifacts/<this-session>/<run-uuid>/map.json <<'JSON'
    {
      "title": "autumn-rs 读路径",
      "components": {
@@ -142,7 +143,8 @@ know, and every one of them has cost a retry when guessed:
    }
    JSON
    node deployment/skeleton.mjs rename examples/web-app.architecture.json \
-        /opt/data/artifacts/map.json /opt/data/artifacts/<name>.json
+        /opt/data/artifacts/<this-session>/<run-uuid>/map.json \
+        /opt/data/artifacts/<this-session>/<run-uuid>/<name>.json
    ```
 
    `drop` removes a node, its connections, and every reference to it. Ids

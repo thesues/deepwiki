@@ -2,9 +2,9 @@
 #
 # Note what is NOT here, compared to every other workload in this repo: no
 # privileged container, no `autumn-fuse`, no `/dev/fuse`, no autumn credential,
-# no mountPropagation. This pod never talks to autumn. It talks to `lance-mcp`
-# over HTTP MCP and to `freetoken-l3` over the OpenAI-compatible API, both plain
-# ClusterIP Services.
+# no mountPropagation. It talks to `lance-mcp` over HTTP MCP, to `freetoken-l3`
+# over the OpenAI-compatible API, and to `autumn-s3` for browser media uploads;
+# all are plain ClusterIP services.
 #
 # `IMAGE_WEBUI` below is a PLACEHOLDER, not an image. Substitute it before
 # applying — `sed "s|IMAGE_WEBUI|<repo>/deepwiki-webui:<sha>|" k8s/webui.yaml |
@@ -223,6 +223,10 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: HERMES_HOME, value: /opt/data }
+            # Browser uploads terminate at the WebUI.  Only the object key is
+            # put in chat history; this ClusterIP endpoint never reaches JS.
+            - { name: AUTUMN_S3_ENDPOINT, value: "http://autumn-s3.autumn.svc:9100" }
+            - { name: VLLM_OMNI_URL, value: "http://vllm-omni-h3.autumn.svc:8000" }
             # Admission is PER ENDPOINT, read from DEEPWIKI_ENDPOINTS below
             # (each entry's maxConcurrent, checked against that endpoint's own
             # live turns). There is no global knob: a global number could only

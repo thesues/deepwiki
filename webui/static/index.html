@@ -72,6 +72,8 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
              a single entry is information, not noise. -->
         <div class="compose-row">
           <textarea id="input" rows="1" placeholder="发消息…"></textarea>
+          <input id="media-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
+          <button id="attach" type="button" class="btn ghost" title="上传图片到 Autumn S3">图片</button>
           <button id="send" type="submit" class="btn">发送</button>
         </div>
         <div class="picker-row">

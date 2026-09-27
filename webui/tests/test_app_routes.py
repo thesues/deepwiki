@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: E402
 
 import hermes_agent as ha  # noqa: E402
+import app_routes as routes  # noqa: E402
 import profiles as pr
 import session_profiles as sp  # noqa: E402
 from app_routes import build_app  # noqa: E402
@@ -111,6 +112,17 @@ def _post(base, path, obj, cookie=""):
         return e.code, json.loads(e.read())
 
 
+def _post_bytes(base, path, body, content_type):
+    req = urllib.request.Request(
+        base + path, data=body, headers={"Content-Type": content_type}, method="POST"
+    )
+    try:
+        response = urllib.request.urlopen(req, timeout=5)
+        return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
 def _get(base, path, cookie=""):
     req = urllib.request.Request(base + path, headers={"Cookie": cookie} if cookie else {})
     r = urllib.request.urlopen(req, timeout=5)
@@ -134,6 +146,34 @@ def _wait_idle(mgr, timeout=3.0):
 
 
 # ── sending ─────────────────────────────────────────────────────────────────
+
+
+def test_image_upload_persists_bytes_and_returns_only_an_object_key(app_server, monkeypatch):
+    base, _, _ = app_server
+    seen = {}
+    monkeypatch.setattr(
+        routes, "_put_media_object",
+        lambda endpoint, key, body, content_type: seen.update(
+            endpoint=endpoint, key=key, body=body, content_type=content_type),
+    )
+    code, result = _post_bytes(
+        base, "/api/media/input?sessionId=s-123&filename=frame.png", b"\x89PNG\r\n", "image/png"
+    )
+    assert code == 200
+    assert result["objectKey"].startswith("input/webui/s-123/")
+    assert result["objectKey"].endswith(".png")
+    assert seen["body"] == b"\x89PNG\r\n"
+    assert "endpoint" not in result and "credential" not in result
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "image/gif"])
+def test_image_upload_rejects_unsupported_types_before_s3(app_server, monkeypatch, content_type):
+    base, _, _ = app_server
+    called = []
+    monkeypatch.setattr(routes, "_put_media_object", lambda *args: called.append(args))
+    code, result = _post_bytes(base, "/api/media/input?filename=x.bin", b"data", content_type)
+    assert code == 415 and result["error"]
+    assert called == []
 
 
 def test_a_prompt_starts_a_turn_and_names_its_stream(app_server):

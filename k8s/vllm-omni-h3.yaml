@@ -1,0 +1,153 @@
+# Single-RTX-4090 MiniMax-H3 service.  This follows the official vLLM recipe's
+# accuracy-qualified single-GPU path: model-level CPU offload, not DLO.
+# The image digest is the amd64 minimax-h3 image containing the matched
+# vLLM 0.26.0 + vLLM-Omni model/minimax-h3 revision (310b4b4); do not overlay
+# current vLLM-Omni main, whose dependencies target vLLM 0.30.0.
+# The pod intentionally targets the same 8x4090 host as ComfyUI but requests a
+# separate GPU; it never restarts, scales, or modifies the existing ComfyUI pod.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-omni-h3
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-omni-h3
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: "192.168.3.2"
+      initContainers:
+        - name: model-sync
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/freetoken-l3:87141c68f1f46995cb09a0621e3686dad01fb33c
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              S3=http://autumn-s3:9100
+              BUCKET=models
+              PREFIX=minimax-h3-vllm/FL2VA/
+              DEST=/model/FL2VA
+              mkdir -p "$DEST"
+              python3 - "$S3" "$BUCKET" "$PREFIX" > /tmp/objects.txt <<'PY'
+              import sys, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+              endpoint, bucket, prefix = sys.argv[1:]
+              token = None
+              while True:
+                  query = {"list-type": "2", "prefix": prefix, "max-keys": "1000"}
+                  if token:
+                      query["continuation-token"] = token
+                  url = f"{endpoint}/{bucket}?{urllib.parse.urlencode(query)}"
+                  root = ET.fromstring(urllib.request.urlopen(url, timeout=60).read())
+                  ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+                  for item in root.findall("s3:Contents", ns):
+                      key = item.findtext("s3:Key", namespaces=ns)
+                      size = item.findtext("s3:Size", namespaces=ns)
+                      print(f"{size}\t{key[len(prefix):]}")
+                  if root.findtext("s3:IsTruncated", "false", ns) != "true":
+                      break
+                  token = root.findtext("s3:NextContinuationToken", namespaces=ns)
+              PY
+              test -s /tmp/objects.txt || { echo "FATAL: s3://$BUCKET/$PREFIX is empty" >&2; exit 1; }
+              total=$(awk '{s += $1} END {printf "%.0f", s}' /tmp/objects.txt)
+              [ "$total" -ge 140000000000 ] || { echo "FATAL: FL2VA listing is incomplete ($total bytes)" >&2; exit 1; }
+              echo "syncing $(wc -l < /tmp/objects.txt) objects ($total bytes) from Autumn S3"
+              download_one() {
+                expected="$1"; rel="$2"
+                mkdir -p "$DEST/$(dirname "$rel")"
+                curl --fail --silent --show-error --retry 5 --retry-all-errors \
+                  -o "$DEST/$rel.part" "$S3/$BUCKET/$PREFIX$rel"
+                actual=$(stat -c %s "$DEST/$rel.part")
+                [ "$actual" = "$expected" ] || { echo "size mismatch $rel: $actual != $expected" >&2; return 1; }
+                mv "$DEST/$rel.part" "$DEST/$rel"
+              }
+              export S3 BUCKET PREFIX DEST
+              export -f download_one
+              awk -F '\t' '{print $1 "\t" $2}' /tmp/objects.txt | \
+                xargs -P 6 -n 2 bash -lc 'download_one "$1" "$2"' _
+              test -s "$DEST/model_index.json"
+              test -d "$DEST/transformer"
+              test -d "$DEST/text_encoder"
+              test -d "$DEST/video_vae"
+              test -d "$DEST/audio_vae"
+              echo "model sync complete"
+          resources:
+            requests: { cpu: "12", memory: 8Gi, ephemeral-storage: 180Gi }
+            limits: { cpu: "24", memory: 16Gi, ephemeral-storage: 200Gi }
+          volumeMounts:
+            - { name: model, mountPath: /model }
+      containers:
+        - name: server
+          image: docker.m.daocloud.io/vllm/vllm-omni@sha256:511ea7f895f4a19f61247795bd30d6bdd3f545491e09cd9a8e28f4e07babe212
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              exec vllm serve /model/FL2VA \
+                --omni \
+                --task-type fl2va \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --trust-remote-code \
+                --num-gpus 1 \
+                --enable-cpu-offload \
+                --diffusion-attention-backend FLASH_ATTN
+          env:
+            - { name: CUDA_VISIBLE_DEVICES, value: "0" }
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
+            - { name: VLLM_OMNI_VIDEO_SYNC_TIMEOUT, value: "1800" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: http, containerPort: 8000 }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "24"
+              memory: 390Gi
+              ephemeral-storage: 180Gi
+              nvidia.com/gpu: "1"
+              vke.volcengine.com/eni-ip: "1"
+            limits:
+              cpu: "64"
+              memory: 420Gi
+              ephemeral-storage: 200Gi
+              nvidia.com/gpu: "1"
+              vke.volcengine.com/eni-ip: "1"
+          volumeMounts:
+            - { name: model, mountPath: /model, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: model
+          emptyDir: { sizeLimit: 200Gi }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 8Gi }

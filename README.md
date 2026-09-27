@@ -14,6 +14,7 @@ buda/
 └── k8s/
     ├── freetoken.yaml           MoE serving on one RTX 4090
     ├── upload-models.yaml       one-shot: load a checkpoint into autumn fs/
+    ├── vllm-omni-h3.yaml        H3 on one RTX 4090 with CPU offload
     ├── lance-mcp.yaml           LanceDB MCP over an Autumn FUSE mount
     └── webui.yaml               chat + session management
 ```
@@ -34,13 +35,21 @@ multi-project DeepWiki-style site. The homepage lists project cards; each
 project is an `AgentProfile` (its own brief, toolsets, MCP subset and
 workspace folder), declared in hermes' config.yaml (`profiles:`) or the
 `DEEPWIKI_PROFILES` env. Session management and a chat box otherwise. It
-reaches retrieval through `lance-mcp`'s **HTTP** MCP transport rather than
-spawning it, so it holds no autumn credential and is the one workload here NOT
+reaches retrieval through `lance-mcp`'s **HTTP** MCP transport and stores input
+images through the HTTP S3 gateway, so it holds no autumn credential and is not
 bound by the WIRE lockstep below. See `webui/ARCHITECTURE.md`.
 
 Storage-backed workloads mount Autumn FUSE in the privileged app container.
 This cluster does not propagate sidecar mounts reliably, so one mount namespace
 is intentional. LanceDB reads and writes ordinary paths under that mount.
+
+MiniMax H3 uses the S3 gateway instead of FUSE. The one-shot upload job writes
+the unchanged model repository to `s3://models/minimax-h3-vllm/`; the serving
+pod's init container downloads that prefix to node-local `emptyDir` before
+vLLM starts. Browser image inputs go through the WebUI backend to immutable
+keys under `s3://input/webui/<session-id>/`. Only the key is placed in chat
+history; the H3 skill GETs the object and sends image bytes to vLLM's Video API,
+which avoids assuming that the model server understands `s3://` URLs.
 
 ## What lives here vs in autumn-rs
 
@@ -120,6 +129,7 @@ correctness constraint, not a speed one.
 kubectl -n autumn apply -f k8s/lance-mcp.yaml
 kubectl -n autumn apply -f k8s/upload-model-minimax.yaml
 kubectl -n autumn apply -f k8s/freetoken.yaml
+kubectl apply -f k8s/vllm-omni-h3.yaml
 ```
 
 Fill the `IMAGE_*` placeholders first. Deploy `lance-mcp` before switching the

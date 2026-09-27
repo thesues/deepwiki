@@ -2066,6 +2066,37 @@ async function boot() {
     input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
   };
   input.addEventListener("input", autosize);
+  const mediaInput = $("#media-input");
+  const attachButton = $("#attach");
+  if (mediaInput && attachButton) attachButton.onclick = () => mediaInput.click();
+  if (mediaInput && attachButton) mediaInput.onchange = async () => {
+    const file = mediaInput.files && mediaInput.files[0];
+    if (!file) return;
+    if (file.size <= 0 || file.size > 8 * 1024 * 1024) {
+      status("图片必须小于 8 MiB"); mediaInput.value = ""; return;
+    }
+    const attach = attachButton;
+    attach.disabled = true; attach.textContent = "上传中…";
+    const q = new URLSearchParams({
+      filename: file.name,
+      sessionId: S.sessionId || "",
+    });
+    try {
+      const response = await fetch(`/api/media/input?${q}`, {
+        method: "POST", headers: { "Content-Type": file.type }, body: file,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.objectKey) throw new Error(result.error || "上传失败");
+      const marker = `[输入图片 object_key: ${result.objectKey}]`;
+      input.value = input.value ? `${input.value}\n${marker}` : marker;
+      autosize();
+      status(`图片已持久化 · ${file.name}`);
+    } catch (err) {
+      status(`图片上传失败：${err.message || err}`);
+    } finally {
+      attach.disabled = false; attach.textContent = "图片"; mediaInput.value = "";
+    }
+  };
   input.addEventListener("keydown", (e) => {
     // Ignore Enter while an IME is composing — that Enter confirms a candidate
     // (pinyin / CJK), and sending on it both fires a half-typed message and

@@ -27,5 +27,16 @@ def test_session_sidebar_has_a_persistent_collapse_control():
 def test_media_skill_keeps_runtime_output_out_of_static():
     skill = (ROOT / "hermes" / "skills" / "media" / "comfyui-media" / "SKILL.md").read_text()
     assert "/opt/data/artifacts/" in skill
-    assert "/artifacts/<本会话>/cover.png" in skill
+    assert "/artifacts/media-<uuid>/cover.png" in skill
     assert "`/static/` 只服务镜像中的 HTML/JS/CSS" in skill
+    assert "Artifact 路径永不重用" in skill
+
+
+def test_vllm_media_skill_and_client_forbid_artifact_overwrite():
+    root = ROOT / "hermes" / "skills" / "media" / "vllm-omni-h3"
+    skill = (root / "SKILL.md").read_text()
+    client = (root / "scripts" / "h3_client.py").read_text()
+    assert "/opt/data/artifacts/media-<run-uuid>/" in skill
+    assert "禁止覆盖" in skill
+    assert "refusing to overwrite existing artifact" in client
+    assert "os.link(partial, args.output)" in client

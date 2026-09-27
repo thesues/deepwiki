@@ -29,6 +29,7 @@ metadata:
 2. **只用本地模型路线**。`ComfyCloud*` 开头的节点（ComfyCloudZImageTurboNode 等）需要 comfy.org 账号，本集群未登录，调了必报 Unauthorized——现成 workflow 里没有它们，也不要往任何 workflow 里加。
 3. 改的只有**参数值**（prompt、seed、尺寸、文件名），不改结构。每个 workflow 可改的参数见下表。
 4. 提交前 workflow JSON 里所有 `[节点id, 输出槽]` 形式的连线值保持原样——那是节点间的连线，不是数据。
+5. **Artifact 路径永不重用。** 每次生成（包括同一提示词的重跑）都创建新的 UUID 子目录，或使用带 UUID 的新文件名；写入前必须 `test ! -e "$dest"`。绝不覆盖、替换或复用回复里已经出现过的 `/artifacts/...` URL。
 
 ## ComfyUI 地址
 集群内 `http://comfyui-autumn.autumn.svc:8188`（带 basic auth 的代理是给浏览器用的，API 走集群内直连）。用 terminal 里的 curl/python 访问。
@@ -107,20 +108,24 @@ curl -s -o /tmp/out.png \
 
 ## 交付给用户（怎么引用生成的文件）
 
-生成的图片、视频和 3D 文件最终放到当前会话的 artifact 目录（先下载到工作目录，再 `cp` 过去）。
-终端默认就在 `/opt/data/artifacts/<本会话>/`；若不在该目录，先创建一个唯一子目录，例如
-`mkdir -p /opt/data/artifacts/media-<uuid>`，**不要写入 `/app/static`、`/opt/data/static` 或 artifact 根目录**。
+生成的图片、视频和 3D 文件最终放到 artifact 目录。每一轮生成都先产生一个新的 UUID，创建
+`/opt/data/artifacts/media-<uuid>/`；即使是同一会话重跑，也不能复用上一轮目录。下载或复制前用
+`test ! -e "$dest"` 确认目标从未存在，检查失败就换新 UUID，不能使用覆盖选项。**不要写入
+`/app/static`、`/opt/data/static` 或 artifact 根目录**。
+
+Artifact URL 会进入聊天历史；一旦发出就把它当作不可变标识。服务端会把 `/artifacts/...` 缓存为
+`immutable`，所以覆盖同名文件不仅会破坏历史，也不会让已经打开的页面自动看到新内容。
 
 **为什么必须这样做**：`/opt/data/artifacts/` 是 PVC，pod 重建不丢；`/app/static` 是随镜像部署的
 前端代码，`/static/` 只服务镜像中的 HTML/JS/CSS。媒体绝不能再与前端共享路径，否则旧 PVC 文件会覆盖
 新版本脚本。
 
-**引用前先 `ls -l <文件名>` 确认文件确实在当前 artifact 目录且大小非 0**，再在回复里引用。
+**引用前先 `ls -l <文件名>` 确认文件确实在本轮新建的 artifact 目录且大小非 0**，再在回复里引用。
 
 **回复里引用一律用相对路径**，形如：
 
-- 图片：`![封面](/artifacts/<本会话>/cover.png)`
-- 视频：`/artifacts/<本会话>/episode.mp4`
+- 图片：`![封面](/artifacts/media-<uuid>/cover.png)`
+- 视频：`/artifacts/media-<uuid>/episode.mp4`
 
 **绝对不要写带域名或 host 的完整 URL**——既不要写 `https://xxx.apigateway…/artifacts/a.png`，
 也不要写 `http://localhost:8080/artifacts/a.png`。只写以 `/artifacts/` 开头的相对路径；带 host 的链接在
