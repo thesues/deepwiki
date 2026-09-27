@@ -141,9 +141,6 @@ header { display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap;
 header h1 { font-family:var(--serif); font-weight:400; font-size:2.1rem; letter-spacing:-0.02em; }
 header h1 em { color:var(--accent); font-style:italic; }
 .spacer { flex:1; }
-.meta { display:flex; gap:1.1rem; font-size:0.7rem; color:var(--text-dim); align-items:baseline; }
-.meta b { color:var(--accent); font-weight:500; }
-#build { color:var(--text-muted); font-size:0.66rem; }
 
 /* ---------- the pickers, in a small-font row BELOW the box ---------- */
 /* deepwiki/Devin style: the composer is the box; what steers it — the project
@@ -653,7 +650,6 @@ a.project-card:hover { border-color:var(--accent-dim); background:var(--surface-
             margin:0; letter-spacing:0.02em; }
 .home-grid { width:100%; }
 .home-error { color:var(--text-muted); font-size:0.85rem; margin-top:1.4rem; }
-.home-meta { padding:1rem 2rem 1.4rem; text-align:right; }
 
 /* One turn at a time — a single GPU, not a policy. The composer says so rather
    than accepting a click and dropping it.

@@ -573,9 +573,10 @@ def test_index_versioned_the_static_urls(app_server):
     assert home_etag, "the fixed HTML URL needs a validator"
     home = home_response.read().decode()
     assert "home.js?v=" in home and "style.css?v=" in home, "statics must be versioned"
-    assert "@@BUILD@@" not in home, "the build marker must be injected"
+    assert "@@BUILD@@" not in home and 'id="build"' not in home
     chat = urllib.request.urlopen(base + "/buda/").read().decode()
     assert "app.js?v=" in chat and "style.css?v=" in chat, "statics must be versioned"
+    assert "@@BUILD@@" not in chat and 'id="build"' not in chat
     # and the versioned URL still serves
     import re
     v = re.search(r"home\.js\?v=([0-9a-f]+)", home).group(1)

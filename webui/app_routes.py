@@ -714,7 +714,6 @@ def build_app(
             body = body.replace(
                 b"/static/" + asset, b"/static/" + asset + b"?v=" + version.encode()
             )
-        body = body.replace(b"@@BUILD@@", version.encode())
         return body, f'"{version}"'
 
     # These files ship in the read-only image and cannot change during this
