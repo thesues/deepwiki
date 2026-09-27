@@ -134,6 +134,18 @@ spec:
               hermes config set auxiliary.compression.timeout \
                 "${HERMES_COMPRESSION_TIMEOUT:-240}" || true
 
+              # Smart approval asks Hermes' auxiliary client to classify a
+              # flagged command before involving the user. Pin the task to the
+              # deployment's known-good default endpoint instead of leaving a
+              # security decision to ambient provider auto-discovery. DENY is
+              # handled automatically by the WebUI; ESCALATE and call failures
+              # still produce the normal human approval card.
+              hermes config set auxiliary.approval.provider custom
+              hermes config set auxiliary.approval.base_url "$LLM_BASE_URL"
+              hermes config set auxiliary.approval.model "${LLM_MODEL:-dsv4-flash}"
+              hermes config set auxiliary.approval.api_key "${LLM_API_KEY:-none}"
+              hermes config set approvals.mode smart
+
               # The skills ship in the IMAGE and are synced into HERMES_HOME
               # at every start, rather than being copied into the PVC once by hand.
               # HERMES_HOME is a PVC, so a hand-copy would survive -- and would
@@ -475,7 +487,7 @@ spec:
             periodSeconds: 10
           livenessProbe:
             # /healthz is deliberately shallow — it answers while a turn is
-            # running and while `hermes acp` is restarting. A deep probe would
+            # running and while a Hermes tool call is retrying. A deep probe would
             # restart the pod in exactly the moments this design exists to
             # survive, taking the running turn with it.
             httpGet: { path: /healthz, port: 8080 }

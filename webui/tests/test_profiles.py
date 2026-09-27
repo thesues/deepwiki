@@ -9,6 +9,7 @@ up wearing another project's brief or another project's tools.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -229,7 +230,12 @@ def test_a_missing_workspace_is_reported_not_registered(tmp_path, caplog):
     assert pr.register_workspace_cwd("s1", "") is False
 
 
-def test_an_existing_workspace_outside_hermes_reports_failure(tmp_path):
-    """Inside hermes' interpreter this registers the per-task cwd override;
-    here the import fails, and the guard — not the turn — absorbs it."""
-    assert pr.register_workspace_cwd("s1", str(tmp_path)) is False
+def test_an_existing_workspace_registers_through_the_hermes_surface(tmp_path, monkeypatch):
+    """Pin the integration without depending on which interpreter runs pytest."""
+    calls = []
+    terminal = types.ModuleType("tools.terminal_tool")
+    terminal.register_task_env_overrides = lambda sid, overrides: calls.append((sid, overrides))
+    monkeypatch.setitem(sys.modules, "tools.terminal_tool", terminal)
+
+    assert pr.register_workspace_cwd("s1", str(tmp_path)) is True
+    assert calls == [("s1", {"cwd": str(tmp_path)})]

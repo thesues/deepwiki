@@ -373,6 +373,44 @@ class TurnManager:
                     return stream.user_id
         return None
 
+    @staticmethod
+    def _resolve_notified_approval(ap: Any, key: str, data: dict, choice: str) -> bool:
+        """Resolve the exact gateway entry which produced ``data``.
+
+        Hermes' public resolver is intentionally FIFO. That is right for a
+        human pressing the one card displayed by the UI, but wrong for an
+        automatic smart-DENY response: parallel tool calls can enqueue a
+        normal request before the denied one, and resolving the queue head
+        would answer somebody else's request. Hermes 0.19 passes the same
+        payload object stored on ``_ApprovalEntry.data`` to the notify hook,
+        so identity gives us an unambiguous correlation without exposing a
+        new ID to the browser.
+
+        Return False if the pinned 0.19 queue surface is unavailable. The
+        caller then leaves the request for manual review; it must never fall
+        back to a potentially wrong FIFO denial.
+        """
+        lock = getattr(ap, "_lock", None)
+        queues = getattr(ap, "_gateway_queues", None)
+        if lock is None or not isinstance(queues, dict):
+            return False
+        entry = None
+        with lock:
+            queue = queues.get(key) or []
+            entry = next(
+                (candidate for candidate in queue
+                 if getattr(candidate, "data", None) is data),
+                None,
+            )
+            if entry is None:
+                return False
+            queue.remove(entry)
+            if not queue:
+                queues.pop(key, None)
+            entry.result = choice
+        entry.event.set()
+        return True
+
     def _notify_approval(self, stream: TurnStream, key: str, data: dict) -> None:
         """hermes has something to ask. Put it on this turn's stream.
 
@@ -380,6 +418,22 @@ class TurnManager:
         makes the card appear while the turn is still blocked, which is the
         whole point.
         """
+        title = str(data.get("description") or data.get("command") or "需要确认")
+        if data.get("smart_denied"):
+            try:
+                from tools import approval as ap
+
+                if self._resolve_notified_approval(ap, key, data, "deny"):
+                    log.info("smart approval denied a request for %s", key)
+                    stream.emit("note", text=f"智能审批已拒绝：{title}")
+                    return
+            except Exception:  # noqa: BLE001 -- fail to manual, never wrong FIFO
+                log.warning("could not resolve smart denial for %s", key, exc_info=True)
+            log.warning(
+                "smart denial for %s could not be correlated; leaving it for manual review",
+                key,
+            )
+
         opts = [
             {"optionId": "once", "name": "允许一次"},
             {"optionId": "session", "name": "本次会话都允许"},
@@ -387,7 +441,6 @@ class TurnManager:
         if not stream.user_id and data.get("allow_permanent", True):
             opts.append({"optionId": "always", "name": "始终允许"})
         opts.append({"optionId": "deny", "name": "拒绝"})
-        title = str(data.get("description") or data.get("command") or "需要确认")
         stream.emit(
             "approval",
             id=key,                      # resolve_gateway_approval keys on this

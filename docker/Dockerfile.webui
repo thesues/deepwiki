@@ -21,14 +21,17 @@ ARG BASE_REGISTRY=
 # explicit one is the one that works in both places.
 ARG PYTHON_IMAGE=library/python:3.12-slim-bookworm
 
+FROM ghcr.io/astral-sh/uv:0.8.22 AS uv_binary
+
 FROM ${BASE_REGISTRY}${PYTHON_IMAGE}
+COPY --from=uv_binary /uv /usr/local/bin/uv
 
 ARG APT_MIRROR=https://mirrors.ivolces.com/debian/
 # The default index resolves pypi.org but pulls wheels from files.hosted, which
 # stalls from the CN build pool with no output rather than failing. Same trap
 # `Dockerfile.freetoken` documents.
 ARG PIP_INDEX_URL=https://pypi.org/simple/
-ARG HERMES_VERSION=0.17.0
+ARG HERMES_VERSION=0.19.0
 ARG HERMES_EXTRA_INDEX=
 
 # `uv` does NOT read PIP_INDEX_URL — it reads UV_INDEX_URL. The pipeline passes
@@ -81,25 +84,24 @@ RUN set -eux; \
     node --version
 
 # --- hermes, in its own venv ------------------------------------------------ #
-# `hermes acp --check` at BUILD time: an image whose agent cannot start should
-# fail here, not at 3am in a rollout. It is also the only cheap proof that the
-# `[acp]` extra actually resolved.
+# The WebUI imports Hermes as a library. Check those imports with Hermes'
+# interpreter at build time; ACP is not part of the running application.
 RUN set -eux; \
-    python -m pip install --no-cache-dir uv; \
     uv venv /opt/hermes/.venv; \
     VIRTUAL_ENV=/opt/hermes/.venv uv pip install --no-cache-dir \
         $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
-        "hermes-agent[acp,mcp]==${HERMES_VERSION}" \
+        "hermes-agent[mcp]==${HERMES_VERSION}" \
         "Brotli==1.1.0" \
         "PyJWT[crypto]==2.13.0"; \
     ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
-    hermes acp --check
+    /opt/hermes/.venv/bin/python -c 'from run_agent import AIAgent; from hermes_state import SessionDB; from tools import approval; from tools.mcp_tool import register_mcp_servers; from agent.auxiliary_client import call_llm; assert callable(approval.register_gateway_notify) and callable(approval.resolve_gateway_approval); print("Hermes runtime imports OK")'
 
 # --- the app ---------------------------------------------------------------- #
 # Brotli is installed into the interpreter above because `http_shell.py` uses
 # it for HTTP content encoding. The app otherwise remains stdlib-only.
 WORKDIR /app
 COPY webui/ /app/
+RUN /opt/hermes/.venv/bin/python -c 'import hermes_agent, hermes_config, hermes_session_api, turns; print("WebUI Hermes integration imports OK")'
 
 ENV HERMES_BIN=/usr/local/bin/hermes \
     HERMES_PY=/opt/hermes/.venv/bin/python \
@@ -119,8 +121,6 @@ ENV HERMES_BIN=/usr/local/bin/hermes \
 RUN mkdir -p /opt/data/logs
 
 EXPOSE 8080
-# tini reaps: `hermes acp` is a child of this process, and a chat session that
-# ends without one leaves a zombie per turn. The lerobot console learned this by
-# accumulating 48 of them over 26 hours.
+# tini reaps child processes launched by Hermes tools.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/hermes/.venv/bin/python", "main.py"]

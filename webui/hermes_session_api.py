@@ -273,9 +273,15 @@ def _is_compaction_summary(text: str) -> bool:
         return False
     try:
         from agent.context_compressor import ContextCompressor
-        return bool(ContextCompressor._is_context_summary_content(text))
+
+        if ContextCompressor._is_context_summary_content(text):
+            return True
     except Exception:  # noqa: BLE001 — the helper moved; fall through to literals
         pass
+    # A False from the upstream helper is not authoritative across versions:
+    # 0.19 matches complete historical preambles, while older persisted rows
+    # can contain only the stable leading marker. Keep the broad literals as
+    # a compatibility floor after both a missing helper and a negative result.
     t = text.lstrip()
     return t.startswith("[CONTEXT COMPACTION") or t.startswith("[CONTEXT SUMMARY]:")
 

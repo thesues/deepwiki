@@ -21,6 +21,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hermes_config as hc  # noqa: E402
 
 
+REPO = Path(__file__).resolve().parents[2]
+
+
+def test_image_and_deployment_pin_hermes_019_smart_approval():
+    dockerfile = (REPO / "docker" / "Dockerfile.webui").read_text()
+    manifest = (REPO / "k8s" / "webui.yaml").read_text()
+
+    assert "FROM ghcr.io/astral-sh/uv:0.8.22 AS uv_binary" in dockerfile
+    assert "ARG HERMES_VERSION=0.19.0" in dockerfile
+    assert '"hermes-agent[mcp]==${HERMES_VERSION}"' in dockerfile
+    assert "hermes-agent[acp" not in dockerfile
+    assert "hermes acp --check" not in dockerfile
+    assert "hermes config set approvals.mode smart" in manifest
+    assert "hermes config set auxiliary.approval.provider custom" in manifest
+
+
 # ── ensure_platform_toolsets ────────────────────────────────────────────────
 
 

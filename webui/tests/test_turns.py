@@ -245,7 +245,15 @@ def _fake_approval(monkeypatch):
     import types
 
     ap = types.ModuleType("tools.approval")
-    ap.queues = {}          # session_key -> list of {"data":…, "event":…, "choice":…}
+    class Entry:
+        def __init__(self, data):
+            self.data = data
+            self.event = _t.Event()
+            self.result = None
+
+    ap._lock = _t.RLock()
+    ap._gateway_queues = {}
+    ap.queues = ap._gateway_queues  # concise alias used by these tests
     ap.notify = {}
     ap._key = {"v": "default"}
 
@@ -269,23 +277,28 @@ def _fake_approval(monkeypatch):
         ap.unregistered.append(k)
 
     def resolve_gateway_approval(k, choice, resolve_all=False):
-        q = ap.queues.get(k) or []
-        targets = list(q) if resolve_all else q[:1]
+        with ap._lock:
+            q = ap.queues.get(k) or []
+            targets = list(q) if resolve_all else q[:1]
+            for entry in targets:
+                q.remove(entry)
+            if not q:
+                ap.queues.pop(k, None)
         for t in targets:
-            t["choice"] = choice
-            t["event"].set()
-            q.remove(t)
+            t.result = choice
+            t.event.set()
         return len(targets)
 
     def ask(k, data):
         """What hermes does on the agent thread: queue, notify, block."""
-        entry = {"data": data, "event": _t.Event(), "choice": None}
-        ap.queues.setdefault(k, []).append(entry)
+        entry = Entry(data)
+        with ap._lock:
+            ap.queues.setdefault(k, []).append(entry)
         cb = ap.notify.get(k)
         if cb:
             cb(data)
-        entry["event"].wait(timeout=10)
-        return entry["choice"] or "deny"
+        entry.event.wait(timeout=10)
+        return entry.result or "deny"
 
     ap.set_current_session_key = set_current_session_key
     ap.reset_current_session_key = reset_current_session_key
@@ -353,6 +366,77 @@ def test_a_permission_request_reaches_the_reader_and_the_turn_waits(monkeypatch)
     ap.resolve_gateway_approval("s1", "session")
     t.join(timeout=5)
     assert out["r"] == "session"
+
+
+def test_a_smart_denial_is_rejected_without_showing_an_override_card(monkeypatch):
+    ap = _fake_approval(monkeypatch)
+    result = {}
+
+    def run(agent, **kw):
+        result["choice"] = ap.ask("s1", {
+            "command": "rm -rf /",
+            "description": "recursive delete of a system path",
+            "smart_denied": True,
+            "allow_permanent": False,
+        })
+        return {}
+
+    m = _mgr(monkeypatch, run=run)
+    s = m.start(session_id="s1", text="x", endpoint=_ep())
+    assert _wait_done(s)
+    assert result["choice"] == "deny"
+    assert not [e for e in s.after(0) if e["kind"] == "approval"]
+    notes = [e["text"] for e in s.after(0) if e["kind"] == "note"]
+    assert notes == ["智能审批已拒绝：recursive delete of a system path"]
+
+
+def test_a_smart_denial_resolves_its_exact_entry_not_the_fifo_head(monkeypatch):
+    """Parallel tool calls can queue a normal prompt before Smart DENY.
+
+    The public Hermes resolver answers the oldest request, so using it from
+    the notify callback would deny the normal prompt and leave the dangerous
+    request waiting. Correlate by the payload object stored on the entry.
+    """
+    ap = _fake_approval(monkeypatch)
+    hold_turn = threading.Event()
+    m = _mgr(monkeypatch, run=lambda agent, **kw: hold_turn.wait(5) and {})
+    s = m.start(session_id="s1", text="x", endpoint=_ep())
+    for _ in range(300):
+        if "s1" in ap.notify:
+            break
+        time.sleep(0.01)
+
+    normal_data = {"command": "sudo true", "description": "manual review"}
+    smart_data = {
+        "command": "rm -rf /", "description": "smart rejected",
+        "smart_denied": True, "allow_permanent": False,
+    }
+    choices = {}
+    normal = threading.Thread(
+        target=lambda: choices.setdefault("normal", ap.ask("s1", normal_data))
+    )
+    normal.start()
+    for _ in range(300):
+        if ap.queues.get("s1"):
+            break
+        time.sleep(0.01)
+
+    denied = threading.Thread(
+        target=lambda: choices.setdefault("smart", ap.ask("s1", smart_data))
+    )
+    denied.start(); denied.join(timeout=3)
+    assert choices.get("smart") == "deny"
+    assert normal.is_alive(), "the older manual request was denied by mistake"
+    assert len(ap.queues.get("s1") or []) == 1
+    assert ap.queues["s1"][0].data is normal_data
+
+    ap.resolve_gateway_approval("s1", "once")
+    normal.join(timeout=3)
+    assert choices["normal"] == "once"
+    cards = [e for e in s.after(0) if e["kind"] == "approval"]
+    assert len(cards) == 1 and cards[0]["title"] == "manual review"
+    hold_turn.set()
+    assert _wait_done(s)
 
 
 def test_stop_releases_a_turn_parked_on_an_approval(monkeypatch):
