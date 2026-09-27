@@ -47,7 +47,7 @@ RUN set -eux; \
       sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources || true; \
     fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git tini; \
+    apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git tini; \
     rm -rf /var/lib/apt/lists/*
 
 # --- node, for the diagram skill ------------------------------------------- #

@@ -93,6 +93,12 @@ def test_artifact_media_loads_only_after_the_final_render():
     assert 'media.setAttribute("src", src)' in artifact_node, (
         "the final transcript node must activate the parked URL exactly once"
     )
+    assert 'v.preload = "none"' in artifact_node
+    assert 'setAttribute("data-poster-src"' in artifact_node
+    assert 'video.setAttribute("poster", poster)' in artifact_node
+    assert "video.load()" not in artifact_node, (
+        "activating a poster must not trigger an MP4 metadata request"
+    )
 
 def test_the_activity_row_sits_above_the_answer():
     """Reported from the UI: 7 tool rows UNDER a finished answer.
@@ -285,6 +291,18 @@ def test_a_fresh_conversation_looks_different_from_one_with_history():
     # And it must give way the moment anything is said.
     add = src[src.index("function addMsg("):]
     assert "clearFresh()" in add[:add.index("\n}") + 2], "the hero survives the first message"
+
+
+def test_empty_attachment_tray_is_actually_hidden():
+    """An author-level `display:flex` can override the browser's hidden rule.
+
+    The empty tray contains an img without a src, so that cascade bug shows a
+    broken "待发送图片" thumbnail before the user has selected anything.
+    """
+    css = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text()
+    assert re.search(r"#attachment-tray\[hidden\]\s*\{[^}]*display\s*:\s*none", css), (
+        "the attachment tray must remain absent until a file has been selected"
+    )
 
 def test_the_composer_blocks_on_reported_capacity_not_on_a_local_flag():
     """Ablation: go back to `atCapacity = b` and this goes red.

@@ -134,6 +134,11 @@ Three surfaces where the transcript's shape is this app's choice, not hermes':
   video served as `octet-stream` downloads instead of playing. Path segments
   match ANY non-space run — the agent names files in the reader's language,
   and an ASCII-only class is how a `图.png` silently stayed a link.
+  Generated videos use `preload="none"`. When one approaches the viewport the
+  client requests a same-stem JPG (`episode.mp4` -> `episode.jpg`); the Python
+  server lazily extracts that small poster once with ffmpeg and publishes it
+  beside the immutable video. Scrolling history therefore fetches pictures,
+  not MP4 metadata ranges, until the reader presses play.
 * **The todo list is a card, not JSON.** hermes' `todo` tool answers every
   call with the FULL list. The sink (`turn_stream._todo_items`) lifts the
   items out of the result and emits a `todo` event; the client draws ONE

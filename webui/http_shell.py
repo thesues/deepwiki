@@ -30,8 +30,10 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import secrets
 import socketserver
+import subprocess
 import threading
 from datetime import timezone
 from email.utils import formatdate, parsedate_to_datetime
@@ -278,6 +280,10 @@ class App:
         self.artifacts_dir = artifacts_dir
         self.auth_user = auth_user
         self.auth_pass = auth_pass
+        # Poster creation is rare and ffmpeg is expensive. One process-wide
+        # lock is simpler than a lock table that itself needs eviction; unique
+        # artifact paths mean unrelated posters are not on a hot request path.
+        self._poster_lock = threading.Lock()
 
     def route(self, method: str, path: str):
         def deco(fn):
@@ -357,6 +363,8 @@ class App:
                 req.path, ARTIFACTS_PREFIX, self.artifacts_dir
             )
             if target is None:
+                target = self._generate_artifact_poster(req.path)
+            if target is None:
                 return None
             return self._serve_immutable_file(
                 req,
@@ -370,9 +378,68 @@ class App:
 
         return None
 
+    def _generate_artifact_poster(self, path: str) -> Path | None:
+        """Lazily create ``video.jpg`` beside ``video.mp4`` on first request.
+
+        The browser requests this only when the video approaches the viewport.
+        Publishing via a hard link keeps immutable artifact URLs honest even
+        if two requests arrive together or another process wins the race.
+        """
+        poster = self._resolve_candidate(path, ARTIFACTS_PREFIX, self.artifacts_dir)
+        if poster is None or poster.suffix.lower() != ".jpg":
+            return None
+        with self._poster_lock:
+            if poster.is_file():
+                return poster
+            video = next(
+                (poster.with_suffix(ext) for ext in (".mp4", ".webm", ".mov", ".m4v")
+                 if poster.with_suffix(ext).is_file()),
+                None,
+            )
+            if video is None:
+                return None
+            candidate = poster.with_name(
+                f".{poster.stem}.{secrets.token_hex(8)}.tmp.jpg"
+            )
+            try:
+                done = subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                        "-ss", "0.1", "-i", str(video), "-frames:v", "1",
+                        "-vf", "scale=640:-2:force_original_aspect_ratio=decrease",
+                        "-q:v", "5", "-f", "image2", str(candidate),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    check=False,
+                )
+                if done.returncode != 0 or not candidate.is_file() or candidate.stat().st_size == 0:
+                    log.warning("poster generation failed for %s: %s", video, done.stderr[-1000:])
+                    return None
+                try:
+                    os.link(candidate, poster)
+                except FileExistsError:
+                    pass
+                return poster if poster.is_file() else None
+            except (OSError, subprocess.SubprocessError) as exc:
+                log.warning("poster generation failed for %s: %s", video, exc)
+                return None
+            finally:
+                try:
+                    candidate.unlink()
+                except FileNotFoundError:
+                    pass
+
     @staticmethod
     def _resolve_location(path: str, prefix: str, root: Path | None) -> Path | None:
         """Resolve one location without allowing traversal or escaping symlinks."""
+        target = App._resolve_candidate(path, prefix, root)
+        return target if target is not None and target.is_file() else None
+
+    @staticmethod
+    def _resolve_candidate(path: str, prefix: str, root: Path | None) -> Path | None:
+        """Resolve a possibly-not-yet-created file under one location root."""
         if root is None:
             return None
         rel = path[len(prefix):]
@@ -381,7 +448,7 @@ class App:
         try:
             resolved_root = root.resolve()
             target = (resolved_root / rel).resolve()
-            if target.is_relative_to(resolved_root) and target.is_file():
+            if target.is_relative_to(resolved_root):
                 return target
         except (OSError, ValueError):
             pass

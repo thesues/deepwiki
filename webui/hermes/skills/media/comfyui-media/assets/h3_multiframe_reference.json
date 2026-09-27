@@ -70,11 +70,12 @@
     "127",
     0
    ],
-   "scheduler": 20,
+   "scheduler": "simple",
    "steps": [
     "142",
     0
-   ]
+   ],
+   "denoise": 1.0
   }
  },
  "125": {

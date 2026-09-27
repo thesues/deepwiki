@@ -165,6 +165,10 @@ header h1 em { color:var(--accent); font-style:italic; }
 .compose-icon:hover { background:var(--surface-raised); color:var(--text); }
 .compose-icon:disabled { cursor:default; opacity:.5; }
 #attachment-tray { display:flex; padding:0.1rem 0.05rem 0.15rem; }
+/* `#attachment-tray { display:flex }` has higher specificity than the
+   browser's `[hidden]` rule in some engines. Without an explicit override the
+   empty <img> is painted on every fresh conversation as a broken thumbnail. */
+#attachment-tray[hidden] { display:none; }
 .attachment-card { position:relative; width:5.6rem; height:5.6rem;
                    border:1px solid var(--border); border-radius:10px;
                    overflow:hidden; background:var(--surface-raised); }

@@ -118,6 +118,8 @@ const artifactHref = (p) => p
   .replace(/^\/opt\/data/, "");
 const artifactLabel = (p) => artifactHref(p).split("/").pop();
 const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
+const VIDEO_FILE_RE = /\.(?:mp4|webm|mov|m4v)$/i;
+const videoPosterHref = (href) => href.replace(VIDEO_FILE_RE, ".jpg");
 const INPUT_IMAGE_RE = /\[输入图片 object_key:\s*(input\/webui\/[A-Za-z0-9_.-]+\/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]/i;
 const artifactMediaHref = (u) => {
   const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
@@ -149,11 +151,12 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 // silently stayed a link.
 const artifactNode = (path) => {
   const href = artifactHref(path);
-  if (/\.(?:mp4|webm|mov|m4v)$/i.test(href)) {
+  if (VIDEO_FILE_RE.test(href)) {
     const v = document.createElement("video");
     v.setAttribute("data-artifact-src", href);
+    v.setAttribute("data-poster-src", videoPosterHref(href));
     v.controls = true;
-    v.preload = "metadata";
+    v.preload = "none";
     v.className = "artifact-media";
     return v;
   }
@@ -217,17 +220,24 @@ const loadArtifactMedia = (media) => {
   media.removeAttribute("data-artifact-src");
 };
 const loadArtifactVideo = (video) => {
+  const parked = video.getAttribute("data-artifact-src")
+    || video.querySelector("source[data-artifact-src]")?.getAttribute("data-artifact-src");
+  const poster = video.getAttribute("data-poster-src")
+    || (parked && videoPosterHref(parked));
+  if (poster) {
+    video.setAttribute("poster", poster);
+    video.removeAttribute("data-poster-src");
+  }
   loadArtifactMedia(video);
   for (const source of video.querySelectorAll("source[data-artifact-src]")) {
     loadArtifactMedia(source);
   }
-  video.load();
 };
 let artifactVideoObserver = null;
 const observeArtifactVideo = (video) => {
   if (typeof IntersectionObserver !== "function") {
-    // Old browsers cannot tell us when an offscreen video approaches the
-    // viewport. Keep its URL usable, but do not preload even its metadata.
+    // Old browsers cannot lazy-request the poster. Keep the video usable, but
+    // preload none still prevents an MP4 metadata/range request before play.
     video.preload = "none";
     loadArtifactVideo(video);
     return;
@@ -239,7 +249,7 @@ const observeArtifactVideo = (video) => {
         artifactVideoObserver.unobserve(entry.target);
         loadArtifactVideo(entry.target);
       }
-    }, { rootMargin: "600px 0px" });
+    }, { rootMargin: "300px 0px" });
   }
   artifactVideoObserver.observe(video);
 };
@@ -332,9 +342,9 @@ const renderMD = (src) => {
 
 const renderInto = (target, src, activateMedia = true) => {
   target.innerHTML = renderMD(src);
-  // Streaming reparses the whole answer once per animation frame. Starting a
-  // video before the segment is final would turn each repaint into another
-  // metadata request; the finished render activates it exactly once.
+  // Streaming reparses the whole answer once per animation frame. Activating
+  // a video before the segment is final would repeatedly recreate its lazy
+  // poster observer; the finished render activates it exactly once.
   if (activateMedia) activateArtifactMedia(target);
 };
 

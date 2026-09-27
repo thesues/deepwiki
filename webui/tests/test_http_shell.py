@@ -443,6 +443,34 @@ def test_artifacts_serve_runtime_media_but_not_under_static(tmp_path):
     assert not any(k == "ETag" for k, _ in resp.headers)
 
 
+def test_artifact_poster_is_generated_lazily_from_same_name_video(tmp_path, monkeypatch):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "episode.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
+    calls = []
+
+    def fake_ffmpeg(command, **kwargs):
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"\xff\xd8poster\xff\xd9")
+        return type("Done", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr("http_shell.subprocess.run", fake_ffmpeg)
+    app = App(artifacts_dir=artifacts)
+    req = type("R", (), {
+        "method": "GET", "path": "/artifacts/episode.jpg", "headers": {}, "query": {},
+    })()
+
+    first = app.serve_static(req)
+    assert first is not None and first.status == 200
+    assert first.body == b"\xff\xd8poster\xff\xd9"
+    assert ("Content-Type", "image/jpeg") in first.headers
+    assert len(calls) == 1 and str(artifacts / "episode.mp4") in calls[0]
+
+    second = app.serve_static(req)
+    assert second is not None and second.body == first.body
+    assert len(calls) == 1, "a generated immutable poster must be reused"
+
+
 def test_artifact_video_supports_browser_byte_ranges(server, tmp_path):
     """`preload=metadata` must not download a whole generated video.
 

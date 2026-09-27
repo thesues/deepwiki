@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -40,3 +41,15 @@ def test_vllm_media_skill_and_client_forbid_artifact_overwrite():
     assert "禁止覆盖" in skill
     assert "refusing to overwrite existing artifact" in client
     assert "os.link(partial, args.output)" in client
+
+
+def test_h3_workflows_match_current_basic_scheduler_contract():
+    assets = ROOT / "hermes" / "skills" / "media" / "comfyui-media" / "assets"
+    for path in assets.glob("h3_*.json"):
+        workflow = json.loads(path.read_text())
+        schedulers = [node for node in workflow.values()
+                      if node.get("class_type") == "BasicScheduler"]
+        assert schedulers, f"{path.name} has no BasicScheduler"
+        for node in schedulers:
+            assert node["inputs"]["scheduler"] == "simple"
+            assert node["inputs"]["denoise"] == 1.0

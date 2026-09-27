@@ -76,11 +76,12 @@
     "105_122",
     0
    ],
-   "scheduler": 4,
+   "scheduler": "simple",
    "steps": [
     "105_123",
     0
-   ]
+   ],
+   "denoise": 1.0
   }
  },
  "105_14": {
