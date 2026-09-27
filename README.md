@@ -43,13 +43,14 @@ Storage-backed workloads mount Autumn FUSE in the privileged app container.
 This cluster does not propagate sidecar mounts reliably, so one mount namespace
 is intentional. LanceDB reads and writes ordinary paths under that mount.
 
-MiniMax H3 uses the S3 gateway instead of FUSE. The one-shot upload job writes
-the unchanged model repository to `s3://models/minimax-h3-vllm/`; the serving
-pod's init container downloads that prefix to node-local `emptyDir` before
-vLLM starts. Browser image inputs go through the WebUI backend to immutable
-keys under `s3://input/webui/<session-id>/`. Only the key is placed in chat
-history; the H3 skill GETs the object and sends image bytes to vLLM's Video API,
-which avoids assuming that the model server understands `s3://` URLs.
+MiniMax H3 keeps the unchanged model repository under
+`s3://models/minimax-h3-vllm/FL2VA/` and reads it on demand through an AutumnFS
+mount in the vLLM container. The init container copies only the small FUSE
+runtime; it never downloads the 140 GB checkpoint to node-local `emptyDir`.
+Direct reads are enabled so large model reads bypass the partition server.
+Browser image inputs go through the WebUI backend to immutable keys under
+`s3://input/webui/<session-id>/`. Only the key is placed in chat history; the
+H3 skill GETs the object and sends image bytes to vLLM's Video API.
 
 ## What lives here vs in autumn-rs
 

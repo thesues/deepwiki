@@ -1,10 +1,14 @@
-# Single-RTX-4090 MiniMax-H3 service.  This follows the official vLLM recipe's
-# accuracy-qualified single-GPU path: model-level CPU offload, not DLO.
+# Single-RTX-4090 MiniMax-H3 service. This follows the official vLLM recipe's
+# model-level CPU offload path (not DLO). Online FP8 is limited to the DiT so
+# the encoder/offloader initialization peak fits in 24 GiB.
 # The image digest is the amd64 minimax-h3 image containing the matched
 # vLLM 0.26.0 + vLLM-Omni model/minimax-h3 revision (310b4b4); do not overlay
 # current vLLM-Omni main, whose dependencies target vLLM 0.30.0.
-# The pod intentionally targets the same 8x4090 host as ComfyUI but requests a
-# separate GPU; it never restarts, scales, or modifies the existing ComfyUI pod.
+# Model files stay in Autumn: the server reads
+# /mnt/autumn/models/minimax-h3-vllm/FL2VA directly through autumn-fuse with
+# direct reads enabled. There is no 140 GB init copy or model cache volume.
+# The pod intentionally targets the zone-C 8x4090 host used by ComfyUI but
+# requests a separate GPU; it never restarts, scales, or modifies ComfyUI.
 ---
 apiVersion: v1
 kind: Service
@@ -25,6 +29,7 @@ metadata:
   namespace: autumn
   labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: vllm-omni-h3 }
 spec:
+  progressDeadlineSeconds: 3600
   replicas: 1
   strategy: { type: Recreate }
   selector:
@@ -36,65 +41,26 @@ spec:
       enableServiceLinks: false
       nodeSelector:
         kubernetes.io/hostname: "192.168.3.2"
+        topology.kubernetes.io/zone: cn-beijing-c
       initContainers:
-        - name: model-sync
-          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/freetoken-l3:87141c68f1f46995cb09a0621e3686dad01fb33c
-          command: ["bash", "-lc"]
+        # Copy only the mount executable and its small runtime dependency. The
+        # mount itself must run in the vLLM container's namespace; a FUSE
+        # sidecar does not propagate mounts on this cluster.
+        - name: fusebin
+          image: dongmao-test-cn-beijing.cr.volces.com/dongmao-test/autumn-rs:874a0bac1fe455151073598f70af0dc02e69b31e
+          command: ["sh", "-c"]
           args:
             - |
-              set -euo pipefail
-              S3=http://autumn-s3:9100
-              BUCKET=models
-              PREFIX=minimax-h3-vllm/FL2VA/
-              DEST=/model/FL2VA
-              mkdir -p "$DEST"
-              python3 - "$S3" "$BUCKET" "$PREFIX" > /tmp/objects.txt <<'PY'
-              import sys, urllib.parse, urllib.request, xml.etree.ElementTree as ET
-              endpoint, bucket, prefix = sys.argv[1:]
-              token = None
-              while True:
-                  query = {"list-type": "2", "prefix": prefix, "max-keys": "1000"}
-                  if token:
-                      query["continuation-token"] = token
-                  url = f"{endpoint}/{bucket}?{urllib.parse.urlencode(query)}"
-                  root = ET.fromstring(urllib.request.urlopen(url, timeout=60).read())
-                  ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-                  for item in root.findall("s3:Contents", ns):
-                      key = item.findtext("s3:Key", namespaces=ns)
-                      size = item.findtext("s3:Size", namespaces=ns)
-                      print(f"{size}\t{key[len(prefix):]}")
-                  if root.findtext("s3:IsTruncated", "false", ns) != "true":
-                      break
-                  token = root.findtext("s3:NextContinuationToken", namespaces=ns)
-              PY
-              test -s /tmp/objects.txt || { echo "FATAL: s3://$BUCKET/$PREFIX is empty" >&2; exit 1; }
-              total=$(awk '{s += $1} END {printf "%.0f", s}' /tmp/objects.txt)
-              [ "$total" -ge 140000000000 ] || { echo "FATAL: FL2VA listing is incomplete ($total bytes)" >&2; exit 1; }
-              echo "syncing $(wc -l < /tmp/objects.txt) objects ($total bytes) from Autumn S3"
-              download_one() {
-                expected="$1"; rel="$2"
-                mkdir -p "$DEST/$(dirname "$rel")"
-                curl --fail --silent --show-error --retry 5 --retry-all-errors \
-                  -o "$DEST/$rel.part" "$S3/$BUCKET/$PREFIX$rel"
-                actual=$(stat -c %s "$DEST/$rel.part")
-                [ "$actual" = "$expected" ] || { echo "size mismatch $rel: $actual != $expected" >&2; return 1; }
-                mv "$DEST/$rel.part" "$DEST/$rel"
-              }
-              export S3 BUCKET PREFIX DEST
-              export -f download_one
-              awk -F '\t' '{print $1 "\t" $2}' /tmp/objects.txt | \
-                xargs -P 6 -n 2 bash -lc 'download_one "$1" "$2"' _
-              test -s "$DEST/model_index.json"
-              test -d "$DEST/transformer"
-              test -d "$DEST/text_encoder"
-              test -d "$DEST/video_vae"
-              test -d "$DEST/audio_vae"
-              echo "model sync complete"
+              set -eu
+              cp /usr/local/bin/autumn-fuse /fusebin/
+              cp /usr/bin/fusermount3 /fusebin/
+              cp -L /usr/lib/x86_64-linux-gnu/libfuse3.so.3 /fusebin/
+              chmod +x /fusebin/autumn-fuse /fusebin/fusermount3
           resources:
-            requests: { cpu: "12", memory: 8Gi, ephemeral-storage: 180Gi }
-            limits: { cpu: "24", memory: 16Gi, ephemeral-storage: 200Gi }
+            requests: { cpu: "1", memory: 256Mi }
+            limits: { cpu: "1", memory: 256Mi }
           volumeMounts:
-            - { name: model, mountPath: /model }
+            - { name: fusebin, mountPath: /fusebin }
       containers:
         - name: server
           image: docker.m.daocloud.io/vllm/vllm-omni@sha256:511ea7f895f4a19f61247795bd30d6bdd3f545491e09cd9a8e28f4e07babe212
@@ -103,16 +69,57 @@ spec:
           args:
             - |
               set -euo pipefail
-              exec vllm serve /model/FL2VA \
+
+              # privileged exposes every GPU device, so follow the UUID that
+              # the device plugin assigned instead of assuming physical GPU 0.
+              case "${NVIDIA_VISIBLE_DEVICES:-}" in
+                ""|all|void|none) echo "GPU allocation is not specific" >&2; exit 1 ;;
+                *) export CUDA_VISIBLE_DEVICES="$NVIDIA_VISIBLE_DEVICES" ;;
+              esac
+
+              export PATH="/opt/fusebin:$PATH"
+              export LD_LIBRARY_PATH="/opt/fusebin:${LD_LIBRARY_PATH:-}"
+              M="$(getent hosts autumn-manager | awk '{print $1}'):9001"
+              MP=/mnt/autumn
+              MODEL="$MP/models/minimax-h3-vllm/FL2VA"
+              mkdir -p "$MP"
+              if grep -qs " $MP fuse" /proc/mounts; then
+                /opt/fusebin/fusermount3 -uz "$MP" 2>/dev/null || umount -l "$MP" 2>/dev/null || true
+              fi
+              /opt/fusebin/autumn-fuse \
+                --manager "$M" \
+                --mountpoint "$MP" \
+                --transport tcp \
+                --direct-read true \
+                --read-io-threads 8 \
+                --credential-file /etc/autumn/cred/fs.cred &
+              FUSE_PID=$!
+              trap 'kill $FUSE_PID 2>/dev/null || true; /opt/fusebin/fusermount3 -uz /mnt/autumn 2>/dev/null || umount -l /mnt/autumn 2>/dev/null || true' EXIT
+
+              # A real 1 MiB shard read proves both FUSE readiness and the
+              # direct-read-sized path; a mount-table check can race FUSE INIT.
+              PROBE="$MODEL/transformer/model-00001-of-00013.safetensors"
+              for i in $(seq 1 120); do
+                dd if="$PROBE" of=/dev/null bs=1M count=1 status=none 2>/dev/null && break
+                kill -0 "$FUSE_PID" 2>/dev/null || { echo "autumn-fuse exited during mount" >&2; exit 1; }
+                sleep 1
+              done
+              dd if="$PROBE" of=/dev/null bs=1M count=1 status=none
+              test -s "$MODEL/model_index.json"
+              echo "AutumnFS direct-read model: $MODEL"
+
+              exec vllm serve "$MODEL" \
                 --omni \
                 --host 0.0.0.0 \
                 --port 8000 \
                 --trust-remote-code \
                 --num-gpus 1 \
+                --quantization fp8 \
                 --enable-cpu-offload \
+                --stage-init-timeout 1800 \
+                --init-timeout 1800 \
                 --diffusion-attention-backend FLASH_ATTN
           env:
-            - { name: CUDA_VISIBLE_DEVICES, value: "0" }
             - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
             - { name: VLLM_OMNI_VIDEO_SYNC_TIMEOUT, value: "1800" }
             - { name: HF_HUB_OFFLINE, value: "1" }
@@ -132,21 +139,27 @@ spec:
             requests:
               cpu: "24"
               memory: 390Gi
-              ephemeral-storage: 180Gi
               nvidia.com/gpu: "1"
               vke.volcengine.com/eni-ip: "1"
             limits:
               cpu: "64"
               memory: 420Gi
-              ephemeral-storage: 200Gi
               nvidia.com/gpu: "1"
               vke.volcengine.com/eni-ip: "1"
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["IPC_LOCK"]
           volumeMounts:
-            - { name: model, mountPath: /model, readOnly: true }
+            - { name: mnt, mountPath: /mnt/autumn }
+            - { name: fusebin, mountPath: /opt/fusebin }
+            - { name: cred, mountPath: /etc/autumn/cred, readOnly: true }
             - { name: dshm, mountPath: /dev/shm }
       terminationGracePeriodSeconds: 120
       volumes:
-        - name: model
-          emptyDir: { sizeLimit: 200Gi }
+        - { name: mnt, emptyDir: {} }
+        - { name: fusebin, emptyDir: {} }
+        - name: cred
+          secret: { secretName: autumn-credential }
         - name: dshm
           emptyDir: { medium: Memory, sizeLimit: 8Gi }
