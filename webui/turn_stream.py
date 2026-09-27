@@ -30,17 +30,11 @@ class TurnStream:
         self,
         stream_id: str,
         session_id: str | None,
-        client_id: str = "",
         backlog: int = BACKLOG_EVENTS,
         *, user_id: str = "",
     ) -> None:
         self.stream_id = stream_id
         self.session_id = session_id
-        # Which browser asked for this turn. Used ONLY to tell a double-click
-        # apart from a second person typing into the same conversation; anyone
-        # may still READ this stream, which is what makes "go back to the
-        # conversation that is replying" work for whoever is looking.
-        self.client_id = client_id
         # Authenticated owner, present before Hermes creates the first DB row.
         self.user_id = user_id
         self.session_ids = {session_id}

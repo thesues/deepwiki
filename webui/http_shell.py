@@ -97,12 +97,6 @@ CONTENT_TYPES = {
     ".mov": "video/quicktime",
 }
 
-# Tells one BROWSER from another. Not authentication — everyone here shares one
-# credential; this only separates two people's cursors and double-click
-# detection. A cookie rather than a header because `EventSource` cannot set
-# headers, and a cookie rides every request including the SSE one.
-CLIENT_COOKIE = "deepwiki_cid"
-
 # Compress responses large enough for the saved transfer time to outweigh the
 # envelope and CPU cost. SSE is represented by `Streaming` and never reaches
 # this path; buffering it for compression would destroy its first-token latency.
@@ -233,17 +227,16 @@ class Request:
     """What a handler is given. Deliberately small."""
 
     __slots__ = (
-        "method", "path", "query", "headers", "body", "client_id",
+        "method", "path", "query", "headers", "body",
         "principal", "user_id", "_h",
     )
 
-    def __init__(self, h: BaseHTTPRequestHandler, client_id: str, principal=None) -> None:
+    def __init__(self, h: BaseHTTPRequestHandler, principal=None) -> None:
         parsed = urlparse(h.path)
         self.method = h.command
         self.path = parsed.path
         self.query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         self.headers = h.headers
-        self.client_id = client_id
         self.principal = principal
         self.user_id = principal.user_id if principal is not None else ""
         self.body = b""
@@ -343,26 +336,6 @@ class App:
         return hmac.compare_digest(user, self.auth_user) and hmac.compare_digest(
             passwd, self.auth_pass
         )
-
-    @staticmethod
-    def client_id_for(cookie_header: str | None) -> tuple[str, bool]:
-        """`(id, is_fresh)` for this caller.
-
-        Minted on WHATEVER the caller asked for first, not only on `/`: anything
-        reaching an API endpoint without having loaded the page — a second tab
-        restored from history, a cleared cookie, curl — would otherwise share
-        the same empty id, and two of them read as one person, which is the bug
-        this mechanism exists to prevent.
-
-        The id is decided BEFORE the handler runs, so a caller whose very first
-        request is an API call is attributed to the id it is about to receive.
-        """
-        if cookie_header:
-            for part in cookie_header.split(";"):
-                name, _, value = part.strip().partition("=")
-                if name == CLIENT_COOKIE and value:
-                    return value, False
-        return secrets.token_hex(8), True
 
     # ── dispatch ───────────────────────────────────────────────────────────
 
@@ -717,7 +690,6 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        cid, fresh = self.app.client_id_for(self.headers.get("Cookie"))
         if principal is not None and self.command not in ("GET", "HEAD", "OPTIONS"):
             origin = self.headers.get("Origin")
             foreign_origin = origin and (
@@ -731,7 +703,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
         try:
-            req = Request(self, cid, principal)
+            req = Request(self, principal)
             resp = self.app.handle(req)
         except Exception:  # noqa: BLE001
             log.exception("handler raised for %s", self.path)
@@ -741,18 +713,16 @@ class _Handler(BaseHTTPRequestHandler):
             resp.headers = [(k, v) for k, v in resp.headers if k.lower() != "cache-control"]
             resp.headers.append(("Cache-Control", "private, no-store"))
 
-        cookie = (
-            [(
-                "Set-Cookie",
-                f"{CLIENT_COOKIE}={cid}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax",
-            )]
-            if fresh
-            else []
-        )
+        # Expire the retired browser cursor on existing clients; never issue a new one.
+        if any(part.strip().partition("=")[0] == "deepwiki_cid"
+               for part in (self.headers.get("Cookie") or "").split(";")):
+            resp.headers.append((
+                "Set-Cookie", "deepwiki_cid=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+            ))
 
         if isinstance(resp, Streaming):
             self.send_response(resp.status)
-            for k, v in list(resp.headers) + cookie:
+            for k, v in resp.headers:
                 self.send_header(k, v)
             # Chunked, because the length is unknowable and HTTP/1.1 keep-alive
             # would otherwise wait for a Content-Length that never comes.
@@ -779,7 +749,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         resp = _maybe_compress(req, resp)
         self.send_response(resp.status)
-        for k, v in list(resp.headers) + cookie:
+        for k, v in resp.headers:
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(resp.body)))
         self.end_headers()

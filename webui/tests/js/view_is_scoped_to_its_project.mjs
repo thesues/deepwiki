@@ -18,14 +18,14 @@
 // test_app_routes.py.
 import assert from "node:assert";
 
-// as app.js defines them
-const LS_VIEW = "hermes.view";
-const viewKey = (S) => (S.profile ? `${LS_VIEW}.${S.profile}` : LS_VIEW);
+import fs from "node:fs";
+import vm from "node:vm";
+const source = fs.readFileSync(new URL("../../static/app.js", import.meta.url), "utf8");
+const start = source.indexOf("function belongsHere(");
+const fn = source.slice(start, source.indexOf("\n}", start) + 2);
 function belongsHere(S, id) {
-  if (!S.profile) return true;
-  const row = (S.sessionRows || []).find((r) => r.id === id);
-  if (!row) return false;
-  return (row.profile || S.defaultProfile) === S.profile;
+  const context = vm.createContext({ S, id });
+  return vm.runInContext(fn + "\nbelongsHere(id)", context);
 }
 // as boot() decides
 const reopens = (S, view) => (view && belongsHere(S, view) ? "open" : "fresh");
@@ -38,12 +38,6 @@ const rows = [
   { id: "rust", profile: "code-autumn-rs", title: "autumn-rs" },
 ];
 const page = (key) => ({ profile: key, defaultProfile: "buda", sessionRows: rows });
-
-// ── 1. the key is per project ───────────────────────────────────────────────
-assert.strictEqual(viewKey(page("buda")), "hermes.view.buda");
-assert.notStrictEqual(viewKey(page("code-autumn-rs")), viewKey(page("buda")),
-  "two projects must not share the saved view; one key is how the 佛典 "
-  + "conversation followed the reader onto the autumn-rs page");
 
 // ── 2. the screenshot, as a test ────────────────────────────────────────────
 assert.strictEqual(reopens(page("code-autumn-rs"), "jin-gang"), "fresh",

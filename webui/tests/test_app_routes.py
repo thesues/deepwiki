@@ -151,7 +151,8 @@ def _wait_idle(mgr, timeout=3.0):
 # ── sending ─────────────────────────────────────────────────────────────────
 
 
-def test_image_upload_persists_bytes_and_returns_only_an_object_key(app_server, monkeypatch):
+@pytest.mark.parametrize("session_id,prefix", [("s-123", "s-123"), ("", "draft")])
+def test_image_upload_persists_bytes_and_returns_only_an_object_key(app_server, monkeypatch, session_id, prefix):
     base, _, _ = app_server
     seen = {}
     monkeypatch.setattr(
@@ -160,10 +161,10 @@ def test_image_upload_persists_bytes_and_returns_only_an_object_key(app_server, 
             endpoint=endpoint, key=key, body=body, content_type=content_type),
     )
     code, result = _post_bytes(
-        base, "/api/media/input?sessionId=s-123&filename=frame.png", b"\x89PNG\r\n", "image/png"
+        base, f"/api/media/input?sessionId={session_id}&filename=frame.png", b"\x89PNG\r\n", "image/png"
     )
     assert code == 200
-    assert result["objectKey"].startswith("input/webui/s-123/")
+    assert result["objectKey"].startswith(f"input/webui/{prefix}/")
     assert result["objectKey"].endswith(".png")
     assert seen["body"] == b"\x89PNG\r\n"
     assert "endpoint" not in result and "credential" not in result
@@ -392,16 +393,10 @@ def test_a_sessions_read_that_fails_does_not_take_the_app_down(app_server, monke
     assert body["sessions"] == [], "an unreadable sidebar must not 500 the page"
 
 
-# ── per-browser position ────────────────────────────────────────────────────
-
-
-def test_each_browser_keeps_its_own_position(app_server):
-    """Shared, this leaked one person's position into another's page."""
+def test_api_does_not_store_a_current_conversation(app_server):
     base, _, _ = app_server
-    _post(base, "/api/session/open", {"sessionId": "s-a"}, cookie="deepwiki_cid=alice")
-    _post(base, "/api/session/open", {"sessionId": "s-b"}, cookie="deepwiki_cid=bob")
-    assert _get(base, "/api/status", cookie="deepwiki_cid=alice")["session"] == "s-a"
-    assert _get(base, "/api/status", cookie="deepwiki_cid=bob")["session"] == "s-b"
+    assert "session" not in _get(base, "/api/status")
+    assert "current" not in _get(base, "/api/sessions")
 
 
 def test_status_advertises_the_endpoints_the_client_can_pick(app_server):

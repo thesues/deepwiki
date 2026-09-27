@@ -579,8 +579,7 @@ def test_a_project_page_does_not_reopen_another_projects_conversation():
 
     `hermes.view` was one key per browser, and boot() validated it against the
     UNFILTERED session list while the sidebar filtered by project at render —
-    two definitions of "what this page may show". The saved view is now keyed
-    per project and checked with the sidebar's own predicate.
+    two definitions of "what this page may show". The view in the URL is checked with the sidebar's own predicate.
 
     Skipped rather than failed without node: this pins client behaviour, and a
     missing runtime is not a broken client.
@@ -592,24 +591,6 @@ def test_a_project_page_does_not_reopen_another_projects_conversation():
     script = Path(__file__).parent / "js" / "view_is_scoped_to_its_project.mjs"
     r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr[-800:]
-
-
-def test_the_client_reads_the_saved_view_from_one_place():
-    """`viewKey()` or nothing.
-
-    A bare `localStorage.getItem(LS_VIEW)` left anywhere reintroduces the
-    shared key for that one call site, and the symptom (another project's
-    transcript) looks nothing like the cause.
-    """
-    js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
-    body = re.sub(r"^\s*//.*$", "", js, flags=re.M)
-    for call in re.findall(r"localStorage\.\w+\(([^,)]+)", body):
-        name = call.strip()
-        if name.startswith("LS_VIEW"):
-            raise AssertionError(
-                f"app.js reaches localStorage with {name} instead of viewKey(); "
-                "the saved view is per project now"
-            )
 
 
 # ── per-profile MCP tool allowlist ──────────────────────────────────────────

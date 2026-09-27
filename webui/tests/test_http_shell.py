@@ -2,7 +2,7 @@
 
 A real server rather than a mocked handler, because the things that break here
 are protocol-level: chunked framing, whether a stream reaches the client before
-it ends, and whether a cookie is decided before the handler runs.
+it ends, and authentication at the request boundary.
 """
 
 from __future__ import annotations
@@ -25,13 +25,8 @@ import pytest  # noqa: E402
 from http_shell import App, Response, Streaming, json_response, serve  # noqa: E402
 
 
-def _client_ids_seen(app: App) -> list:
-    return app._seen  # type: ignore[attr-defined]
-
-
 def _app(tmp_static: Path | None = None, auth=("", "")) -> App:
     app = App(static_dir=tmp_static, auth_user=auth[0], auth_pass=auth[1])
-    app._seen = []  # type: ignore[attr-defined]
 
     @app.route("GET", "/healthz")
     def _health(req):
@@ -39,8 +34,7 @@ def _app(tmp_static: Path | None = None, auth=("", "")) -> App:
 
     @app.route("GET", "/api/who")
     def _who(req):
-        app._seen.append(req.client_id)  # type: ignore[attr-defined]
-        return json_response({"cid": req.client_id})
+        return json_response({"user_id": req.user_id})
 
     @app.route("POST", "/api/echo")
     def _echo(req):
@@ -75,38 +69,17 @@ def _get(url, headers=None):
 # ── identity ────────────────────────────────────────────────────────────────
 
 
-def test_a_browser_id_is_minted_on_whatever_was_asked_for_first(server):
-    """Minting only on `/` was not enough: anything reaching an API endpoint
-    without loading the page — a restored tab, a cleared cookie, curl — would
-    share the same empty id, and two of them read as one person."""
-    app = _app()
-    base = server(app)
+def test_requests_do_not_create_a_browser_cookie(server):
+    base = server(_app())
     r = _get(base + "/api/who")
-    cookie = r.headers.get("Set-Cookie") or ""
-    assert "deepwiki_cid=" in cookie and "HttpOnly" in cookie
-    assert json.loads(r.read())["cid"], "the handler must already know the id"
-
-
-def test_the_handler_sees_the_id_it_is_about_to_hand_out(server):
-    """Decided BEFORE the handler runs. Otherwise a caller's first request is
-    anonymous and its second is somebody else — two people, downstream."""
-    app = _app()
-    base = server(app)
-    r = _get(base + "/api/who")
-    handed_out = [
-        p.split("=", 1)[1]
-        for p in (r.headers.get("Set-Cookie") or "").split(";")
-        if p.strip().startswith("deepwiki_cid=")
-    ][0]
-    assert _client_ids_seen(app)[0] == handed_out
-
-
-def test_an_existing_cookie_is_kept_rather_than_reissued(server):
-    app = _app()
-    base = server(app)
-    r = _get(base + "/api/who", {"Cookie": "deepwiki_cid=abc123"})
     assert r.headers.get("Set-Cookie") is None
-    assert json.loads(r.read())["cid"] == "abc123"
+
+
+def test_retired_browser_cookie_is_expired(server):
+    base = server(_app())
+    r = _get(base + "/api/who", {"Cookie": "deepwiki_cid=abc123"})
+    assert "deepwiki_cid=; Max-Age=0" in r.headers.get("Set-Cookie", "")
+    assert json.loads(r.read()) == {"user_id": ""}
 
 
 # ── auth ────────────────────────────────────────────────────────────────────

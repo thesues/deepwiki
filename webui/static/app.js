@@ -34,7 +34,6 @@ const el = (tag, cls, text) => {
   return n;
 };
 
-const LS_VIEW = "hermes.view";      // PER PROJECT — see viewKey(); a reload reopens it
 const LS_OPEN = "hermes.open";      // which activity groups the reader had open
 const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessions start on
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
@@ -604,21 +603,15 @@ function clearPendingMedia(expected = null) {
 // nothing, and highlighted a row over an empty transcript. Reopening the
 // session repaints from the store and replays a live turn from the top, which
 // is the path a sidebar click already takes.
-// SCOPED TO THE PROJECT, because the page is. One key per browser meant the
-// conversation last read ANYWHERE came back on whichever project page opened
-// next: the header said 代码理解·autumn-rs, the sidebar (correctly filtered)
-// was empty, and the transcript was a 佛典 conversation. Reported from
-// production with a screenshot. The server no longer lets a send from that
-// screen re-pin the conversation, but the screen should not happen.
-function viewKey() { return S.profile ? `${LS_VIEW}.${S.profile}` : LS_VIEW; }
+// Each tab's URL owns its view; no shared browser cookie or server cursor.
 function rememberView(sid) {
-  try {
-    if (sid) localStorage.setItem(viewKey(), sid);
-    else localStorage.removeItem(viewKey());
-  } catch (_) { /* private mode: a reload opens on 新的对话 */ }
+  const url = new URL(location.href);
+  if (sid) url.searchParams.set("session", sid);
+  else url.searchParams.delete("session");
+  history.replaceState(null, "", url);
 }
 function recallView() {
-  try { return localStorage.getItem(viewKey()); } catch (_) { return null; }
+  return new URL(location.href).searchParams.get("session");
 }
 // Does this conversation belong on THIS page? The sidebar's filter, as a
 // predicate, so "what this page may show" has one definition instead of two —
@@ -1675,10 +1668,8 @@ function watchWhileOthersRun() {
 async function loadSessions() {
   let j;
   try { j = await (await authFetch("/api/sessions")).json(); } catch (_) { return; }
-  // `j.current` is deliberately NOT adopted. Setting S.sessionId here moved the
-  // sidebar highlight without painting that transcript, and aimed the next
-  // send at a conversation the reader could not see. Only openSession and a
-  // send decide what is on screen; boot() decides what a reload reopens.
+  // Only openSession and a send decide what is on screen; boot() restores
+  // the session from this tab's URL. Polling never changes the selected view.
   const was = S.streaming;
   S.streaming = j.streaming || {};
   // A turn can now finish in a conversation this page is not watching, and its
@@ -2088,7 +2079,7 @@ async function boot() {
     localStorage.removeItem("hermes.streamId"); localStorage.removeItem("hermes.lastSeq");
   } catch (_) {}
   const view = recallView();
-  // The saved id is already scoped per project. Start its read before the
+  // The URL names the requested view. Start its read before the
   // sidebar list crosses the WAN; after the list returns, belongsHere remains
   // authoritative and an invalid/deleted view simply discards this result.
   // This overlaps two ~300 ms network waits without issuing either request
@@ -2114,6 +2105,7 @@ async function boot() {
     // opening on a blank panel that reads as loading — and MEAN it, so the
     // first message starts a new conversation.
     S.pendingNew = true;
+    rememberView(null);
     showFresh();
   }
 

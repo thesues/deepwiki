@@ -237,7 +237,6 @@ class TurnManager:
         session_id: str,
         text: str,
         endpoint: Endpoint,
-        client_id: str = "",
         user_id: str = "",
         profile: AgentProfile | None = None,
     ) -> TurnStream:
@@ -283,7 +282,7 @@ class TurnManager:
             # This conversation is being tried again; whatever went wrong last
             # time is no longer what the reader needs to see.
             self._last_error.pop(session_id, None)
-            stream = TurnStream(secrets.token_hex(8), session_id, client_id, user_id=user_id)
+            stream = TurnStream(secrets.token_hex(8), session_id, user_id=user_id)
             # Which endpoint this turn is on, so the per-endpoint count above can
             # be taken without reaching back into the agent.
             stream.endpoint_key = endpoint.key  # type: ignore[attr-defined]

@@ -114,16 +114,10 @@ def build_app(
     profile_list = profiles if profiles is not None else build_profiles(None)
     default_profile = profile_list[0]
     by_profile = {p.key: p for p in profile_list}
-    # Which conversation each BROWSER last opened. Per browser, not global:
-    # shared, it leaked one person's position into another's page.
-    last_session: dict[str, str] = {}
     # Which PROJECT each conversation belongs to. Recorded at chat/start (the
     # one moment the profile is known for certain), read by the sidebar so a
     # project page lists only its own conversations.
     session_profiles = session_profiles or SessionProfiles()
-
-    def _browser_key(req: Request) -> str:
-        return f"{req.user_id}:{req.client_id}" if req.user_id else req.client_id
 
     def _owns_session(req: Request, session_id: str) -> bool:
         """Authorize persisted and not-yet-persisted conversations alike."""
@@ -170,7 +164,6 @@ def build_app(
     def _status(req: Request) -> Response:
         running = (manager.running(req.user_id) if req.user_id else manager.running())
         return json_response({
-            "session": last_session.get(_browser_key(req)),
             "mcp": mcp,
             "turns": [{"session": sid, "streamId": st} for sid, st in running.items()],
             "endpoints": [e.as_json() for e in endpoints],
@@ -219,11 +212,11 @@ def build_app(
 
         sid = re.sub(r"[^A-Za-z0-9_.-]", "-", req.query.get("sessionId", ""))[:128]
         # A new conversation has no Hermes row until its first turn.  Its
-        # upload prefix is therefore a durable draft id; the exact key is put
+        # upload uses a draft prefix and a random object id; the exact key is put
         # into that first user message and remains replayable after the real
         # session id is allocated.
         if not sid or sid in {".", ".."}:
-            sid = f"draft-{req.client_id}"
+            sid = "draft"
         supplied = Path(req.query.get("filename", "image")).name
         suffix = Path(supplied).suffix.lower()
         expected = mimetypes.guess_extension(content_type) or ".bin"
@@ -305,7 +298,7 @@ def build_app(
         try:
             stream = manager.start(
                 session_id=session_id, text=text, endpoint=endpoint,
-                client_id=req.client_id, user_id=req.user_id, profile=profile,
+                user_id=req.user_id, profile=profile,
             )
         except Refused as r:
             # 409 for a conversation already replying, 429 for a full endpoint —
@@ -315,7 +308,6 @@ def build_app(
                 r.as_json(),
                 status=409 if r.reason in {"taken", "user_busy"} else 429,
             )
-        last_session[_browser_key(req)] = session_id
         # The conversation is pinned to the project it was opened under — the
         # card the reader clicked. Every later turn may omit `profile`; the
         # pin is what the sidebar and the page title read.
@@ -494,7 +486,6 @@ def build_app(
             })
         return json_response({
             "sessions": rows,
-            "current": last_session.get(_browser_key(req)),
             "streaming": running,
             "profiles": [p.as_json() for p in profile_list],
             "defaultProfile": default_profile.key,
@@ -535,17 +526,6 @@ def build_app(
         if err and not manager.live_for(sid):
             events = list(events) + [{"kind": "error", "text": err.get("text", "")}]
         return json_response({"events": events})
-
-    @app.route("POST", "/api/session/open")
-    def _open(req: Request) -> Response:
-        """Remember where this browser is. Deliberately does nothing else —
-        opening a conversation must not disturb one that is replying."""
-        sid = (req.json().get("sessionId") or "").strip()
-        if sid and not _owns_session(req, sid):
-            return _not_found()
-        if sid:
-            last_session[_browser_key(req)] = sid
-        return json_response({"ok": True, "current": sid or None})
 
     @app.route("POST", "/api/session/delete")
     def _delete(req: Request) -> Response:
@@ -606,7 +586,6 @@ def build_app(
         # Idempotent, like the CLI it replaced: `hermes sessions delete` on an
         # already-gone id printed "not found" and exited 0. A second tab's
         # delete racing the first's must read as success — the goal is achieved.
-        last_session.pop(_browser_key(req), None)
         for i in ids:
             session_profiles.forget(i)   # the conversation is gone; its pins go too
         return json_response(

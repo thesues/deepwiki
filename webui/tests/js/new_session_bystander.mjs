@@ -146,7 +146,7 @@ function page() {
 }
 
 /* ---------- a fake server ---------- */
-function harness({ current = null, streaming = {}, store = new Map(), server: shared = null,
+function harness({ url = "http://x/", streaming = {}, store = new Map(), server: shared = null,
                    sessions = [], history = {}, sessionsGate = null } = {}) {
   const { document } = page();
   const calls = [];
@@ -154,7 +154,7 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
   // Pass `store` and `server` from a previous harness to model a RELOAD: same
   // localStorage, same server, fresh page.
   const server = shared || {
-    current, streaming: { ...streaming }, sessions: [...sessions], history: { ...history }, events: {},
+    streaming: { ...streaming }, sessions: [...sessions], history: { ...history }, events: {},
     endpoints: [
       { key: "dsv4", label: "DSV4", model: "dsv4", maxConcurrent: 1, running: 0 },
       { key: "mm2", label: "MM2", model: "mm2", maxConcurrent: 1, running: 0 },
@@ -170,14 +170,13 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     calls.push({ path: u.pathname, query: Object.fromEntries(u.searchParams), body });
     switch (u.pathname) {
       case "/api/sessions":
-        return (server.sessionsGate || Promise.resolve()).then(() => reply({ defaultProfile: "default", sessions: server.sessions, current: server.current, streaming: server.streaming, endpoints: server.endpoints }));
+        return (server.sessionsGate || Promise.resolve()).then(() => reply({ defaultProfile: "default", sessions: server.sessions, streaming: server.streaming, endpoints: server.endpoints }));
       case "/api/status":
         return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4", profiles: [{ key: "default", label: "默认" }], defaultProfile: "default" });
       case "/api/chat/start": return (server.startGate || Promise.resolve()).then(() => {
         const sid = body.new || !body.sessionId ? `new-${server.nextStream}` : body.sessionId;
         const stream = `s${server.nextStream++}`;
         server.streaming[sid] = stream;
-        server.current = sid;
         if (!server.sessions.find((r) => r.id === sid)) server.sessions.unshift({ id: sid, title: body.text, messageCount: 0 });
         return reply({ streamId: stream, sessionId: sid, endpoint: body.endpoint });
       });
@@ -203,6 +202,7 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     }
     close() { this.closed = true; }
   }
+  const location = new URL(url);
   const ctx = vm.createContext({
     document, fetch, EventSource, console, URL, JSON, Math, Date, Promise, Map, Set, Object, Array, String, Number,
     localStorage: {
@@ -218,7 +218,8 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
     DOMPurify: { sanitize: (s) => s, addHook: () => {} },
     // app.js reads the project key off the URL (/buda/ → buda); the test page
     // is served at /, so S.profile is "" — same as the home-page edge case.
-    location: { pathname: "/", replace: (u) => { calls.push({ path: u, body: null }); } },
+    location,
+    history: { replaceState: (_state, _title, next) => { location.href = String(next); } },
   });
   vm.runInContext(SRC, ctx);
   const $ = (s) => document.querySelector(s);
@@ -239,7 +240,7 @@ function harness({ current = null, streaming = {}, store = new Map(), server: sh
   };
   const type = (text) => { $("#input").value = text; };
   const pick = (key) => { $("#endpoint").value = key; $("#endpoint").dispatch("change", { target: $("#endpoint") }); };
-  return { ctx, $, S, calls, sources, server, store, push, finish, type, pick, run: (code) => vm.runInContext(code, ctx) };
+  return { ctx, $, S, calls, sources, server, store, location, push, finish, type, pick, run: (code) => vm.runInContext(code, ctx) };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 const posts = (h, p) => h.calls.filter((c) => c.path === p);
@@ -248,9 +249,9 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
 {
   let releaseSessions;
   const sessionsGate = new Promise((resolve) => { releaseSessions = resolve; });
-  const store = new Map([["hermes.view", "old"]]);
+  const store = new Map();
   const h = harness({
-    store,
+    store, url: "http://x/?session=old",
     sessionsGate,
     sessions: [{ id: "old", title: "old question", messageCount: 2 }],
     history: { old: [
@@ -348,9 +349,8 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
 
 /* ---------- 4. a page that opens on 新的对话 sends a NEW conversation ---------- */
 {
-  // The server remembers this browser's last session. The page shows the fresh
-  // hero, so what is typed must not be appended to that old conversation.
-  const h = harness({ current: "old-session" });
+  // A URL with no session opens a fresh conversation.
+  const h = harness();
   await settle();
   assert.ok(h.$(".chat").classList.contains("fresh"));
   h.type("hi"); h.$("#send").click(); await settle();
@@ -366,7 +366,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   // an EMPTY transcript. A reload must repaint what the reader was looking at
   // from the store, every time, and follow a turn that is still running.
   const text = (h) => h.$("#messages").textContent;
-  const reload = async (prev) => { const h = harness({ store: prev.store, server: prev.server }); await settle(); await settle(); return h; };
+  const reload = async (prev) => { const h = harness({ store: prev.store, server: prev.server, url: prev.location.href }); await settle(); await settle(); return h; };
 
   let h = harness();
   await settle();
@@ -468,7 +468,7 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   const shown = h.$("#messages").textContent;
   assert.ok(shown.includes("mini answer") && !shown.includes("dsv4-token-2"),
     `another session's tokens were drawn into the one on screen: ${JSON.stringify(shown)}`);
-  assert.strictEqual(h.store.get("hermes.view"), "mini");
+  assert.strictEqual(h.location.searchParams.get("session"), "mini");
   assert.ok(!h.S().owns, "the idle view offers 停止 for the other session's turn");
 
   // Back to dsv4: its live turn is replayed, and a real rotation on ITS
@@ -546,8 +546,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
 
 // #6 a click during boot is not overridden by boot reopening the saved view
 {
-  const store = new Map([["hermes.view", "saved"]]);
-  const h = harness({ store });
+  const h = harness({ url: "http://x/?session=saved" });
   withOld(h);
   h.server.sessions.push({ id: "saved", title: "saved question", messageCount: 2 });
   h.server.history.saved = [{ kind: "history_user", text: "saved question" }];
@@ -580,7 +579,7 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   rowOf(h, "old question").onclick(); await settle(); await settle();
   release(); await settle(); await settle();
   assert.strictEqual(h.S().sessionId, "old", "the send's response took over the view the reader moved to");
-  assert.strictEqual(h.store.get("hermes.view"), "old");
+  assert.strictEqual(h.location.searchParams.get("session"), "old");
   const [start] = posts(h, "/api/chat/start");
   const stream = `s1`;
   h.push(stream, { kind: "delta", text: "reply-to-fresh", seq: 2, session: start && "new-1" });
@@ -639,3 +638,25 @@ const count = (hay, needle) => hay.split(needle).length - 1;
 }
 
 console.log("ok - a new session leaves the running one alone");
+
+// Tabs share cookies/localStorage, but keep independent URLs across reloads.
+{
+  const server = { streaming: {}, sessions: [
+    { id: "a", messageCount: 2 }, { id: "b", messageCount: 2 },
+  ], history: {
+    a: [{ kind: "history_user", text: "question-a" }],
+    b: [{ kind: "history_user", text: "question-b" }],
+  }, events: {}, endpoints: [], nextStream: 1 };
+  const store = new Map();
+  const a = harness({ server, store, url: "http://x/?session=a" });
+  const b = harness({ server, store, url: "http://x/?session=b" });
+  await settle(); await settle();
+  assert.equal(a.S().sessionId, "a");
+  assert.equal(b.S().sessionId, "b");
+  a.run("newSession()");
+  assert.equal(a.location.searchParams.get("session"), null);
+  const reloaded = harness({ server, store, url: b.location.href });
+  await settle(); await settle();
+  assert.equal(reloaded.S().sessionId, "b");
+  assert.ok(reloaded.$("#messages").textContent.includes("question-b"));
+}

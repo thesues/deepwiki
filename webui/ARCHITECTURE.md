@@ -209,11 +209,10 @@ Three parts, and each exists because of a specific failure:
   opening a conversation schedules the introduction instead and the send finds
   it done. The debounce (`PREFETCH_DEBOUNCE_SEC`) is what keeps that from
   spending 1.3 s on every sidebar row someone scrolled past.
-- **A browser id, minted by the server.** Not authentication — everyone shares
-  one credential and is trusted. It exists so two people on one deployment can
-  be told apart where that matters, and only there: whose double-click is whose,
-  whose position in the sidebar, whose warm-up. Everything else stays shared,
-  because it is one deployment and one session list.
+- **Per-user access, with the current view in the URL.** JWT authentication
+  supplies `user_id`; session and stream access is checked against that owner.
+  Each tab keeps its current conversation in `?session=...`, without a browser
+  ID cookie or a server-side view cursor.
 - **Stop escalates conditionally.** `session/cancel` cannot interrupt a running
   tool, so Stop escalates to restarting the process — which kills every session,
   not just the wedged one. With another turn in flight the endpoint reports the
@@ -257,8 +256,8 @@ forgotten. Severity is impact-if-hit, not likelihood.
 | W9 | low | The agent carries tools this UI cannot use (all `browser_*`, `delegate_task`). `acp_adapter/session.py` builds every session with a hardcoded `_expand_acp_enabled_toolsets(["hermes-acp"], ...)`; neither `agent.disabled_toolsets` nor `agent.enabled_toolsets` in config.yaml reaches it, and no env overrides it. Both were tried against 0.17. | Open — needs a patch to hermes; `HERMES_NO_DEP_INSTALL=1` at least stops the browser availability check from downloading Chromium |
 | W10 | med | An MCP server must be declared in BOTH config.yaml and the ACP `session/new` parameter. The file decides the `mcp-<name>` toolset name; the parameter makes the connection. Either alone yields an agent with no such tool — and `hermes mcp list` shows "enabled" in both cases. | Accepted — both are written, and `/api/status` reports the URL |
 | W11 | med | A Stop that the agent will not honour cannot escalate while another session is streaming: the escalation is a process restart, and the process carries every session. The endpoint answers `409 {how: "unyielding"}` and the turn keeps running until its tool returns. | Accepted — the alternative kills a bystander's reply to serve the person pressing Stop |
-| W13 | med | ~~Server state that belonged to one person was shared by everyone.~~ | **FIXED** — three separate leaks, one missing concept. A second person sending into a conversation already replying hit the branch that makes a double-click harmless, and their message was discarded WITHOUT `text` ever being read; `/api/approval/pending` was global, so a bystander saw and could answer a permission prompt from a conversation they had never opened; `last_session` and `viewing` were single-valued, so a fresh page adopted someone else's position and two readers cancelled each other's warm-up. A server-minted browser cookie settles the first and third; approvals are scoped to the SESSION instead, because whoever is reading a shared conversation should be able to answer it. |
-| W14 | low | The browser id is not identity. It is forgeable, everyone shares one HTTP credential, and by design anyone can read any stream, cancel any turn, and delete any session — a shared conversation must stay openable by whoever is looking at it. What is isolated is a person's POSITION, not their permissions. | Accepted — real per-user isolation needs real auth, which this deployment does not have |
+| W13 | med | Browser position and permissions must not be shared across users. | JWT `user_id` enforces ownership. Each tab keeps its current conversation in the URL; there is no browser ID or server-side view cursor. Approvals are scoped to the session and checked against its owner. |
+| W14 | low | Browser IDs cannot authenticate users or authorize session access. | Resolved — JWT authentication and per-user ownership checks replace the shared trust model; browser IDs have been removed. |
 | W12 | low | `MAX_CONCURRENT_TURNS` defaults to 4 because that is hermes' `ThreadPoolExecutor(max_workers=4)`. The limit BELOW it is the model: `freetoken-l3` runs `--max-running-requests 1`, so a second concurrent turn queues at the model rather than replying in parallel. Raising one without the other only moves the queue. | Accepted — queuing at the model beats being refused at the door |
 
 ## Inherited lessons (from the lerobot console, kept because they cost real time)

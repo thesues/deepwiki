@@ -52,8 +52,8 @@ Basic and JWT must not be configured simultaneously.
 
 `http_shell.py` attaches the returned `Principal` to the request. `app_routes.py`
 and `turns.py` implement DeepWiki-specific session, stream, approval and resource
-ownership. `deepwiki_cid` is only a browser cursor; cursors are keyed by user and
-browser. Agent creation passes `user_id=sub`. Hermes 0.17 does not forward this
+ownership. The current conversation is stored in each tab's `?session=` URL,
+with no browser ID or server-side current-conversation map. Agent creation passes `user_id=sub`. Hermes 0.17 does not forward this
 argument to its lazy session writer or compression writer, so `UserSessionDB`
 wraps those writes to stamp the existing `sessions.user_id` column. No tenant
 side database is created. Pending turns hold their owner before the first write.

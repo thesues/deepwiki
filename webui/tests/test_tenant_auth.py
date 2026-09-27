@@ -69,7 +69,6 @@ def tenants(authority, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("path,body", [
     ("/api/session/history?id=s-b", None),
-    ("/api/session/open", {"sessionId": "s-b"}),
     ("/api/session/delete", {"sessionId": "s-b"}),
     ("/api/chat/start", {"sessionId": "s-b", "text": "hello"}),
     ("/api/chat/stream?stream_id=stream-s-b", None),
