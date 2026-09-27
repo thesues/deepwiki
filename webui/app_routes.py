@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -48,6 +49,22 @@ def _put_media_object(endpoint: str, key: str, body: bytes, content_type: str) -
     with urllib.request.urlopen(upstream, timeout=120) as response:
         if response.status // 100 != 2:
             raise RuntimeError(f"unexpected S3 status {response.status}")
+
+
+def _get_media_object(endpoint: str, key: str) -> tuple[bytes, str]:
+    """Read one browser-uploaded image without exposing the S3 endpoint."""
+    url = endpoint.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
+    upstream = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(upstream, timeout=120) as response:
+        if response.status // 100 != 2:
+            raise RuntimeError(f"unexpected S3 status {response.status}")
+        body = response.read((8 << 20) + 1)
+        if len(body) > (8 << 20):
+            raise RuntimeError("stored image exceeds 8 MiB")
+        content_type = response.headers.get_content_type()
+        if content_type not in {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}:
+            content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+    return body, content_type
 
 
 def _lineage_ids(db, sid: str) -> list[str]:
@@ -156,6 +173,33 @@ def build_app(
             "profiles": [p.as_json() for p in profile_list],
             "defaultProfile": default_profile.key,
         })
+
+    @app.route("GET", "/api/media/input")
+    def _media_input_get(req: Request) -> Response:
+        """Serve a persisted input image through the authenticated origin."""
+        key = req.query.get("objectKey", "")
+        if not re.fullmatch(
+            r"input/webui/[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
+            key,
+            re.IGNORECASE,
+        ):
+            return json_response({"error": "invalid image key"}, status=400)
+        endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
+        try:
+            body, content_type = _get_media_object(endpoint, key)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return json_response({"error": "image not found"}, status=404)
+            log.warning("media read from Autumn S3 failed: %s", exc)
+            return json_response({"error": "media storage unavailable"}, status=503)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("media read from Autumn S3 failed: %s", exc)
+            return json_response({"error": "media storage unavailable"}, status=503)
+        return Response(200, [
+            ("Content-Type", content_type),
+            ("Cache-Control", "private, max-age=31536000, immutable"),
+            ("X-Content-Type-Options", "nosniff"),
+        ], body)
 
     @app.route("POST", "/api/media/input")
     def _media_input(req: Request) -> Response:

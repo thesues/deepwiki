@@ -118,6 +118,7 @@ const artifactHref = (p) => p
   .replace(/^\/opt\/data/, "");
 const artifactLabel = (p) => artifactHref(p).split("/").pop();
 const MEDIA_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v)$/i;
+const INPUT_IMAGE_RE = /\[输入图片 object_key:\s*(input\/webui\/[A-Za-z0-9_.-]+\/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif))\]/i;
 const artifactMediaHref = (u) => {
   const m = /^(?:https?:\/\/[^/]+)?((?:\/opt\/data)?\/(?:artifacts|static)\/[^\s?#]+\.(?:html|svg|png|jpe?g|gif|webp|mp4|webm|mov|m4v))$/i.exec(u || "");
   return m ? m[1] : null;
@@ -167,6 +168,47 @@ const artifactNode = (path) => {
   a.rel = "noopener noreferrer";
   a.appendChild(img);
   return a;
+};
+const inputImageNode = (key) => {
+  const href = `/api/media/input?objectKey=${encodeURIComponent(key)}`;
+  const img = document.createElement("img");
+  img.setAttribute("data-artifact-src", href);
+  img.alt = "输入图片";
+  img.loading = "lazy";
+  img.className = "input-history-image";
+  const a = document.createElement("a");
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.className = "input-history-link";
+  a.appendChild(img);
+  return a;
+};
+const linkifyInputImages = (root) => {
+  const hits = [];
+  const collect = (node) => {
+    for (const child of [...(node.childNodes || [])]) {
+      if (child.nodeType === 3) {
+        if (INPUT_IMAGE_RE.test(child.nodeValue || "")) hits.push(child);
+      } else if (child.nodeType === 1 && !/^(A|PRE|CODE|IMG|VIDEO)$/.test(child.tagName)) {
+        collect(child);
+      }
+    }
+  };
+  collect(root);
+  for (const node of hits) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    const re = new RegExp(INPUT_IMAGE_RE.source, "gi");
+    for (let match = re.exec(node.nodeValue); match; match = re.exec(node.nodeValue)) {
+      frag.append(node.nodeValue.slice(last, match.index));
+      frag.append(inputImageNode(match[1]));
+      last = match.index + match[0].length;
+    }
+    frag.append(node.nodeValue.slice(last));
+    node.replaceWith(frag);
+  }
+  return root;
 };
 const loadArtifactMedia = (media) => {
   const src = media.getAttribute("data-artifact-src");
@@ -283,6 +325,7 @@ const renderMD = (src) => {
       media.removeAttribute("src");
     }
   }
+  linkifyInputImages(box);
   linkifyArtifacts(box);
   return box.innerHTML;
 };
@@ -503,7 +546,33 @@ const S = {
   stopping: false,
   startedAt: 0,
   timer: null,
+  pendingMedia: null,    // { objectKey, previewUrl, state, fileName }
+  mediaUploadEpoch: 0,   // removing/replacing a file invalidates an upload reply
 };
+
+function paintPendingMedia() {
+  const tray = $("#attachment-tray");
+  if (!tray) return;
+  const media = S.pendingMedia;
+  tray.hidden = !media;
+  if (!media) return;
+  $("#attachment-thumb").src = media.previewUrl;
+  $("#attachment-thumb").alt = media.fileName || "待发送图片";
+  $("#attachment-state").textContent = media.state === "uploading"
+    ? "上传中…"
+    : media.state === "error" ? "上传失败" : "";
+}
+
+function clearPendingMedia(expected = null) {
+  if (expected && S.pendingMedia !== expected) return;
+  S.mediaUploadEpoch++;
+  const media = S.pendingMedia;
+  S.pendingMedia = null;
+  if (media?.previewUrl) URL.revokeObjectURL(media.previewUrl);
+  const thumb = $("#attachment-thumb");
+  if (thumb) thumb.removeAttribute("src");
+  paintPendingMedia();
+}
 
 /* ---------- just enough state to recover ---------- */
 // A reload remembers WHICH CONVERSATION was on screen, not a stream cursor.
@@ -736,7 +805,11 @@ function addMsg(role, text) {
   clearFresh();
   const wrap = el("div", `msg ${role}`);
   const body = el("div", "bubble");
-  if (text) body.textContent = text;
+  if (text && role === "user") {
+    wrap.dataset.messageText = text;
+    body.classList.add("md");
+    renderInto(body, text);
+  } else if (text) body.textContent = text;
   wrap.appendChild(body);
   $("#messages").appendChild(wrap);
   scroll();
@@ -757,7 +830,8 @@ function addUserMsg(text) {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
     if (row.id === "pending") continue;
-    if (row.classList.contains("user") && row.textContent === text) return null;
+    if (row.classList.contains("user") &&
+        (row.dataset.messageText || row.textContent) === text) return null;
     break;
   }
   return addMsg("user", text);
@@ -1832,16 +1906,21 @@ async function newSession() {
 /* ---------- sending ---------- */
 async function send() {
   const input = $("#input");
-  const text = input.value.trim();
+  const draftText = input.value.trim();
+  const media = S.pendingMedia;
+  if (media?.state === "uploading") { status("图片仍在上传，请稍候"); return; }
+  if (media?.state === "error") { status("图片上传失败，请移除后重试"); return; }
+  const marker = media?.objectKey ? `[输入图片 object_key: ${media.objectKey}]` : "";
+  const text = [draftText, marker].filter(Boolean).join("\n");
   if (!text) return;
   // A leading slash is a COMMAND, not a prompt — see runSlashCommand. Handled
   // entirely here: nothing is sent, the box clears, and the composer state is
   // untouched. `S.owns` is still honoured: /clear mid-reply would walk away
   // from a turn that keeps running, and the CLI refuses the same way.
-  if (text.startsWith("/") && text.length > 1) {
+  if (draftText.startsWith("/") && draftText.length > 1) {
     if (S.owns) { status("⚠ 先等当前回复结束（或停止它）再执行命令"); return; }
     input.value = ""; input.style.height = "auto";
-    runSlashCommand(text);
+    runSlashCommand(draftText);
     return;
   }
   if (S.awaitingPerm) {
@@ -1883,7 +1962,12 @@ async function send() {
         profile: S.profile || undefined,
       }),
     })).json();
-  } catch (_) { status("发送失败"); return; }
+  } catch (_) {
+    if (!input.value) input.value = draftText;
+    dropLastUser();
+    status("发送失败");
+    return;
+  }
   if (gen !== S.viewGen) {
     // The reader moved — clicked a row or 新会话 — while the request was out.
     // Adopting the response now would stamp this conversation onto THAT view:
@@ -1892,9 +1976,10 @@ async function send() {
     // sidebar marks it live and opening it replays the reply from the top.
     S.skipUserEcho = false;
     if (j.error) {
-      if ((j.busy || j.taken) && !input.value) input.value = text;   // never eat what was typed
+      if ((j.busy || j.taken) && !input.value) input.value = draftText;   // never eat what was typed
       status(j.error);
     } else if (j.sessionId && j.streamId) {
+      clearPendingMedia(media);
       S.streaming[j.sessionId] = j.streamId;
       if (j.endpoint) { S.sessionEp[j.sessionId] = j.endpoint; saveSessionEp(); }
     }
@@ -1906,12 +1991,13 @@ async function send() {
     // `busy` is the server at capacity (the composer should already have been
     // blocked, so this is the race backstop), `taken` is someone else already
     // replying in this conversation.
-    if (j.busy || j.taken) { input.value = text; dropLastUser(); }
+    if (j.busy || j.taken) { input.value = draftText; dropLastUser(); }
     status(j.error);
     if (j.taken) loadSessions();   // the sidebar did not know it was streaming
     return;
   }
   if (!j.streamId) { status("没有可用的会话流"); return; }
+  clearPendingMedia(media);
   S.pendingNew = false;
   // The server echoes the endpoint it actually used. A saved key the server
   // no longer advertises falls back to ITS default silently — adopting the
@@ -2103,14 +2189,26 @@ async function boot() {
   const mediaInput = $("#media-input");
   const attachButton = $("#attach");
   if (mediaInput && attachButton) attachButton.onclick = () => mediaInput.click();
+  const attachmentRemove = $("#attachment-remove");
+  if (attachmentRemove) attachmentRemove.onclick = () => clearPendingMedia();
   if (mediaInput && attachButton) mediaInput.onchange = async () => {
     const file = mediaInput.files && mediaInput.files[0];
     if (!file) return;
     if (file.size <= 0 || file.size > 8 * 1024 * 1024) {
       status("图片必须小于 8 MiB"); mediaInput.value = ""; return;
     }
+    clearPendingMedia();
+    const media = {
+      objectKey: null,
+      previewUrl: URL.createObjectURL(file),
+      state: "uploading",
+      fileName: file.name,
+    };
+    const epoch = ++S.mediaUploadEpoch;
+    S.pendingMedia = media;
+    paintPendingMedia();
     const attach = attachButton;
-    attach.disabled = true; attach.textContent = "上传中…";
+    attach.disabled = true;
     const q = new URLSearchParams({
       filename: file.name,
       sessionId: S.sessionId || "",
@@ -2121,14 +2219,18 @@ async function boot() {
       });
       const result = await response.json();
       if (!response.ok || !result.objectKey) throw new Error(result.error || "上传失败");
-      const marker = `[输入图片 object_key: ${result.objectKey}]`;
-      input.value = input.value ? `${input.value}\n${marker}` : marker;
-      autosize();
+      if (epoch !== S.mediaUploadEpoch || S.pendingMedia !== media) return;
+      media.objectKey = result.objectKey;
+      media.state = "ready";
+      paintPendingMedia();
       status(`图片已持久化 · ${file.name}`);
     } catch (err) {
+      if (epoch !== S.mediaUploadEpoch || S.pendingMedia !== media) return;
+      media.state = "error";
+      paintPendingMedia();
       status(`图片上传失败：${err.message || err}`);
     } finally {
-      attach.disabled = false; attach.textContent = "图片"; mediaInput.value = "";
+      attach.disabled = false; mediaInput.value = "";
     }
   };
   input.addEventListener("keydown", (e) => {

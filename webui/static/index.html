@@ -65,17 +65,27 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
            very work it is blocking. -->
       <div id="approval-dock" hidden></div>
       <form id="composer">
-        <!-- The textarea + send sit in one row; the pickers live in a
-             SMALL-FONT ROW BELOW the box (deepwiki/Devin style): the project
-             on the left, the model that answers on the right. Both are
-             properties of THIS conversation, and both are always a select —
-             a single entry is information, not noise. -->
-        <div class="compose-row">
+        <!-- An attachment belongs to the draft, so it lives INSIDE the same
+             box as the text instead of becoming an object-key-shaped sentence.
+             The controls sit below it, like the message composers people
+             already know from multimodal chat UIs. -->
+        <div class="compose-box">
+          <div id="attachment-tray" hidden>
+            <div class="attachment-card">
+              <img id="attachment-thumb" alt="待发送图片">
+              <button id="attachment-remove" type="button" title="移除图片" aria-label="移除图片">×</button>
+              <span id="attachment-state" aria-live="polite"></span>
+            </div>
+          </div>
           <textarea id="input" rows="1" placeholder="发消息…"></textarea>
-          <input id="media-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
-          <button id="attach" type="button" class="btn ghost" title="上传图片到 Autumn S3">图片</button>
-          <button id="send" type="submit" class="btn">发送</button>
+          <div class="compose-actions">
+            <input id="media-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
+            <button id="attach" type="button" class="compose-icon" title="添加图片" aria-label="添加图片">＋</button>
+            <span class="compose-spacer"></span>
+            <button id="send" type="submit" class="btn">发送</button>
+          </div>
         </div>
+        <!-- Pickers remain a small-font row below the actual message box. -->
         <div class="picker-row">
           <span class="key-hint">Enter 发送 · Shift+Enter 换行</span>
           <span id="model-badge" hidden></span>
