@@ -2207,6 +2207,12 @@ async function boot() {
   if (mediaInput && attachButton) mediaInput.onchange = async () => {
     const file = mediaInput.files && mediaInput.files[0];
     if (!file) return;
+    if (/\.(?:heic|heif)$/i.test(file.name || "") ||
+        /^(?:image\/heic|image\/heif)(?:-sequence)?$/i.test(file.type || "")) {
+      status("This browser doesn't support processing .heic image files. For best results, please convert the .heic image to a .jpeg and try again.");
+      mediaInput.value = "";
+      return;
+    }
     if (file.size <= 0 || file.size > 8 * 1024 * 1024) {
       status("图片必须小于 8 MiB"); mediaInput.value = ""; return;
     }

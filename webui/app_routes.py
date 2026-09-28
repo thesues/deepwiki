@@ -207,7 +207,7 @@ def build_app(
         if declared <= 0 or declared != len(req.body) or declared > (8 << 20):
             return json_response({"error": "image must be 1..8 MiB"}, status=413)
         content_type = (req.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if content_type not in {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}:
+        if content_type not in {"image/png", "image/jpeg", "image/webp"}:
             return json_response({"error": "unsupported image type"}, status=415)
 
         sid = re.sub(r"[^A-Za-z0-9_.-]", "-", req.query.get("sessionId", ""))[:128]
@@ -220,7 +220,7 @@ def build_app(
         supplied = Path(req.query.get("filename", "image")).name
         suffix = Path(supplied).suffix.lower()
         expected = mimetypes.guess_extension(content_type) or ".bin"
-        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}:
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
             suffix = expected
         owner_prefix = f"{req.user_id}/" if req.user_id else ""
         key = f"input/webui/{owner_prefix}{sid}/{secrets.token_hex(16)}{suffix}"

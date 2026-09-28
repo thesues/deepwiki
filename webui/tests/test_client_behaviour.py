@@ -100,6 +100,14 @@ def test_artifact_media_loads_only_after_the_final_render():
         "activating a poster must not trigger an MP4 metadata request"
     )
 
+
+def test_heic_upload_is_refused_with_conversion_guidance():
+    src = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+    upload = src[src.index("mediaInput.onchange = async"):src.index('input.addEventListener("keydown"')]
+    assert "heic|heif" in upload
+    assert "This browser doesn't support processing .heic image files." in upload
+    assert upload.index("doesn't support processing .heic") < upload.index("URL.createObjectURL(file)")
+
 def test_the_activity_row_sits_above_the_answer():
     """Reported from the UI: 7 tool rows UNDER a finished answer.
 

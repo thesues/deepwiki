@@ -170,7 +170,7 @@ def test_image_upload_persists_bytes_and_returns_only_an_object_key(app_server, 
     assert "endpoint" not in result and "credential" not in result
 
 
-@pytest.mark.parametrize("content_type", ["text/plain", "image/gif"])
+@pytest.mark.parametrize("content_type", ["text/plain", "image/gif", "image/heic", "image/heif"])
 def test_image_upload_rejects_unsupported_types_before_s3(app_server, monkeypatch, content_type):
     base, _, _ = app_server
     called = []
