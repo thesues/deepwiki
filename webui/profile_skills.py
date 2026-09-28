@@ -14,6 +14,7 @@ SKILL_OWNER = {
     "buddhist-canon-retrieval": "buda",
     "archify": "code-autumn-rs",
     "annotate-screenshot": "mayi",
+    "pdf-figure-reading": "mayi",
 }
 
 _profile: contextvars.ContextVar[str | None] = contextvars.ContextVar(

@@ -20,8 +20,9 @@ def test_skill_list_and_view_follow_the_active_profile(monkeypatch):
                 {"name": "buddhist-canon-retrieval", "category": "research"},
                 {"name": "archify", "category": "diagram"},
                 {"name": "annotate-screenshot", "category": "mayi"},
+                {"name": "pdf-figure-reading", "category": "mayi"},
             ],
-            "count": 3, "categories": ["diagram", "mayi", "research"],
+            "count": 4, "categories": ["diagram", "mayi", "research"],
         })),
         "skill_view": types.SimpleNamespace(handler=lambda args, **kw: json.dumps({
             "success": True, "name": args["name"],
@@ -35,17 +36,17 @@ def test_skill_list_and_view_follow_the_active_profile(monkeypatch):
     scoped.install()
     scoped.install()  # reinstalling on another agent must not stack wrappers
     for profile, wanted in (
-        ("buda", "buddhist-canon-retrieval"),
-        ("code-autumn-rs", "archify"),
-        ("mayi", "annotate-screenshot"),
+        ("buda", ["buddhist-canon-retrieval"]),
+        ("code-autumn-rs", ["archify"]),
+        ("mayi", ["annotate-screenshot", "pdf-figure-reading"]),
     ):
         token = scoped.enter(profile)
         try:
             listed = json.loads(entries["skills_list"].handler({}))
-            assert [s["name"] for s in listed["skills"]] == [wanted]
-            assert listed["count"] == 1
-            assert json.loads(entries["skill_view"].handler({"name": wanted}))["success"]
-            other = next(name for name in scoped.SKILL_OWNER if name != wanted)
+            assert [s["name"] for s in listed["skills"]] == wanted
+            assert listed["count"] == len(wanted)
+            assert json.loads(entries["skill_view"].handler({"name": wanted[0]}))["success"]
+            other = next(name for name in scoped.SKILL_OWNER if name not in wanted)
             assert not json.loads(entries["skill_view"].handler({"name": other}))["success"]
         finally:
             scoped.leave(token)
