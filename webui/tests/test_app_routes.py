@@ -316,6 +316,32 @@ def test_an_unknown_stream_is_404_not_an_empty_stream(app_server):
     assert e.value.code == 404
 
 
+def test_session_stream_replays_the_current_live_turn(app_server):
+    """A reconnect after the broadcast still discovers the server-side turn."""
+    base, mgr, state = app_server
+    state["gate"] = threading.Event()
+    _, body = _post(base, "/api/chat/start", {"text": "hi"})
+    response = urllib.request.urlopen(
+        base + f"/api/session/stream?session_id={body['sessionId']}", timeout=5,
+    )
+    event = None
+    for raw in response:
+        line = raw.decode().strip()
+        if line.startswith("data: "):
+            candidate = json.loads(line[6:])
+            if candidate.get("streamId"):
+                event = candidate
+                break
+    response.close()
+    assert event == {
+        "sessionId": body["sessionId"],
+        "streamId": body["streamId"],
+        "recovered": True,
+    }
+    state["gate"].set()
+    _drain(mgr.stream(body["streamId"]))
+
+
 def test_chat_status_reports_a_finished_turn(app_server):
     base, mgr, _ = app_server
     _, body = _post(base, "/api/chat/start", {"text": "hi"})

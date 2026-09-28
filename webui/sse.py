@@ -26,6 +26,7 @@ to be rediscovered:
 from __future__ import annotations
 
 import json
+import queue
 
 SSE_HEARTBEAT_SEC = 15.0
 
@@ -110,3 +111,39 @@ def write_stream(stream, write, after: int = 0, last_event_id: str | None = None
             # prefill can say nothing for minutes and a proxy will drop a
             # connection that says nothing at all.
             write(b": keepalive\n\n")
+
+
+def named_frame(event: str, data: dict) -> bytes:
+    """One named SSE event for the persistent session control channel."""
+    return (
+        b"event: " + event.encode("utf-8")
+        + b"\ndata: " + json.dumps(data, ensure_ascii=False).encode("utf-8")
+        + b"\n\n"
+    )
+
+
+def write_session_stream(
+    subscriber,
+    write,
+    *,
+    initial: dict | None = None,
+    heartbeat_s: float = SSE_HEARTBEAT_SEC,
+) -> None:
+    """Write a long-lived session-scoped control stream.
+
+    Unlike a turn stream this channel has no terminal frame: it survives the
+    end of one turn so it can announce a later server-created continuation.
+    ``initial`` is the atomic on-subscribe live snapshot and closes the only
+    race where a broadcast could precede EventSource registration.
+    """
+    write(f"retry: {RETRY_MS}\n\n".encode())
+    write(named_frame("initial", {}))
+    if initial is not None:
+        write(named_frame("server_turn_started", initial))
+    while True:
+        try:
+            event, data = subscriber.get(timeout=heartbeat_s)
+        except queue.Empty:
+            write(b": keepalive\n\n")
+            continue
+        write(named_frame(str(event), data if isinstance(data, dict) else {}))

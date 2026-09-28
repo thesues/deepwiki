@@ -36,7 +36,7 @@ from media_input import owned_key as _owned_media_key
 from media_input import put_object as _put_media_object
 from profiles import AgentProfile, allowed_endpoint, build_profiles
 from session_profiles import SessionProfiles
-from sse import SSE_HEADERS, write_stream
+from sse import SSE_HEADERS, write_session_stream, write_stream
 from turns import Refused, TurnManager
 
 log = logging.getLogger("deepwiki.routes")
@@ -338,6 +338,30 @@ def build_app(
             lambda write: write_stream(stream, write, after=after, last_event_id=last_id),
         )
 
+    @app.route("GET", "/api/session/stream")
+    def _session_stream(req: Request) -> Response:
+        """Persistent control channel for one conversation.
+
+        A turn-scoped stream closes at ``end``.  notify_on_complete starts its
+        successor later and server-side, so the browser needs this independent
+        channel to learn the successor's stream id without waiting for the
+        sidebar poll.  Ownership is checked before allocating a subscriber.
+        """
+        session_id = (req.query.get("session_id") or "").strip()
+        if not session_id:
+            return json_response({"error": "session_id required"}, status=400)
+        if not _owns_session(req, session_id):
+            return _not_found()
+        subscriber, initial = manager.subscribe_session(session_id)
+
+        def pump(write) -> None:
+            try:
+                write_session_stream(subscriber, write, initial=initial)
+            finally:
+                manager.unsubscribe_session(session_id, subscriber)
+
+        return Streaming(list(SSE_HEADERS), pump)
+
     @app.route("GET", "/api/chat/status")
     def _chat_status(req: Request) -> Response:
         stream = manager.stream(req.query.get("stream_id", ""))
@@ -575,13 +599,20 @@ def build_app(
         if req.user_id and any(not _owns_session(req, item) for item in ids):
             return _not_found()
         # Deleting a conversation that is mid-reply would leave the turn
-        # writing into a store row that no longer exists. `running()` is
-        # session_id -> stream_id for exactly the turns still going, and the
-        # live turn may be writing into ANY link of the chain — compression
-        # rotates the id underneath it, so the running id is often not the one
-        # the sidebar showed and the user clicked.
+        # writing into a store row that no longer exists. The live turn may be
+        # writing into ANY link of the chain — compression rotates the id
+        # underneath it, so the running id is often not the one the sidebar
+        # showed and the user clicked.
         running = (manager.running(req.user_id) if req.user_id else manager.running())
         if any(i in running for i in ids):
+            return json_response(
+                {"error": "这个会话正在回复中，先停止再删除"}, status=409,
+            )
+        # Repeat the admission check while atomically installing the route
+        # tombstone.  The first check covers the public running-state contract;
+        # the second closes the gap in which the completion dispatcher could
+        # start a synthetic turn just before the DB rows are removed.
+        if not manager.forget_sessions(ids):
             return json_response(
                 {"error": "这个会话正在回复中，先停止再删除"}, status=409,
             )

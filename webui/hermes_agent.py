@@ -52,6 +52,13 @@ from profiles import AgentProfile, scope_agent_tools
 
 log = logging.getLogger("deepwiki.agent")
 
+# Hermes 0.19 has no generic per-message metadata column, and its persistence
+# loop deliberately drops unknown message-dict keys.  ``tool_name`` is one of
+# the structured fields it does preserve (including through context
+# compression), so the WebUI reserves one namespaced value for a synthetic
+# model-facing user message.  A real browser prompt never receives this field.
+PROCESS_WAKEUP_SOURCE = "deepwiki.process_wakeup"
+
 
 def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
@@ -428,24 +435,71 @@ def _register_annotation_tool() -> None:
 
 
 def _install_multimodal_persistence_guard(agent: Any) -> None:
-    """Persist an image turn's object-key marker, never its temporary base64."""
+    """Apply WebUI-only persistence metadata without changing the API prompt.
+
+    Image turns store their object-key marker rather than temporary base64.
+    Server-created process wakeups store a structured source marker in
+    Hermes' persisted ``tool_name`` column.  The latter is applied only while
+    ``_persist_session`` runs, so the provider still receives an ordinary
+    user message with no extra field.
+    """
     if getattr(agent, "_deepwiki_multimodal_guard", False):
         return
     original = agent._persist_session
+    original_sanitize = getattr(agent, "_sanitize_api_messages", None)
 
     def guarded(self, messages, conversation_history=None):
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
-        if idx is None or override is None or not (0 <= idx < len(messages)):
-            return original(messages, conversation_history)
-        current = messages[idx]
-        if not isinstance(current, dict) or not isinstance(current.get("content"), list):
-            return original(messages, conversation_history)
-        clean = list(messages)
-        clean[idx] = {**current, "content": override}
-        return original(clean, conversation_history)
+        source = getattr(self, "_deepwiki_user_source", None)
+        valid = idx is not None and 0 <= idx < len(messages)
+        current = messages[idx] if valid else None
+
+        # The source marker must land on the SAME dict Hermes stamps as
+        # persisted.  Cloning it would leave the live dict unstamped and a
+        # later safety-net flush could insert the row again.  Mutate only for
+        # the synchronous persistence call, then restore before the provider
+        # sees the live message list again.
+        missing = object()
+        old_tool_name = missing
+        source_applied = False
+        if source and isinstance(current, dict) and current.get("role") == "user":
+            old_tool_name = current.get("tool_name", missing)
+            current["tool_name"] = source
+            source_applied = True
+        try:
+            if (
+                override is None
+                or not isinstance(current, dict)
+                or not isinstance(current.get("content"), list)
+            ):
+                return original(messages, conversation_history)
+            clean = list(messages)
+            clean[idx] = {**current, "content": override}
+            return original(clean, conversation_history)
+        finally:
+            if source_applied and old_tool_name is not missing:
+                current["tool_name"] = old_tool_name
+            elif source_applied:
+                current.pop("tool_name", None)
 
     agent._persist_session = types.MethodType(guarded, agent)
+    if callable(original_sanitize):
+        def sanitize(self, messages):
+            sanitized = original_sanitize(messages)
+            out = []
+            for message in sanitized:
+                if (
+                    isinstance(message, dict)
+                    and message.get("role") == "user"
+                    and message.get("tool_name") == PROCESS_WAKEUP_SOURCE
+                ):
+                    message = dict(message)
+                    message.pop("tool_name", None)
+                out.append(message)
+            return out
+
+        agent._sanitize_api_messages = types.MethodType(sanitize, agent)
     agent._deepwiki_multimodal_guard = True
 
 
@@ -886,6 +940,7 @@ def run_turn(
     history: list[dict],
     system_message: str | None = None,
     persist_user_message: str | None = None,
+    user_source: str | None = None,
 ) -> dict:
     """One blocking turn. Call it off the request path if the caller is async.
 
@@ -909,4 +964,28 @@ def run_turn(
         "persist_user_message": persist_user_message,
     }
     kwargs = supported_kwargs(agent.run_conversation, candidate)
-    return agent.run_conversation(**kwargs) or {}
+    previous_source = getattr(agent, "_deepwiki_user_source", None)
+    missing_pending = object()
+    previous_pending = getattr(agent, "_pending_cli_user_message", missing_pending)
+    agent._deepwiki_user_source = user_source
+    if user_source and persist_user_message is not None:
+        # Hermes' turn prologue deliberately reuses this staged dict when its
+        # clean content matches ``persist_user_message``. Keeping the source on
+        # the live message means context compression copies it forward; the
+        # sanitizer installed above strips it from every provider-bound copy.
+        agent._pending_cli_user_message = {
+            "role": "user",
+            "content": persist_user_message,
+            "tool_name": user_source,
+        }
+    try:
+        return agent.run_conversation(**kwargs) or {}
+    finally:
+        agent._deepwiki_user_source = previous_source
+        if previous_pending is missing_pending:
+            try:
+                del agent._pending_cli_user_message
+            except AttributeError:
+                pass
+        else:
+            agent._pending_cli_user_message = previous_pending

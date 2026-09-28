@@ -309,6 +309,47 @@ def test_persistence_guard_copies_a_multimodal_turn_before_rewriting_it():
     assert "base64" not in str(persisted["messages"])
 
 
+def test_process_wakeup_source_is_persisted_but_not_sent_to_the_model():
+    persisted = {}
+
+    class Agent:
+        _persist_user_message_idx = None
+        _persist_user_message_override = None
+        _pending_cli_user_message = None
+
+        def _persist_session(self, messages, conversation_history=None):
+            persisted["tool_name"] = messages[0].get("tool_name")
+
+        def _sanitize_api_messages(self, messages):
+            return messages
+
+        def run_conversation(self, user_message, **kwargs):
+            messages = [self._pending_cli_user_message]
+            messages[0]["content"] = user_message
+            self._persist_user_message_idx = 0
+            self._persist_session(messages, [])
+            persisted["live"] = dict(messages[0])
+            persisted["api"] = self._sanitize_api_messages(
+                [dict(messages[0])]
+            )[0]
+            return {}
+
+    agent = Agent()
+    ha._install_multimodal_persistence_guard(agent)
+    ha.run_turn(
+        agent,
+        session_id="s",
+        user_message="process done",
+        history=[],
+        user_source=ha.PROCESS_WAKEUP_SOURCE,
+    )
+    assert persisted["tool_name"] == ha.PROCESS_WAKEUP_SOURCE
+    assert persisted["live"]["tool_name"] == ha.PROCESS_WAKEUP_SOURCE
+    assert "tool_name" not in persisted["api"]
+    assert agent._deepwiki_user_source is None
+    assert agent._pending_cli_user_message is None
+
+
 def test_a_caller_can_suppress_the_brief_but_only_by_saying_so(monkeypatch):
     """`None` means "whatever this deployment is for"; `""` means "none". If
     empty string fell through to the default there would be no way to turn it

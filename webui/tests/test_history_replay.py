@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import hermes_session_api as hs  # noqa: E402
+from hermes_agent import PROCESS_WAKEUP_SOURCE  # noqa: E402
 
 
 def _msgs(command, output, exit_code, error=None, extra_args=None):
@@ -187,6 +188,32 @@ def test_history_real_user_message_with_similar_opening_is_kept():
     finally:
         hsa._db = orig
     assert [e["kind"] for e in events] == ["history_user"]
+
+
+def test_background_completion_replays_as_an_internal_note(monkeypatch):
+    """The synthetic user role is required for the model, but must not become
+    a speech bubble falsely attributed to the human after a reload."""
+    text = "[IMPORTANT: Background process proc-1 completed] output: done"
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: [
+            {"role": "user", "content": text, "tool_name": PROCESS_WAKEUP_SOURCE},
+            {"role": "assistant", "content": "I checked the result"},
+        ])})())
+    events = hs.history("s", 0)
+    assert [event["kind"] for event in events] == ["note", "delta"]
+    assert "agent 自动继续" in events[0]["text"]
+    assert text in events[0]["text"]
+
+
+def test_background_completion_text_without_source_is_human_speech(monkeypatch):
+    """Source is structured metadata, never a magic text prefix."""
+    text = "[IMPORTANT: Background process proc-1 completed] 这只是用户引用的文本"
+    monkeypatch.setattr(hs, "_db", lambda: type("D", (), {
+        "get_messages": staticmethod(lambda sid: [
+            {"role": "user", "content": text, "tool_name": None},
+        ])})())
+    events = hs.history("s", 0)
+    assert events == [{"kind": "history_user", "text": text}]
 
 
 def test_history_replays_the_full_compression_lineage(monkeypatch):

@@ -186,7 +186,8 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
         const id = u.searchParams.get("stream_id");
         return reply({ known: true, running: Object.values(server.streaming).includes(id) });
       }
-      case "/api/session/history": return reply({ events: server.history[u.searchParams.get("id")] || [] });
+      case "/api/session/history": return (server.historyGate || Promise.resolve())
+        .then(() => reply({ events: server.history[u.searchParams.get("id")] || [] }));
       case "/api/approval/pending": return reply({ pending: [] });
       default: return reply({});
     }
@@ -195,11 +196,15 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
   // everything after `after_seq` before following.
   class EventSource {
     constructor(url) {
-      this.url = url; this.closed = false; sources.push(this);
+      this.url = url; this.closed = false; this.listeners = {}; sources.push(this);
       const q = new URL(url, "http://x").searchParams;
       const id = q.get("stream_id"), after = Number(q.get("after_seq") || 0);
       setTimeout(() => (server.events[id] || []).filter((e) => e.seq > after)
         .forEach((e) => { if (!this.closed) this.onmessage({ data: JSON.stringify(e) }); }), 0);
+    }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    emit(type, data) {
+      (this.listeners[type] || []).forEach((fn) => fn({ data: JSON.stringify(data) }));
     }
     close() { this.closed = true; }
   }
@@ -239,9 +244,20 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
     const row = server.sessions.find((r) => r.id === sid); if (row) row.messageCount = 2;
     push(streamId, { kind: "end", error: null, seq, session: sid });
   };
+  const serverStart = (sid, streamId) => {
+    server.streaming[sid] = streamId;
+    server.events[streamId] ||= [];
+    sources.filter((source) => {
+      if (source.closed) return false;
+      const url = new URL(source.url, "http://x");
+      return url.pathname === "/api/session/stream" && url.searchParams.get("session_id") === sid;
+    }).forEach((source) => source.emit("server_turn_started", {
+      sessionId: sid, streamId,
+    }));
+  };
   const type = (text) => { $("#input").value = text; };
   const pick = (key) => { $("#endpoint").value = key; $("#endpoint").dispatch("change", { target: $("#endpoint") }); };
-  return { ctx, $, S, calls, sources, server, store, location, push, finish, type, pick, run: (code) => vm.runInContext(code, ctx) };
+  return { ctx, $, S, calls, sources, server, store, location, push, finish, serverStart, type, pick, run: (code) => vm.runInContext(code, ctx) };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 const posts = (h, p) => h.calls.filter((c) => c.path === p);
@@ -692,6 +708,63 @@ const count = (hay, needle) => hay.split(needle).length - 1;
 }
 
 console.log("ok - a new session leaves the running one alone");
+
+// notify_on_complete creates a server-side turn with no chat/start response in
+// this tab. The persistent session channel must attach immediately; waiting
+// for the list reconciliation interval would leave the turn invisible.
+{
+  const h = harness();
+  h.server.sessions.push({ id: "auto", title: "background work", messageCount: 2 });
+  h.server.history.auto = [
+    { kind: "history_user", text: "start the job" },
+    { kind: "delta", text: "waiting in background", thought: false },
+  ];
+  await settle();
+  h.run('openSession("auto")'); await settle(); await settle();
+  h.serverStart("auto", "auto-stream"); await settle();
+  assert.strictEqual(h.S().streamId, "auto-stream",
+    "the selected conversation did not attach to its automatic continuation");
+  assert.ok(h.sources.some((source) =>
+    !source.closed && source.url.includes("stream_id=auto-stream&")),
+    "no EventSource was opened for the automatic continuation");
+  h.push("auto-stream", {
+    kind: "note", text: "后台任务已完成，agent 自动继续", seq: 1, session: "auto",
+  });
+  h.push("auto-stream", {
+    kind: "delta", text: "background result handled", seq: 2, session: "auto",
+  });
+  await settle();
+  assert.ok(h.$("#messages").textContent.includes("background result handled"),
+    "the automatic continuation remained invisible in the selected transcript");
+  const control = h.sources.find((source) => {
+    const url = new URL(source.url, "http://x");
+    return url.pathname === "/api/session/stream" && url.searchParams.get("session_id") === "auto";
+  });
+  assert.ok(control && !control.closed, "the session control stream was not kept across turns");
+  h.run("newSession()");
+  assert.ok(control.closed, "leaving the conversation leaked its session control stream");
+}
+
+// A wakeup that arrives while openSession is fetching history is remembered,
+// then attached after the authoritative repaint. Attaching immediately would
+// let that repaint erase the first live frames; dropping it would need a poll.
+{
+  let releaseHistory;
+  const historyGate = new Promise((resolve) => { releaseHistory = resolve; });
+  const h = harness({
+    sessions: [{ id: "race", title: "race", messageCount: 2 }],
+    history: { race: [{ kind: "history_user", text: "before" }] },
+  });
+  h.server.historyGate = historyGate;
+  await settle();
+  h.run('openSession("race")'); await Promise.resolve();
+  h.serverStart("race", "race-stream"); await settle();
+  assert.ok(!h.S().ess.has("race-stream"),
+    "the live stream attached before history repaint completed");
+  releaseHistory(); await settle(); await settle();
+  assert.ok(h.S().ess.has("race-stream"),
+    "the SSE-announced stream was lost while history was in flight");
+}
 
 // Tabs share cookies/localStorage, but keep independent URLs across reloads.
 {

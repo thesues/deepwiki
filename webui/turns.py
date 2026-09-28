@@ -28,15 +28,23 @@ a named worker set, it is not the limit.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import secrets
-import os
 import threading
 import time
 import uuid
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from hermes_agent import AgentPool, Endpoint, history_for, run_turn
+from hermes_agent import (
+    PROCESS_WAKEUP_SOURCE,
+    AgentPool,
+    Endpoint,
+    history_for,
+    run_turn,
+)
 from profiles import AgentProfile
 from turn_stream import EventSink, TurnStream
 
@@ -63,6 +71,25 @@ APPROVAL_TIMEOUT_S = int(
     os.environ.get("DEEPWIKI_APPROVAL_TIMEOUT_S",
                    os.environ.get("BUDA_APPROVAL_TIMEOUT_S", "600"))
 )
+
+
+@dataclass(eq=False)
+class _SessionRoute:
+    """Where a Hermes background-process completion should resume.
+
+    `session_key` is captured when the terminal tool starts the process, while
+    context compression can rotate the conversation id before that process
+    exits.  Every old id therefore remains an alias and `session_id` tracks the
+    current tip that the synthetic turn must actually continue.
+    """
+
+    session_id: str
+    endpoint: Endpoint
+    user_id: str = ""
+    profile: AgentProfile | None = None
+    aliases: set[str] = field(default_factory=set)
+    pending: deque[dict] = field(default_factory=deque)
+    pending_ids: set[str] = field(default_factory=set)
 
 
 class _TurnPool:
@@ -145,6 +172,21 @@ class TurnManager:
         # from a global is how a busy session's spinner lands on an idle one.
         self._live: dict[str, TurnStream] = {}
         self._streams: dict[str, TurnStream] = {}
+        # Hermes' CLI/Gateway owns this routing in upstream.  This WebUI calls
+        # AIAgent directly, so it must remember enough of the originating turn
+        # to turn process_registry completion events into a later turn itself.
+        self._routes: dict[str, _SessionRoute] = {}
+        self._delivered_completions: set[str] = set()
+        # A tombstone prevents a late process exit from recreating a
+        # conversation the reader has just deleted.
+        self._forgotten_sessions: set[str] = set()
+        # Persistent browser discovery lives at the CONVERSATION scope, not
+        # the turn scope.  A notify_on_complete continuation has no
+        # /api/chat/start response for the tab to learn its new stream id
+        # from, and the previous turn's SSE is already closed.  Each queue is
+        # one open /api/session/stream EventSource; absent subscribers cost no
+        # retained channel object.
+        self._session_subscribers: dict[str, set[queue.Queue]] = {}
         # WHY THE LAST FAILURE OUTLIVES ITS STREAM.
         #
         # A turn that dies tells its reader through the stream — and the stream
@@ -216,6 +258,67 @@ class TurnManager:
                 if s.running and getattr(s, "endpoint_key", None) == endpoint_key
             )
 
+    def subscribe_session(self, session_id: str) -> tuple[queue.Queue, dict | None]:
+        """Subscribe to server-created turns and snapshot any live one.
+
+        Registration and the live snapshot share ``_lock`` with ``start``.
+        Thus a turn either appears in ``initial`` or is broadcast to the new
+        queue; it cannot fall into the gap between those operations.  A
+        duplicate at the boundary is harmless because stream ids are stable
+        and the browser's attach path is idempotent.
+        """
+        subscriber: queue.Queue = queue.Queue(maxsize=8)
+        with self._lock:
+            self._session_subscribers.setdefault(session_id, set()).add(subscriber)
+            stream = self._live.get(session_id)
+            initial = (
+                self._session_turn_event(stream, recovered=True)
+                if stream is not None and stream.running
+                else None
+            )
+        return subscriber, initial
+
+    def unsubscribe_session(self, session_id: str, subscriber: queue.Queue) -> None:
+        with self._lock:
+            listeners = self._session_subscribers.get(session_id)
+            if listeners is None:
+                return
+            listeners.discard(subscriber)
+            if not listeners:
+                self._session_subscribers.pop(session_id, None)
+
+    @staticmethod
+    def _session_turn_event(stream: TurnStream, *, recovered: bool = False) -> dict:
+        event = {
+            "sessionId": stream.session_id,
+            "streamId": stream.stream_id,
+        }
+        if recovered:
+            event["recovered"] = True
+        return event
+
+    def _publish_session_turn_started(self, stream: TurnStream) -> int:
+        """Fan a new server-created turn out to every tab on this session."""
+        with self._lock:
+            listeners = tuple(self._session_subscribers.get(stream.session_id, ()))
+        event = ("server_turn_started", self._session_turn_event(stream))
+        delivered = 0
+        for subscriber in listeners:
+            try:
+                subscriber.put_nowait(event)
+                delivered += 1
+            except queue.Full:
+                # There is only one meaningful state here: the current live
+                # stream. Replace a stale unread announcement with the newest;
+                # reconnect self-heals from the live snapshot as a backstop.
+                try:
+                    subscriber.get_nowait()
+                    subscriber.put_nowait(event)
+                    delivered += 1
+                except (queue.Empty, queue.Full):
+                    pass
+        return delivered
+
     def forget_finished(self, keep: int = 200) -> None:
         """Drop the oldest finished streams. A finished stream is kept so a
         reader who was away can still collect its tail; it is not kept forever."""
@@ -239,9 +342,17 @@ class TurnManager:
         endpoint: Endpoint,
         user_id: str = "",
         profile: AgentProfile | None = None,
+        internal: bool = False,
+        _completion_route: _SessionRoute | None = None,
     ) -> TurnStream:
         """Admit and launch one turn. Raises `Refused` if it cannot start."""
         with self._lock:
+            if internal and (
+                _completion_route is None
+                or self._routes.get(session_id) is not _completion_route
+                or session_id in self._forgotten_sessions
+            ):
+                raise Refused("gone", "这个会话已删除，后台完成通知不再续跑")
             current = self._live.get(session_id)
             if current is not None and current.running:
                 raise Refused(
@@ -276,16 +387,42 @@ class TurnManager:
             # nor a pin (the pin was written under the id chat/start was given).
             # Carried on the stream, the answer moves with the conversation.
             stream.profile_key = profile.key if profile is not None else ""  # type: ignore[attr-defined]
+            # `stream.finish()` precedes approval/session-context teardown.
+            # Completion dispatch must wait for the latter too, otherwise it
+            # can acquire and rebind the same cached agent while the old turn
+            # is still unwinding.
+            stream.turn_settled = False  # type: ignore[attr-defined]
             self._streams[stream.stream_id] = stream
             self._live[session_id] = stream
+            route = _completion_route if internal else self._routes.get(session_id)
+            if route is None:
+                route = _SessionRoute(session_id, endpoint, user_id, profile)
+            route.session_id = session_id
+            route.endpoint = endpoint
+            route.user_id = user_id
+            route.profile = profile
+            route.aliases.add(session_id)
+            for alias in route.aliases:
+                self._routes[alias] = route
+                self._forgotten_sessions.discard(alias)
 
         # The prompt is echoed into the log FIRST, so a reader attaching to this
         # stream sees the question above the answer even if they arrive late.
-        stream.emit("user", text=text)
+        if internal:
+            stream.emit("note", text=f"后台任务已完成，agent 自动继续：\n\n{text}")
+        else:
+            stream.emit("user", text=text)
+
+        # Only server-created turns need discovery. Browser-created turns get
+        # the same stream id directly from /api/chat/start; broadcasting those
+        # would race the optimistic user-message echo in send().
+        if internal:
+            self._publish_session_turn_started(stream)
 
         self._turns.submit(
             f"turn-{stream.stream_id}", self._run_turn,
             stream, session_id, text, endpoint, profile, user_id,
+            PROCESS_WAKEUP_SOURCE if internal else None,
         )
         return stream
 
@@ -469,24 +606,43 @@ class TurnManager:
             if self._live.get(old) is stream:
                 self._live.pop(old, None)
                 self._live[new] = stream
+            route = self._routes.get(old)
+            if route is not None:
+                route.session_id = new
+                route.aliases.update((old, new))
+                self._routes[old] = route
+                self._routes[new] = route
+                self._forgotten_sessions.discard(new)
         self._pool.rename(old, new)
         log.info("session %s rotated to %s mid-turn (stream %s)", old, new, stream.stream_id)
 
     def _run_turn(
         self, stream: TurnStream, session_id: str, text: str,
         endpoint: Endpoint, profile: AgentProfile | None = None, user_id: str = "",
+        user_source: str | None = None,
     ) -> None:
         agent = None
         session_tokens = None
         from profile_skills import enter, leave
         skill_profile = enter(profile.key if profile is not None else None)
         try:
-            if user_id:
+            # Advertise a real async-delivery route even in legacy/basic-auth
+            # mode, where user_id is empty.  Hermes otherwise disables the
+            # notify_on_complete flag and tells the model to poll, so merely
+            # adding a queue consumer would never receive an event there.
+            try:
                 from gateway.session_context import set_session_vars
                 session_tokens = set_session_vars(
                     platform="deepwiki", user_id=user_id,
                     session_key=session_id, session_id=session_id,
+                    async_delivery=True,
                 )
+            except ImportError:
+                # Unit tests intentionally run without the Hermes package.
+                # An authenticated production path already required this
+                # module before this change, so preserve its fail-closed rule.
+                if user_id:
+                    raise
             agent = (self._pool.acquire(session_id, endpoint, profile, user_id=user_id)
                      if user_id else self._pool.acquire(session_id, endpoint, profile))
             self._pool.note_running(stream.stream_id, agent)
@@ -530,6 +686,7 @@ class TurnManager:
                 agent, session_id=session_id, user_message=model_message, history=history,
                 system_message=directive,
                 persist_user_message=text,
+                user_source=user_source,
             )
             stream.finish()
         except Exception as e:  # noqa: BLE001
@@ -551,6 +708,219 @@ class TurnManager:
             if session_tokens is not None:
                 from gateway.session_context import clear_session_vars
                 clear_session_vars(session_tokens)
+            stream.turn_settled = True  # type: ignore[attr-defined]
+
+    # ── background process completions ────────────────────────────────────
+
+    @staticmethod
+    def _completion_id(event: dict) -> str:
+        # Hermes calls the background process id `session_id` in completion
+        # events.  It is unrelated to the chat session in `session_key`.
+        return str(event.get("session_id") or "")
+
+    @staticmethod
+    def _clear_completion_watcher(registry: Any, process_id: str) -> None:
+        """Remove Hermes' now-satisfied async-delivery watcher, if exposed.
+
+        Hermes 0.19 keeps this compatibility map for Gateway delivery.  The
+        WebUI is the delivery loop here, so leaving entries in it would grow
+        one stale watcher per notified process.  The attribute is private and
+        has moved before, hence the deliberately defensive cleanup.
+        """
+        watchers = getattr(registry, "pending_watchers", None)
+        if isinstance(watchers, dict):
+            watchers.pop(process_id, None)
+        elif isinstance(watchers, list):
+            # Hermes 0.19 stores one dict per gateway watcher.  The terminal
+            # tool appends before the process can complete, so by the time the
+            # queue event exists an in-place filter cannot race that append.
+            watchers[:] = [
+                watcher for watcher in watchers
+                if str(watcher.get("session_id") or "") != process_id
+            ]
+
+    @staticmethod
+    def _completion_consumed(registry: Any, process_id: str) -> bool:
+        check = getattr(registry, "is_completion_consumed", None)
+        if not process_id or not callable(check):
+            return False
+        try:
+            return bool(check(process_id))
+        except Exception:  # noqa: BLE001 -- a compatibility check must not stop delivery
+            log.debug("could not check completion consumption for %s", process_id, exc_info=True)
+            return False
+
+    def _queue_completion(self, event: dict, registry: Any) -> None:
+        session_key = str(event.get("session_key") or "")
+        process_id = self._completion_id(event)
+        self._clear_completion_watcher(registry, process_id)
+        if event.get("type") not in (None, "completion") or not session_key:
+            log.warning("ignoring malformed process completion: %r", event)
+            return
+        if self._completion_consumed(registry, process_id):
+            log.info("process %s completion was already consumed; not auto-resuming", process_id)
+            return
+        with self._lock:
+            route = self._routes.get(session_key)
+            if route is None or session_key in self._forgotten_sessions:
+                log.info("no live route for process %s session %s; dropping completion",
+                         process_id, session_key)
+                return
+            if process_id and (
+                process_id in route.pending_ids
+                or process_id in self._delivered_completions
+            ):
+                return
+            route.pending.append(dict(event))
+            if process_id:
+                route.pending_ids.add(process_id)
+        log.info("queued completion for process %s on session %s", process_id, session_key)
+
+    def _pending_routes(self) -> list[_SessionRoute]:
+        with self._lock:
+            unique = {id(route): route for route in self._routes.values()}
+            return [route for route in unique.values() if route.pending]
+
+    def _dispatch_pending_completions(
+        self,
+        registry: Any,
+        formatter: Callable[[dict], str],
+    ) -> int:
+        """Start every completion whose conversation and endpoint are idle.
+
+        Refusal is normal: the originating turn may still be unwinding, or a
+        different conversation may occupy the endpoint.  The event stays at
+        the head of its per-conversation queue and a later dispatcher tick
+        retries it, preserving completion order without interrupting a turn.
+        """
+        started = 0
+        for route in self._pending_routes():
+            with self._lock:
+                if not route.pending or self._routes.get(route.session_id) is not route:
+                    continue
+                current = self._live.get(route.session_id)
+                if current is not None and (
+                    current.running or not getattr(current, "turn_settled", True)
+                ):
+                    continue
+                event = route.pending[0]
+                process_id = self._completion_id(event)
+            if self._completion_consumed(registry, process_id):
+                with self._lock:
+                    if route.pending and route.pending[0] is event:
+                        route.pending.popleft()
+                        route.pending_ids.discard(process_id)
+                continue
+            try:
+                text = formatter(event)
+                stream = self.start(
+                    session_id=route.session_id,
+                    text=text,
+                    endpoint=route.endpoint,
+                    user_id=route.user_id,
+                    profile=route.profile,
+                    internal=True,
+                    _completion_route=route,
+                )
+            except Refused:
+                continue
+            except Exception:  # noqa: BLE001 -- one bad event must not kill the dispatcher
+                log.exception("could not dispatch process %s completion", process_id)
+                continue
+            with self._lock:
+                if route.pending and route.pending[0] is event:
+                    route.pending.popleft()
+                    route.pending_ids.discard(process_id)
+                if process_id:
+                    self._delivered_completions.add(process_id)
+                    # A long-lived pod should not retain an unbounded history;
+                    # the registry's own consumed set remains the authority.
+                    while len(self._delivered_completions) > 4096:
+                        self._delivered_completions.pop()
+            started += 1
+            log.info("auto-resumed session %s for process %s on stream %s",
+                     route.session_id, process_id, stream.stream_id)
+        return started
+
+    def run_completion_dispatcher(
+        self,
+        stop: threading.Event,
+        *,
+        registry: Any = None,
+        formatter: Callable[[dict], str] | None = None,
+        poll_s: float = 0.25,
+    ) -> None:
+        """Drain Hermes completions until `stop` is set.
+
+        Dependency injection keeps the loop testable outside Hermes' venv;
+        production resolves the exact 0.19 process registry used by terminal.
+        """
+        if registry is None or formatter is None:
+            try:
+                from tools.process_registry import format_process_notification, process_registry
+            except Exception:  # noqa: BLE001 -- server stays up, log the lost capability
+                log.exception("process completion dispatcher unavailable")
+                return
+
+            registry = process_registry if registry is None else registry
+            formatter = format_process_notification if formatter is None else formatter
+        completions = registry.completion_queue
+        while not stop.is_set():
+            try:
+                event = completions.get(timeout=poll_s)
+            except queue.Empty:
+                event = None
+            except Exception:  # noqa: BLE001 -- keep later notifications alive
+                log.exception("process completion queue read failed")
+                stop.wait(poll_s)
+                event = None
+            if isinstance(event, dict):
+                self._queue_completion(event, registry)
+            self._dispatch_pending_completions(registry, formatter)
+
+    def start_completion_dispatcher(self, stop: threading.Event) -> threading.Thread:
+        thread = threading.Thread(
+            target=self.run_completion_dispatcher,
+            args=(stop,),
+            name="process-completions",
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def forget_sessions(self, session_ids: list[str]) -> bool:
+        """Atomically retire idle conversations before deleting their rows.
+
+        Returns False when any id is still running (including a completion
+        turn that won the race with delete), so the caller can refuse deletion
+        without corrupting a conversation being persisted.
+        """
+        with self._lock:
+            routes = {
+                self._routes[sid]
+                for sid in session_ids
+                if sid in self._routes
+            }
+            aliases = set(session_ids)
+            for route in routes:
+                # A just-created compression tip may not be visible to the DB
+                # lineage query yet, while the manager already routes it.  Its
+                # aliases are part of the same conversation and must take part
+                # in the atomic running check.
+                aliases.update(route.aliases)
+            if any(
+                (stream := self._live.get(sid)) is not None
+                and (stream.running or not getattr(stream, "turn_settled", True))
+                for sid in aliases
+            ):
+                return False
+            for route in routes:
+                route.pending.clear()
+                route.pending_ids.clear()
+            for alias in aliases:
+                self._routes.pop(alias, None)
+            self._forgotten_sessions.update(aliases)
+            return True
 
     def last_error(self, session_id: str) -> dict | None:
         """How this conversation's most recent turn failed, if it did.

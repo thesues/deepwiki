@@ -571,8 +571,10 @@ const S = {
   // It can run several now, so returning to the second live conversation has to
   // find ITS stream, not the one that happened to be recorded last.
   streaming: {},
-  watchTimer: null,     // refreshes the sidebar while a turn runs somewhere else
-  watchPeriod: null,    // ms; 3s while anything streams, 15s idle
+  sessionEs: null,        // long-lived control SSE for the conversation on screen
+  sessionWatchId: null,   // survives turn end and announces server-created turns
+  watchTimer: null,     // fallback reconciliation for other sessions/cross-tab changes
+  watchPeriod: null,    // ms; 15s while anything streams, 60s idle
   stopping: false,
   startedAt: 0,
   timer: null,
@@ -1312,6 +1314,7 @@ function apply(ev, from) {
     S.sessionId = ev.session;
     rememberView(ev.session);
     noteSessionEndpoint(ev.session);
+    watchSession(ev.session);
     loadSessions();
   }
   const mine = replay
@@ -1663,19 +1666,54 @@ function fmtWhen(ts) {
 }
 
 function watchWhileOthersRun() {
-  // The page follows ONE stream at a time — the conversation on screen. A turn
-  // running anywhere else has no connection to this tab at all, so nothing
-  // would ever tell the sidebar it finished. This is that poll — fast while
-  // something streams, and SLOW forever otherwise: sessions deleted elsewhere
-  // (another tab, an operator) used to leave their rows standing until some
-  // unrelated action happened to re-fetch. One list query per 15 s is nothing.
+  // Session SSE is the immediate discovery path for the conversation on
+  // screen. This slower list poll is reconciliation for OTHER conversations,
+  // cross-tab deletes and a broken EventSource — never the primary wakeup
+  // path. Keeping it bounded also repairs sidebar state after a pod restart.
   const anyLive = Object.keys(S.streaming).length > 0;
-  const want = anyLive ? 3000 : 15000;
+  const want = anyLive ? 15000 : 60000;
   if (S.watchPeriod !== want) {
     if (S.watchTimer) clearInterval(S.watchTimer);
     S.watchTimer = setInterval(loadSessions, want);
     S.watchPeriod = want;
   }
+}
+
+function watchSession(sessionId) {
+  // One persistent control channel for the selected conversation. It is
+  // intentionally separate from /api/chat/stream: that feed ends with a turn,
+  // while notify_on_complete may create the next turn minutes later.
+  if (S.sessionWatchId === sessionId && S.sessionEs) return;
+  if (S.sessionEs) S.sessionEs.close();
+  S.sessionEs = null;
+  S.sessionWatchId = sessionId || null;
+  if (!sessionId) return;
+
+  const watched = sessionId;
+  const es = new EventSource(
+    `/api/session/stream?session_id=${encodeURIComponent(sessionId)}`
+  );
+  S.sessionEs = es;
+  es.addEventListener("server_turn_started", (message) => {
+    if (S.sessionEs !== es || S.sessionWatchId !== watched) return;
+    let event;
+    try { event = JSON.parse(message.data || "{}"); } catch (_) { return; }
+    const sid = event.sessionId || watched;
+    const streamId = String(event.streamId || "");
+    if (!streamId || sid !== watched) return;
+
+    // Record first, even while openSession is repainting. Its final live-stream
+    // check reads this map and attaches after the history swap, so early frames
+    // cannot be erased by that swap.
+    S.streaming[sid] = streamId;
+    HISTORY_CACHE.delete(sid);
+    renderSessions();
+    if (S.sessionId !== sid || S.switching) return;
+    if (S.streamId === streamId && S.ess.has(streamId)) return;
+    S.skipUserEcho = false;
+    attach(streamId, 0, event.recovered ? { replay: true } : undefined);
+    status("后台任务完成，继续处理中…");
+  });
 }
 
 async function loadSessions() {
@@ -1691,6 +1729,7 @@ async function loadSessions() {
     S.viewGen++;
     S.ess.forEach((source) => source.close());
     S.ess.clear();
+    watchSession(null);
     S.streaming = {};
     S.streamId = null;
     S.ownStream = null;
@@ -1717,12 +1756,29 @@ async function loadSessions() {
   // Only openSession and a send decide what is on screen; boot() restores
   // the session from this tab's URL. Polling never changes the selected view.
   const was = S.streaming;
-  S.streaming = j.streaming || {};
+  const listed = j.streaming || {};
+  // A session SSE event can race an older /api/sessions response. Preserve
+  // streams that already have a live EventSource; endTurn closes that source
+  // before the next list refresh, so finished turns are not kept alive here.
+  Object.entries(was).forEach(([id, streamId]) => {
+    if (S.ess.has(streamId)) listed[id] = streamId;
+  });
+  S.streaming = listed;
   // A turn can now finish in a conversation this page is not watching, and its
   // committed transcript only exists once it has. Drop the cached history of
   // anything that stopped streaming, or a switch back would repaint the stale
   // copy taken before the reply landed.
   Object.keys(was).forEach((id) => { if (!S.streaming[id]) HISTORY_CACHE.delete(id); });
+  // Fallback reconciliation: session SSE normally announces a synthetic turn
+  // immediately, but a disconnected browser can still discover it in this
+  // list response. Never attach while openSession is repainting history.
+  const resumed = S.sessionId && S.streaming[S.sessionId];
+  if (!S.switching && resumed && resumed !== S.streamId && !S.ess.has(resumed)) {
+    HISTORY_CACHE.delete(S.sessionId);
+    S.skipUserEcho = false;
+    attach(resumed, 0);
+    status("后台任务完成，继续处理中…");
+  }
   watchWhileOthersRun();
   S.sessionRows = j.sessions || [];
   // The default profile rides every sessions poll, so the sidebar's filter
@@ -1794,6 +1850,7 @@ async function openSession(id, prefetchedHistory = null) {
   // transcript. attach() below sets it again if THIS session is live.
   S.streamId = null;
   S.sessionId = id;
+  watchSession(id);
   rememberView(id);
   // The picker follows the conversation: show the model THIS session uses.
   // A session from another tab has no recorded choice — it falls to the
@@ -1851,6 +1908,10 @@ async function openSession(id, prefetchedHistory = null) {
   if (gen !== S.viewGen) return;
   S.switching = null;
   if (j.error) { status(`载入失败: ${j.error}`); return; }
+  // The session control SSE may have announced a server-created turn while
+  // history was in flight. Its handler deferred attach so this repaint cannot
+  // erase early frames; adopt the announced stream now.
+  liveStream = S.streaming[id] || liveStream;
   // An EMPTY transcript for a session the sidebar says has messages means the
   // row is gone (deleted in another tab) or never persisted. Say so — a silent
   // empty panel read as "the messages are lost". Not for a LIVE session: a
@@ -1953,6 +2014,7 @@ async function newSession() {
   $("#messages").textContent = "";
   S.seg = null; S.tools.clear(); S.activity = null; S.turnTop = null; S.actIndex = 0; S.sessionId = null;
   S.streamId = null;        // the left conversation's turn is no longer the focus
+  watchSession(null);
   rememberView(null);      // a reload now opens on 新的对话, as the screen does
   showFresh();
   setBusy(false);    // the new view owns nothing — same as openSession on an idle
@@ -2095,6 +2157,7 @@ async function send() {
   loadSessions();
   showPending();
   attach(j.streamId, 0);
+  watchSession(S.sessionId);
 }
 
 /* ---------- boot ---------- */

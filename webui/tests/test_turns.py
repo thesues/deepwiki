@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -84,6 +86,32 @@ def test_the_history_read_is_what_the_agent_is_given(monkeypatch):
     s = m.start(session_id="s1", text="and now", endpoint=_ep())
     assert _wait_done(s)
     assert seen["history"] == [{"role": "user", "content": "before"}]
+
+
+def test_even_an_unauthenticated_turn_advertises_async_delivery(monkeypatch):
+    """Basic-auth/legacy requests have no user_id, but still have a stable WebUI
+    session route.  Without this flag Hermes silently disables
+    notify_on_complete and no queue event is ever produced."""
+    seen = {}
+    gateway = types.ModuleType("gateway")
+    context = types.ModuleType("gateway.session_context")
+
+    def set_session_vars(**kwargs):
+        seen.update(kwargs)
+        return ("tokens",)
+
+    context.set_session_vars = set_session_vars
+    context.clear_session_vars = lambda tokens: seen.update(cleared=tokens)
+    gateway.session_context = context
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", context)
+
+    stream = _mgr(monkeypatch).start(session_id="s1", text="run", endpoint=_ep())
+    assert _wait_done(stream)
+    assert seen["session_key"] == "s1"
+    assert seen["platform"] == "deepwiki"
+    assert seen["async_delivery"] is True
+    assert seen["cleared"] == ("tokens",)
 
 
 def test_only_the_current_image_marker_is_hydrated(monkeypatch):
@@ -689,3 +717,201 @@ def test_a_rotation_does_not_strand_the_approval_wiring(monkeypatch):
     m, _ = _rotating_mgr(monkeypatch, run)
     assert _wait_done(m.start(session_id="s1", text="x", endpoint=_ep()))
     assert ap.unregistered == ["s1"], f"teardown released {ap.unregistered}, not the key it registered"
+
+
+# ── background process completion delivery ────────────────────────────────
+
+
+class _CompletionRegistry:
+    def __init__(self):
+        self.completion_queue = queue.Queue()
+        self.pending_watchers = []
+        self.consumed = set()
+
+    def is_completion_consumed(self, process_id):
+        return process_id in self.consumed
+
+
+def _completion(process_id="proc-1", session_key="s1"):
+    return {
+        "type": "completion",
+        "session_id": process_id,
+        "session_key": session_key,
+        "command": "long-job",
+        "exit_code": 0,
+        "output": "done",
+    }
+
+
+def _start_dispatcher(manager, registry):
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=manager.run_completion_dispatcher,
+        kwargs={
+            "stop": stop,
+            "registry": registry,
+            "formatter": lambda e: (
+                f"[IMPORTANT: Background process {e['session_id']} completed] "
+                f"{e['output']}"
+            ),
+            "poll_s": 0.01,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
+def test_completion_waits_for_the_originating_turn_then_auto_resumes(monkeypatch):
+    """The notification may arrive while the model is still answering the turn
+    that launched it.  It must become the NEXT turn, never splice into that
+    turn or get lost when the first stream ends."""
+    first_gate = threading.Event()
+    second_started = threading.Event()
+    calls = []
+
+    def run(agent, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            first_gate.wait(3)
+        else:
+            second_started.set()
+        return {}
+
+    manager = _mgr(monkeypatch, run=run)
+    first = manager.start(session_id="s1", text="launch it", endpoint=_ep())
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not calls:
+        time.sleep(0.005)
+    registry = _CompletionRegistry()
+    registry.pending_watchers.append({"session_id": "proc-1", "session_key": "s1"})
+    stop, thread = _start_dispatcher(manager, registry)
+    try:
+        registry.completion_queue.put(_completion())
+        time.sleep(0.05)
+        assert len(calls) == 1, "completion interrupted the turn that launched it"
+        subscriber, initial = manager.subscribe_session("s1")
+        assert initial == {
+            "sessionId": "s1", "streamId": first.stream_id, "recovered": True,
+        }
+        first_gate.set()
+        assert _wait_done(first)
+        assert second_started.wait(3), "idle conversation was not auto-resumed"
+        assert calls[1]["session_id"] == "s1"
+        assert calls[1]["user_source"] == ha.PROCESS_WAKEUP_SOURCE
+        assert calls[1]["persist_user_message"].startswith(
+            "[IMPORTANT: Background process proc-1 completed]"
+        )
+        resumed = next(
+            stream for stream in manager._streams.values()
+            if stream is not first
+        )
+        assert resumed.after(0)[0]["kind"] == "note"
+        assert "agent 自动继续" in resumed.after(0)[0]["text"]
+        event_name, event = subscriber.get(timeout=1)
+        assert event_name == "server_turn_started"
+        assert event == {"sessionId": "s1", "streamId": resumed.stream_id}
+        manager.unsubscribe_session("s1", subscriber)
+        assert not registry.pending_watchers
+    finally:
+        first_gate.set()
+        stop.set()
+        thread.join(1)
+
+
+def test_completion_waits_for_endpoint_capacity_and_follows_rotation(monkeypatch):
+    """An idle origin can still be blocked by another session on its endpoint;
+    after capacity frees, resume the compression tip rather than the captured
+    pre-compression session_key."""
+    busy_gate = threading.Event()
+    resumed = threading.Event()
+    calls = []
+
+    def run(agent, **kw):
+        calls.append(kw["session_id"])
+        if kw["session_id"] == "s1":
+            agent.session_id = "s1-tip"
+            agent.stream_delta_callback("rotated")
+        elif kw["session_id"] == "other":
+            busy_gate.wait(3)
+        elif kw["session_id"] == "s1-tip":
+            resumed.set()
+        return {}
+
+    manager, _ = _rotating_mgr(monkeypatch, run)
+    endpoint = _ep(max_concurrent=1)
+    assert _wait_done(manager.start(session_id="s1", text="launch", endpoint=endpoint))
+    other = manager.start(session_id="other", text="occupy", endpoint=endpoint)
+    registry = _CompletionRegistry()
+    stop, thread = _start_dispatcher(manager, registry)
+    try:
+        registry.completion_queue.put(_completion(session_key="s1"))
+        time.sleep(0.05)
+        assert not resumed.is_set(), "completion bypassed endpoint admission"
+        busy_gate.set()
+        assert _wait_done(other)
+        assert resumed.wait(3)
+        assert calls[-1] == "s1-tip"
+    finally:
+        busy_gate.set()
+        stop.set()
+        thread.join(1)
+
+
+def test_consumed_duplicate_and_deleted_completions_do_not_resume(monkeypatch):
+    calls = []
+    manager = _mgr(monkeypatch, run=lambda agent, **kw: calls.append(kw) or {})
+    assert _wait_done(manager.start(session_id="s1", text="launch", endpoint=_ep()))
+    registry = _CompletionRegistry()
+    registry.consumed.add("already-read")
+    stop, thread = _start_dispatcher(manager, registry)
+    try:
+        registry.completion_queue.put(_completion("already-read"))
+        registry.completion_queue.put(_completion("once"))
+        registry.completion_queue.put(_completion("once"))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(calls) < 2:
+            time.sleep(0.005)
+        assert len(calls) == 2, "one unconsumed process should create exactly one turn"
+        while time.monotonic() < deadline and any(
+            not getattr(stream, "turn_settled", True)
+            for stream in manager._streams.values()
+        ):
+            time.sleep(0.005)
+
+        route = manager._routes["s1"]
+        assert manager.forget_sessions(["s1"])
+        with pytest.raises(Refused) as refused:
+            manager.start(
+                session_id="s1", text="late", endpoint=_ep(), internal=True,
+                _completion_route=route,
+            )
+        assert refused.value.reason == "gone"
+        registry.completion_queue.put(_completion("after-delete"))
+        time.sleep(0.05)
+        assert len(calls) == 2, "a late completion recreated a deleted conversation"
+    finally:
+        stop.set()
+        thread.join(1)
+
+
+def test_delete_guard_includes_a_rotated_tip_not_yet_seen_by_the_store(monkeypatch):
+    gate = threading.Event()
+
+    def run(agent, **kw):
+        agent.session_id = "s1-tip"
+        agent.stream_delta_callback("rotated")
+        gate.wait(3)
+        return {}
+
+    manager, _ = _rotating_mgr(monkeypatch, run)
+    stream = manager.start(session_id="s1", text="long", endpoint=_ep())
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and manager.live_for("s1-tip") is None:
+        time.sleep(0.005)
+    try:
+        # Simulate the DB lineage query still returning only the old/root id.
+        assert manager.forget_sessions(["s1"]) is False
+    finally:
+        gate.set()
+    assert _wait_done(stream)

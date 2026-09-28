@@ -72,6 +72,7 @@ def tenants(authority, tmp_path, monkeypatch):
     ("/api/session/delete", {"sessionId": "s-b"}),
     ("/api/chat/start", {"sessionId": "s-b", "text": "hello"}),
     ("/api/chat/stream?stream_id=stream-s-b", None),
+    ("/api/session/stream?session_id=s-b", None),
     ("/api/chat/cancel", {"streamId": "stream-s-b"}),
     ("/api/approval/pending?session=s-b", None),
     ("/api/approval/answer", {"id": "s-b", "optionId": "once"}),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import sys
 import threading
 import time
@@ -12,6 +13,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import sse  # noqa: E402
 from turn_stream import TurnStream  # noqa: E402
+
+
+def test_session_stream_sends_named_initial_and_turn_events():
+    subscriber = queue.Queue()
+    subscriber.put(("server_turn_started", {"sessionId": "s", "streamId": "next"}))
+    wire = Wire()
+
+    def write(chunk):
+        wire(chunk)
+        if b'"streamId": "next"' in chunk:
+            raise ConnectionResetError("peer went away")
+
+    try:
+        sse.write_session_stream(
+            subscriber,
+            write,
+            initial={"sessionId": "s", "streamId": "live", "recovered": True},
+        )
+    except ConnectionResetError:
+        pass
+    else:
+        raise AssertionError("the test writer did not close the persistent stream")
+
+    body = b"".join(wire.chunks).decode()
+    assert "event: initial" in body
+    assert '"streamId": "live"' in body
+    assert '"streamId": "next"' in body
 
 
 class Wire:

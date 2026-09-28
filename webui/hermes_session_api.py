@@ -13,6 +13,8 @@ Read-only. Writes (delete/rename) stay on the `hermes sessions ...` CLI, which
 is schema-aware (it also cleans the FTS index and related tables).
 """
 
+from __future__ import annotations
+
 import argparse
 import ast
 import json
@@ -36,6 +38,7 @@ def _db():
 # is stdlib-only, so it imports under either venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from turn_stream import DETAIL_MAX, _detail_for, _invocation_text, _todo_items  # noqa: E402
+from hermes_agent import PROCESS_WAKEUP_SOURCE  # noqa: E402
 
 # The LIVE path does not derive the command -- hermes hands it one, built by
 # `build_tool_preview`. Deriving a second version here produced a different
@@ -409,6 +412,16 @@ def history(sid: str, limit: int) -> list[dict]:
             continue
         if role == "user":
             if text:
+                # notify_on_complete is a synthetic USER message to the model,
+                # but it was not typed by the reader.  Keep the model-facing
+                # role in storage and render the transcript honestly as an
+                # internal note, matching the live SSE event.
+                if m.get("tool_name") == PROCESS_WAKEUP_SOURCE:
+                    out.append({
+                        "kind": "note",
+                        "text": f"后台任务已完成，agent 自动继续：\n\n{text}",
+                    })
+                    continue
                 # The todo-injection row is model-facing state, not speech.
                 # With items it becomes the checklist card it describes; even
                 # without them it is never rendered as something a human said.

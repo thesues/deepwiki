@@ -332,6 +332,10 @@ def main() -> None:
 
     stop = threading.Event()
     threading.Thread(target=_reaper, args=(manager, stop), name="reaper", daemon=True).start()
+    # Hermes' terminal tool puts notify_on_complete exits on this in-process
+    # queue.  The CLI/Gateway normally drains it; this WebUI embeds AIAgent
+    # directly, so its own dispatcher resumes the originating conversation.
+    manager.start_completion_dispatcher(stop)
 
     # A container gets SIGTERM on rollout. Stop accepting, then exit — a turn in
     # flight is lost either way, and hanging on to the port makes the next pod

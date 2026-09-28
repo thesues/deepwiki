@@ -231,7 +231,29 @@ spec:
               # so nothing of ours competes with hermes' dependency tree, which
               # is the reason the session-store bridge used to run in a second
               # interpreter; it is gone with the ACP client.
-              exec "${HERMES_PY:-/opt/hermes/.venv/bin/python}" main.py
+              #
+              # Keep this as a child process rather than `exec`: if Python is
+              # killed by the cgroup OOM killer, the shell can record exit 137
+              # to the PVC and Kubernetes termination log. A group-wide kill can
+              # still remove the shell too; the pod status then remains the
+              # authoritative OOMKilled signal.
+              set +e
+              "${HERMES_PY:-/opt/hermes/.venv/bin/python}" main.py
+              rc=$?
+              if [ "$rc" -eq 137 ]; then
+                msg="$(date -Iseconds) webui exited with 137; likely OOMKilled by container memory limit"
+                echo "$msg" >&2
+                mkdir -p "${HERMES_HOME:-/opt/data}/logs"
+                echo "$msg" >> "${HERMES_HOME:-/opt/data}/logs/webui-exit.log"
+                echo "$msg" > /dev/termination-log
+              elif [ "$rc" -ne 0 ]; then
+                msg="$(date -Iseconds) webui exited with code $rc"
+                echo "$msg" >&2
+                mkdir -p "${HERMES_HOME:-/opt/data}/logs"
+                echo "$msg" >> "${HERMES_HOME:-/opt/data}/logs/webui-exit.log"
+                echo "$msg" > /dev/termination-log
+              fi
+              exit "$rc"
           env:
             - { name: PORT, value: "8080" }
             - { name: HERMES_HOME, value: /opt/data }
@@ -480,7 +502,11 @@ spec:
             - { name: data, mountPath: /opt/data }
           resources:
             requests: { cpu: "200m", memory: 512Mi }
-            limits: { cpu: "2", memory: 2Gi }
+            # The in-process Hermes agent and its local terminal children share
+            # this cgroup. Media work (notably multi-input ffmpeg xfade) can
+            # legitimately exceed 2Gi; killing the pod also drops every SSE
+            # connection, which the browser surfaces as "reconnecting".
+            limits: { cpu: "2", memory: 4Gi }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 5
