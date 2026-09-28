@@ -202,6 +202,7 @@ def test_deployed_projects_keep_their_own_mcp_and_annotation_tools():
         toolsets, servers = pr.scope_agent_tools(profile, global_toolsets, enabled_servers)
         assert servers == ([expected[profile.key]] if profile.key in expected else [])
         assert ("mayi-annotation" in toolsets) == (profile.key == "mayi")
+        assert ("terminal" in toolsets) == (profile.key in {"code-autumn-rs", "mayi", "general"})
         allowed = pr.allowed_mcp_names(profile.mcp_tools, servers)
         assert pr.tool_allowed("mcp__mayi__search_docs", allowed) == (profile.key == "mayi")
         assert pr.tool_allowed("mcp__memory__search_docs", allowed) == (profile.key == "buda")
