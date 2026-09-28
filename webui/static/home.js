@@ -59,16 +59,22 @@ async function boot() {
   // "this project has history" before you click in.
   const def = j.defaultProfile || (profiles[0] || {}).key;
   const counts = {};
+  const latest = {};
   (sess.sessions || []).forEach((s) => {
     const k = s.profile || def;
     counts[k] = (counts[k] || 0) + 1;
+    // /api/sessions is newest-first.  The card says how many conversations
+    // exist, so opening it should show the newest one instead of dropping the
+    // selection and landing on an apparently empty "new conversation" page.
+    if (!latest[k] && s.id) latest[k] = s.id;
   });
   // Each card navigates. The link, not a click handler, is the whole
   // mechanism: middle-click / cmd-click / copy-link all work for free,
   // which is what makes a project page a real address and not a state.
   profiles.forEach((p) => {
     const card = el("a", "project-card");
-    card.href = `/${encodeURIComponent(p.key)}/`;
+    const sid = latest[p.key];
+    card.href = `/${encodeURIComponent(p.key)}/${sid ? `?session=${encodeURIComponent(sid)}` : ""}`;
     const n = counts[p.key];
     card.append(
       el("div", "pc-name", p.label || p.key),

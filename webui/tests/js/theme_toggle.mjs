@@ -51,7 +51,7 @@ class Set_ {
   contains(c) { return this.s.has(c); }
 }
 
-function run({ saved = null } = {}) {
+function run({ saved = null, profiles = [{ key: "code", label: "代码索引" }], sessions = [] } = {}) {
   const byId = new Map();
   ["cards", "home-error", "build", "theme-toggle"].forEach((id) => {
     const n = new Node_(id === "theme-toggle" ? "button" : "div"); n.id = id; byId.set(id, n);
@@ -76,8 +76,8 @@ function run({ saved = null } = {}) {
     // all the way to the toggle it wires at the end.
     fetch: (url) => Promise.resolve({
       json: async () => (String(url).includes("status")
-        ? { profiles: [{ key: "code", label: "代码索引" }], defaultProfile: "code" }
-        : { sessions: [] }),
+        ? { profiles, defaultProfile: profiles[0]?.key }
+        : { sessions }),
     }),
     localStorage: {
       getItem: (k) => (store.has(k) ? store.get(k) : null),
@@ -88,11 +88,27 @@ function run({ saved = null } = {}) {
     console, JSON, Promise, Map, Set, Object, Array, String, Number, encodeURIComponent,
   });
   vm.runInContext(HOME, ctx, { filename: "home.js" });
-  return { html, store, timers, btn: byId.get("theme-toggle") };
+  return { html, store, timers, btn: byId.get("theme-toggle"), cards: byId.get("cards") };
 }
 
 // boot() is async (it awaits the two lists); let its microtasks drain.
 const settled = () => new Promise((r) => setTimeout(r, 0));
+
+/* ── a project with history opens its newest conversation ───────────────── */
+{
+  const { cards } = run({
+    profiles: [{ key: "general", label: "通用助手" }, { key: "empty", label: "空项目" }],
+    sessions: [
+      { id: "newest/id", profile: "general" },
+      { id: "older", profile: "general" },
+    ],
+  });
+  await settled();
+  assert.strictEqual(cards.children[0].href, "/general/?session=newest%2Fid",
+    "a card advertising saved conversations must open the newest one");
+  assert.strictEqual(cards.children[1].href, "/empty/",
+    "a project with no history still opens a fresh conversation");
+}
 
 /* ── 1+2+4. dark → light → dark, on the attribute alone ──────────────────── */
 {
