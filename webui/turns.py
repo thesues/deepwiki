@@ -250,22 +250,6 @@ class TurnManager:
                     sessionId=session_id,
                     streamId=current.stream_id,
                 )
-            if user_id:
-                other = next(
-                    (
-                        s
-                        for s in self._live.values()
-                        if s.running and s.user_id == user_id
-                    ),
-                    None,
-                )
-                if other is not None:
-                    raise Refused(
-                        "user_busy",
-                        "你已有一个会话正在回复，消息未发出",
-                        sessionId=other.session_id,
-                        streamId=other.stream_id,
-                    )
             running = sum(
                 1
                 for s in self._live.values()

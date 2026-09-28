@@ -30,7 +30,7 @@ class FakeAgent:
 
 
 def _mgr(monkeypatch, run=None, history=None):
-    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep, profile=None: FakeAgent())
+    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep, profile=None, user_id="": FakeAgent())
     pool = ha.AgentPool()
     return TurnManager(
         pool,
@@ -145,6 +145,23 @@ def test_the_limit_is_per_endpoint_not_global(monkeypatch):
     b = m.start(session_id="s3", text="z", endpoint=other)
     gate.set()
     assert _wait_done(a) and _wait_done(b)
+
+
+def test_one_user_can_start_another_session_while_the_first_replies(monkeypatch):
+    """A fresh conversation follows endpoint capacity, even for one signed-in user."""
+    gate = threading.Event()
+    m = _mgr(monkeypatch, run=lambda agent, **kw: gate.wait(3) and {})
+    endpoint = _ep(max_concurrent=2)
+
+    first = m.start(session_id="s1", text="one", endpoint=endpoint, user_id="reader")
+    second = m.start(session_id="s2", text="two", endpoint=endpoint, user_id="reader")
+    assert first.running and second.running
+    with pytest.raises(Refused) as e:
+        m.start(session_id="s3", text="three", endpoint=endpoint, user_id="reader")
+    assert e.value.reason == "busy"
+
+    gate.set()
+    assert _wait_done(first) and _wait_done(second)
 
 
 def test_a_finished_turn_frees_its_conversation(monkeypatch):
