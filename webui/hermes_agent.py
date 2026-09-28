@@ -384,6 +384,13 @@ def _register_input_image_tool() -> None:
     )
 
 
+def _register_annotation_tool() -> None:
+    """Expose Pillow annotation only through the mayi profile's toolset."""
+    from annotation_tool import register_annotation_tool
+
+    register_annotation_tool()
+
+
 def _install_multimodal_persistence_guard(agent: Any) -> None:
     """Persist an image turn's object-key marker, never its temporary base64."""
     if getattr(agent, "_deepwiki_multimodal_guard", False):
@@ -429,6 +436,7 @@ def build_agent(
     from run_agent import AIAgent
 
     _register_input_image_tool()
+    _register_annotation_tool()
 
     mcp_servers = []
     cfg: dict = {}

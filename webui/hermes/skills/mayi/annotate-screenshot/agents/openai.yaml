@@ -1,0 +1,4 @@
+interface:
+  display_name: "截图标注"
+  short_description: "给产品截图、面相和手相照片添加高清编号、图例及纹路线条标注"
+  default_prompt: "使用 $annotate-screenshot 为这张图标注关键区域和纹路线条。"

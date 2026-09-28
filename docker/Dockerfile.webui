@@ -53,7 +53,7 @@ RUN set -eux; \
       sed -i "s|http://deb.debian.org|${mirror}|g" /etc/apt/sources.list.d/debian.sources; \
     fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git tini; \
+    apt-get install -y --no-install-recommends ca-certificates curl ffmpeg fonts-wqy-zenhei git tini; \
     rm -rf /var/lib/apt/lists/*
 
 # --- node, for the diagram skill ------------------------------------------- #
@@ -92,9 +92,10 @@ RUN set -eux; \
         $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
         "hermes-agent[mcp]==${HERMES_VERSION}" \
         "Brotli==1.1.0" \
+        "Pillow==12.2.0" \
         "PyJWT[crypto]==2.13.0"; \
     ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
-    /opt/hermes/.venv/bin/python -c 'from run_agent import AIAgent; from hermes_state import SessionDB; from tools import approval; from tools.mcp_tool import register_mcp_servers; from agent.auxiliary_client import call_llm; assert callable(approval.register_gateway_notify) and callable(approval.resolve_gateway_approval); print("Hermes runtime imports OK")'
+    /opt/hermes/.venv/bin/python -c 'import PIL; from run_agent import AIAgent; from hermes_state import SessionDB; from tools import approval; from tools.mcp_tool import register_mcp_servers; from agent.auxiliary_client import call_llm; assert callable(approval.register_gateway_notify) and callable(approval.resolve_gateway_approval); print("Hermes runtime imports OK; Pillow", PIL.__version__)'
 
 # --- the app ---------------------------------------------------------------- #
 # Brotli is installed into the interpreter above because `http_shell.py` uses
