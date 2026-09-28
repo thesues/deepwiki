@@ -478,6 +478,8 @@ class TurnManager:
     ) -> None:
         agent = None
         session_tokens = None
+        from profile_skills import enter, leave
+        skill_profile = enter(profile.key if profile is not None else None)
         try:
             if user_id:
                 from gateway.session_context import set_session_vars
@@ -543,6 +545,7 @@ class TurnManager:
                 while len(self._last_error) > 200:
                     self._last_error.pop(next(iter(self._last_error)))
         finally:
+            leave(skill_profile)
             self._release_approval(stream)
             self._pool.clear_running(stream.stream_id)
             if session_tokens is not None:

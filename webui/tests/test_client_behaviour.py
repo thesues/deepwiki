@@ -655,6 +655,8 @@ def test_allowlist_judges_only_mcp_tools():
     # granted servers expose.
     assert allowed_mcp_names(None, ["memory"]) is None
     assert tool_allowed("mcp__memory__graph_delete_node", None)
+    assert allowed_mcp_names(None, []) == set()
+    assert not tool_allowed("mcp__mayi__search_docs", set())
 
 
 # ── MCP server declaration ──────────────────────────────────────────────────

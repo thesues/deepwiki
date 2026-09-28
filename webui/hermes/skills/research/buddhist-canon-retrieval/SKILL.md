@@ -1,6 +1,6 @@
 ---
 name: buddhist-canon-retrieval
-description: 从已索引的佛教语料库中检索经文依据来回答教义问题（六道、五阴、八苦、楞严经等），不打腹稿，必附经名+原文引文+出处。经 mcp_memory_search_docs 检索、必要时 mcp_memory_read_file 读上下文；语料库不在本机文件系统上，不要用 search_files 找。
+description: 从已索引的佛教语料库中检索经文依据来回答教义问题（六道、五阴、八苦、楞严经等），不打腹稿，必附经名+原文引文+出处。经 mcp__memory__search_docs 检索、必要时 mcp__memory__read_file 读上下文；语料库不在本机文件系统上，不要用 search_files 找。
 metadata:
   hermes:
     # The corpus is reachable only through the memory MCP server, so a
@@ -8,7 +8,7 @@ metadata:
     # code profile is granted code-index instead and would otherwise carry
     # a scripture retrieval brief it cannot execute.
     requires_tools:
-      - mcp_memory_search_docs
+      - mcp__memory__search_docs
 ---
 
 # 佛教语料库检索作答
@@ -20,11 +20,11 @@ metadata:
 所以本地的 `search_files` / `read_file` 在这里什么都找不到——不是没找对地方，是这个
 容器里确实没有。
 
-但 `mcp_memory_*` 这组工具能读到，它们跑在挂着语料库的那一侧：
+但 `mcp__memory__*` 这组工具能读到，它们跑在挂着语料库的那一侧：
 
-- ✅ `mcp_memory_search_docs(query=...)` —— 入口，先检索。返回的命中**自带原文**，
+- ✅ `mcp__memory__search_docs(query=...)` —— 入口，先检索。返回的命中**自带原文**，
   多数问题到这一步就够了。
-- ✅ `mcp_memory_read_file(path, start, end)` —— 需要看命中前后文时用。`path` 直接
+- ✅ `mcp__memory__read_file(path, start, end)` —— 需要看命中前后文时用。`path` 直接
   用命中里的 `file` 值（形如 `docs/buda/dizang-jing.md`，这是它在 autumn 里的路径），
   `start`/`end` 是 1 起算的闭区间，单次上限 400 行。
 - ❌ 本地 `search_files` / `read_file`：够不着语料库。
@@ -33,9 +33,9 @@ metadata:
 `docs/buda/xxx.md` 既是出处标签也是可读路径——写进答案时当出处用，想往下读时当参数用。
 
 ## 工作流程
-1. **先检索，勿背**：凡涉经文内容，一律先 `mcp_memory_search_docs()` 检索证据。可空开多个 query（道/经名/义理词）并行。
+1. **先检索，勿背**：凡涉经文内容，一律先 `mcp__memory__search_docs()` 检索证据。可空开多个 query（道/经名/义理词）并行。
 2. **选取最切题的一条为主引**，其他作补充。优先带【原文注释/译文】的定义型条目。
-   命中被截在半句、或要看这段前后还说了什么时，用 `mcp_memory_read_file` 按行号补读，
+   命中被截在半句、或要看这段前后还说了什么时，用 `mcp__memory__read_file` 按行号补读，
    不要用换个词再搜一次的方式去凑上下文。
 3. **引文格式**：给出 经名 + 原文引文（>>> 引用块）+ 出处标注（`文件 › 标题路径 › 行号`）。
    - 例：*梵网经 › 卷上 › 十发趣心 › 第十 顶心 › 注释，L863*

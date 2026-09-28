@@ -434,6 +434,9 @@ def build_agent(
     the session id the same way ACP's session/load registers a project root).
     """
     from run_agent import AIAgent
+    from profile_skills import install as install_profile_skill_scope
+
+    install_profile_skill_scope()
 
     _register_input_image_tool()
     _register_annotation_tool()

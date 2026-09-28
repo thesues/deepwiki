@@ -102,7 +102,26 @@ def test_lists_and_history_only_show_current_user(tenants):
     assert scopes["u_a"] != scopes["u_b"]
     status, data, headers = call("/artifacts/s-a/file.txt")
     assert status == 200 and data == b"u_a"
-    assert "private" in headers["Cache-Control"]
+    assert headers["Cache-Control"] == "private, max-age=31536000, immutable"
+    assert headers["Vary"] == "Cookie"
+
+
+def test_authenticated_artifact_cache_keeps_ownership_and_api_is_uncached(tenants):
+    call, _ = tenants
+    status, _, headers = call("/artifacts/s-a/file.txt", headers={"Range": "bytes=0-1"})
+    assert status == 206
+    assert headers["Cache-Control"] == "private, max-age=31536000, immutable"
+    assert headers["Vary"] == "Cookie"
+    status, _, headers = call("/artifacts/s-a/file.txt", headers={"If-None-Match": headers["ETag"]})
+    assert status == 304
+    assert headers["Cache-Control"] == "private, max-age=31536000, immutable"
+    assert headers["Vary"] == "Cookie"
+    status, _, headers = call("/artifacts/s-b/file.txt")
+    assert status == 404
+    assert headers["Cache-Control"] == "private, no-store"
+    status, _, headers = call("/api/sessions")
+    assert status == 200
+    assert headers["Cache-Control"] == "private, no-store"
 
 
 def test_cross_user_stream_status_is_indistinguishable_from_unknown(tenants):
@@ -125,8 +144,9 @@ def test_origin_checked_and_user_admission_atomic(tenants):
     call, manager = tenants
     status, _, _ = call("/api/chat/cancel", body={"streamId": "stream-s-a"}, headers={"Origin": "https://foreign.test"})
     assert status == 403
-    with pytest.raises(Refused, match="已有一个"):
-        manager.start(session_id="new", text="x", endpoint=ha.Endpoint("y","Y","m","http://x",max_concurrent=8), user_id="u_a")
+    with pytest.raises(Refused) as refused:
+        manager.start(session_id="s-a", text="x", endpoint=ha.Endpoint("y","Y","m","http://x",max_concurrent=8), user_id="u_a")
+    assert refused.value.reason == "taken"
     stream = manager.stream("stream-s-a")
     manager._rotated(stream, "s-a", "s-child")
     assert manager.owner_of("s-a") == manager.owner_of("s-child") == "u_a"

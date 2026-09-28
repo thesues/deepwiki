@@ -512,14 +512,20 @@ class App:
         extra_headers: list[tuple[str, str]] | None = None,
     ) -> Response | None:
         """Serve a unique artifact with a cheap strong validator for ranges."""
+        # The same browser can log into a different account. Tie its private
+        # cache entry to the auth cookie so a cached artifact is never reused
+        # across identities without another ownership check.
+        headers = list(extra_headers or [])
+        if req.user_id:
+            headers.append(("Vary", "Cookie"))
         return App._send_file(
             req,
             target,
             ctype,
-            "private, no-cache" if req.user_id else "public, max-age=31536000, immutable",
+            "private, max-age=31536000, immutable" if req.user_id else "public, max-age=31536000, immutable",
             use_last_modified=False,
             use_metadata_etag=True,
-            extra_headers=extra_headers,
+            extra_headers=headers,
         )
 
     @staticmethod
@@ -709,7 +715,14 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("handler raised for %s", self.path)
             resp = json_response({"error": "internal error"}, status=500)
 
-        if principal is not None and not path.startswith(STATIC_PREFIX):
+        # Successful artifact reads have unique, never-reused URLs and already
+        # carry a private immutable policy from serve_static. Keep it: this
+        # broad auth fallback previously replaced it with private, no-store.
+        # Denied/missing artifacts still take the no-store path below.
+        immutable_artifact = (
+            path.startswith(ARTIFACTS_PREFIX) and resp.status in (200, 206, 304)
+        )
+        if principal is not None and not path.startswith(STATIC_PREFIX) and not immutable_artifact:
             resp.headers = [(k, v) for k, v in resp.headers if k.lower() != "cache-control"]
             resp.headers.append(("Cache-Control", "private, no-store"))
 

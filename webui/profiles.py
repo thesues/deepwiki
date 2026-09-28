@@ -27,10 +27,10 @@ Declarations come from, in order of precedence:
    is exactly the pre-profile behaviour, so an un-migrated deploy still
    boots and still answers.
 
-Per-profile skills carry a known gap, recorded in `skills`' docstring: hermes
-reads skills from ONE process-wide directory and exposes no per-agent
-injection point yet, so the field is declared, surfaced through the API, and
-honestly inert until upstream grows the knob.
+Hermes reads skills from ONE process-wide directory. The three project skills
+shipped by this app are gated by their tool requirements in the prompt and by
+profile_skills at skills_list/skill_view time. The general `skills` declaration
+is still inert until Hermes grows per-agent directory injection.
 """
 
 from __future__ import annotations
@@ -73,7 +73,10 @@ class AgentProfile:
         self.toolsets = [str(t) for t in toolsets if str(t).strip()] if toolsets else None
         # None means "every enabled MCP server" (pre-profile behaviour); a list
         # is a SUBSET of the config's registered names, filtered at build time.
-        self.mcp_servers = [str(s) for s in mcp_servers if str(s).strip()] if mcp_servers else None
+        self.mcp_servers = (
+            [str(s) for s in mcp_servers if str(s).strip()]
+            if mcp_servers is not None else None
+        )
         # The profile's folder on autumnfs: the agent's terminal cwd (registered
         # per session, the same injection point ACP's session/load uses).
         self.workspace = str(workspace or "").strip()
@@ -118,7 +121,7 @@ def _profile_from(entry: dict, key: str, default_directive: str | None) -> Agent
         label=str(entry.get("label") or key),
         directive=entry.get("directive") if entry.get("directive") is not None else default_directive,
         toolsets=entry.get("toolsets") or entry.get("platform_toolsets"),
-        mcp_servers=entry.get("mcp_servers") or entry.get("mcpServers"),
+        mcp_servers=entry["mcp_servers"] if "mcp_servers" in entry else entry.get("mcpServers"),
         workspace=entry.get("workspace") or "",
         skills=entry.get("skills") or "",
         endpoints=entry.get("endpoints"),
@@ -256,6 +259,11 @@ def scope_agent_tools(
     """
     toolsets = list(global_toolsets)
     servers = list(enabled_servers)
+    # A profile that replaces the platform toolsets starts with no MCP. The
+    # servers it wants must be named explicitly; otherwise a general profile
+    # whose toolsets omit MCP quietly gets every registered corpus below.
+    if profile is not None and profile.toolsets is not None and profile.mcp_servers is None:
+        servers = []
     # Rule 1 — the MCP subset. Every enabled server's `mcp-<name>` toolset is
     # in global_toolsets (the resolver appends it); narrowing the servers must
     # also strip the toolsets of the ones excluded, or the agent carries tools
@@ -301,6 +309,8 @@ def allowed_mcp_names(allow: list[str] | None, servers: list[str]) -> set[str] |
     `None` (no allowlist) means every tool of the granted servers, which is
     the behaviour profiles had before this existed.
     """
+    if not servers:
+        return set()
     if allow is None:
         return None
     san = lambda v: re.sub(r"[^A-Za-z0-9_]", "_", str(v or ""))  # noqa: E731

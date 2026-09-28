@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import sys
 import types
+import json
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -172,8 +175,36 @@ def test_a_server_not_enabled_is_never_added():
 def test_a_toolset_list_replaces_the_platform_list():
     p = pr.build_profiles([{"key": "buda", "toolsets": ["file", "skills"]}])[0]
     toolsets, servers = pr.scope_agent_tools(p, *_global())
-    assert toolsets == ["file", "skills", "mcp-memory", "mcp-code-index"]
-    assert servers == ["memory", "code-index"]
+    assert toolsets == ["file", "skills"]
+    assert servers == []
+
+
+def test_explicit_empty_mcp_server_list_stays_empty():
+    p = pr.build_profiles([{"key": "general", "mcp_servers": []}])[0]
+    assert p.mcp_servers == []
+    toolsets, servers = pr.scope_agent_tools(p, *_global())
+    assert servers == []
+    assert not any(t.startswith("mcp-") for t in toolsets)
+
+
+def test_deployed_projects_keep_their_own_mcp_and_annotation_tools():
+    manifest = Path(__file__).resolve().parents[2] / "k8s" / "webui.yaml"
+    deployment = next(doc for doc in yaml.safe_load_all(manifest.read_text())
+                      if doc.get("kind") == "Deployment")
+    env = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    profiles = pr.build_profiles(json.loads(next(item["value"] for item in env
+                                                 if item["name"] == "DEEPWIKI_PROFILES")))
+    global_toolsets = ["skills", "terminal", "mcp-memory", "mcp-code-index", "mcp-mayi"]
+    enabled_servers = ["memory", "code-index", "mayi"]
+    expected = {"buda": "memory", "code-autumn-rs": "code-index", "mayi": "mayi"}
+
+    for profile in profiles:
+        toolsets, servers = pr.scope_agent_tools(profile, global_toolsets, enabled_servers)
+        assert servers == ([expected[profile.key]] if profile.key in expected else [])
+        assert ("mayi-annotation" in toolsets) == (profile.key == "mayi")
+        allowed = pr.allowed_mcp_names(profile.mcp_tools, servers)
+        assert pr.tool_allowed("mcp__mayi__search_docs", allowed) == (profile.key == "mayi")
+        assert pr.tool_allowed("mcp__memory__search_docs", allowed) == (profile.key == "buda")
 
 
 def test_a_toolset_list_and_an_mcp_subset_compose():
