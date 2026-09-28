@@ -85,7 +85,7 @@ class AgentProfile:
         self.endpoints = [str(e) for e in endpoints if str(e).strip()] if endpoints else None
         # None means "every tool the granted servers expose" — the
         # pre-existing behaviour. A list names the BARE tool names to keep
-        # (`search_docs`, not `mcp_memory_search_docs`), because an MCP
+        # (`search_docs`, not `mcp__memory__search_docs`), because an MCP
         # server is otherwise all-or-nothing: `mcp_servers` grants a server
         # and the server decides what that means. memory-mcp exposes 18
         # tools, of which the scripture profile has business with four; the
@@ -291,11 +291,9 @@ def allowed_mcp_names(allow: list[str] | None, servers: list[str]) -> set[str] |
     """The exact tool names a profile's `mcp_tools` allowlist admits.
 
     Built by CONSTRUCTION, not by matching: hermes names an MCP tool
-    `mcp_{server}_{tool}` with both halves sanitized (anything outside
-    `[A-Za-z0-9_]` becomes `_`, so `code-index` becomes `code_index`), and it
-    says in its own source that the form is ambiguous — `mcp_a_b_tool` is
-    either server `a` + tool `b_tool` or server `a_b` + tool `tool`. Matching
-    a suffix inherits that ambiguity and adds one of its own: allowing
+    `mcp__{server}__{tool}` with both halves sanitized (anything outside
+    `[A-Za-z0-9_]` becomes `_`, so `code-index` becomes `code_index`). Matching
+    a suffix would admit unrelated tools: allowing
     `read_file` would also admit some server's `unsafe_read_file`. Spelling
     out every (server, tool) pair we mean is exact, and the servers are known
     here — they are the ones the profile was granted.
@@ -306,7 +304,7 @@ def allowed_mcp_names(allow: list[str] | None, servers: list[str]) -> set[str] |
     if allow is None:
         return None
     san = lambda v: re.sub(r"[^A-Za-z0-9_]", "_", str(v or ""))  # noqa: E731
-    return {f"mcp_{san(s)}_{san(t)}" for s in servers for t in allow}
+    return {f"mcp__{san(s)}__{san(t)}" for s in servers for t in allow}
 
 
 def tool_allowed(name: str, allowed: set[str] | None) -> bool:
