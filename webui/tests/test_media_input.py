@@ -98,6 +98,42 @@ def test_artifact_image_accepts_its_filesystem_path(tmp_path):
     assert result["meta"]["artifact_url"] == "/artifacts/session-1/frame.webp"
 
 
+@pytest.mark.parametrize("reference", [
+    "img_0123abcd4567.png",
+    "MEDIA:img_0123abcd4567.png",
+    "MEDIA:/opt/data/cache/images/img_0123abcd4567.png",
+])
+def test_mcp_media_cache_image_becomes_a_visual_preview(tmp_path, reference):
+    cache = tmp_path / "cache" / "images"
+    cache.mkdir(parents=True)
+    _png(cache / "img_0123abcd4567.png", (96, 48))
+
+    result = media_input.media_cache_tool_result(reference, "看这张图", cache)
+
+    assert result["_multimodal"] is True
+    assert result["meta"]["media_path"] == "img_0123abcd4567.png"
+    assert result["meta"]["width"] == 96
+    assert result["meta"]["height"] == 48
+    encoded = result["content"][-1]["image_url"]["url"].split(",", 1)[1]
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as preview:
+        assert preview.format == "JPEG"
+
+
+@pytest.mark.parametrize("reference", [
+    "/tmp/img_0123abcd4567.png",
+    "img_nothex.png",
+    "../cache/images/img_0123abcd4567.png",
+    "http://example.com/cache/images/img_0123abcd4567.png",
+])
+def test_mcp_media_cache_image_rejects_non_cache_references(tmp_path, reference):
+    cache = tmp_path / "cache" / "images"
+    cache.mkdir(parents=True)
+    _png(cache / "img_0123abcd4567.png", (32, 24))
+
+    with pytest.raises(ValueError):
+        media_input.media_cache_tool_result(reference, "inspect", cache)
+
+
 def test_artifact_image_rejects_another_session(tmp_path):
     root = tmp_path / "artifacts"
     path = root / "session-b" / "frame.png"

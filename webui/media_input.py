@@ -19,6 +19,11 @@ ARTIFACT_PREVIEW_SIZE = (2048, 2048)
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
 ARTIFACT_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 ARTIFACT_SESSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+MEDIA_CACHE_PATTERN = re.compile(
+    r"(?:MEDIA:)?(?:[A-Za-z]:)?(?:(?:/[^/\s]+)*)?/cache/images/(img_[0-9a-f]{12}\.(?:png|jpe?g|webp|gif))$|"
+    r"(?:MEDIA:)?(img_[0-9a-f]{12}\.(?:png|jpe?g|webp|gif))$",
+    re.IGNORECASE,
+)
 IMAGE_KEY_PATTERN = re.compile(
     r"input/webui/(?:u_[A-Za-z0-9_-]+/)?[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
     re.IGNORECASE,
@@ -195,6 +200,57 @@ def _artifact_preview(path: Path) -> tuple[str, int, int, int]:
         image.save(buffer, format="JPEG", quality=90, optimize=True)
     preview = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{preview}", source_bytes, width, height
+
+
+def _media_cache_path(reference: str, image_cache_dir: Path) -> tuple[Path, str]:
+    """Resolve one Hermes Gateway cached MCP image by its bearer-style name."""
+    reference = reference.strip()
+    if not reference:
+        raise ValueError("media_path is required")
+    if reference.upper().startswith("MEDIA:"):
+        reference = reference[len("MEDIA:"):].strip()
+
+    parsed = urllib.parse.urlsplit(reference)
+    if parsed.scheme:
+        raise ValueError("media_path must be a MEDIA tag, cache path, or image cache filename")
+    raw_path = urllib.parse.unquote(reference.split("?", 1)[0].split("#", 1)[0])
+    match = MEDIA_CACHE_PATTERN.fullmatch(raw_path)
+    if not match:
+        raise ValueError("media_path is not a supported Hermes cached image name")
+    filename = match.group(1) or match.group(2)
+
+    root = image_cache_dir.resolve()
+    candidate = (root / filename).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("media_path is outside the image cache") from exc
+    return candidate, filename
+
+
+def media_cache_tool_result(reference: str, question: str, image_cache_dir: Path) -> dict:
+    """Load one MCP/Hermes cached image as a transient multimodal result."""
+    path, filename = _media_cache_path(reference, image_cache_dir)
+    if not path.is_file():
+        raise ValueError("cached image does not exist")
+    data_url, source_bytes, width, height = _artifact_preview(path)
+    note = f"Loaded cached MCP image {filename} at {width}x{height}."
+    if question.strip():
+        note += f"\nQuestion: {question.strip()}"
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": note},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ],
+        "text_summary": f"Loaded cached MCP image {filename} ({source_bytes} bytes, {width}x{height}).",
+        "meta": {
+            "media_path": filename,
+            "size_bytes": source_bytes,
+            "width": width,
+            "height": height,
+        },
+    }
 
 
 def artifact_tool_result(

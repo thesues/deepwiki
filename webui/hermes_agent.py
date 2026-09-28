@@ -334,6 +334,11 @@ def _artifacts_root() -> Path:
     return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
 
 
+def _image_cache_root() -> Path:
+    """Hermes Gateway's shared cache for MCP MEDIA:image tool results."""
+    return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "cache" / "images"
+
+
 def _register_input_image_tool() -> None:
     """Expose one uploaded or generated image as a multimodal tool result."""
     from tools.registry import registry, tool_error
@@ -343,14 +348,15 @@ def _register_input_image_tool() -> None:
 
     async def _open(args: dict, **_: Any) -> Any:
         import asyncio
-        from media_input import artifact_tool_result, tool_result, owned_key
+        from media_input import artifact_tool_result, media_cache_tool_result, tool_result, owned_key
         from gateway.session_context import get_session_env
 
         key = str(args.get("object_key") or "").strip()
         artifact_path = str(args.get("artifact_path") or "").strip()
+        media_path = str(args.get("media_path") or "").strip()
         question = str(args.get("question") or "").strip()
-        if bool(key) == bool(artifact_path):
-            return tool_error("Provide exactly one of object_key or artifact_path", success=False)
+        if sum(bool(value) for value in (key, artifact_path, media_path)) != 1:
+            return tool_error("Provide exactly one of object_key, artifact_path, or media_path", success=False)
         user_id = get_session_env("HERMES_SESSION_USER_ID", "")
         current_session = (
             get_session_env("HERMES_SESSION_KEY", "")
@@ -362,6 +368,13 @@ def _register_input_image_tool() -> None:
                 if not owned_key(key, user_id):
                     return tool_error("Invalid input image object_key", success=False)
                 return await asyncio.to_thread(tool_result, key, question)
+            if media_path:
+                return await asyncio.to_thread(
+                    media_cache_tool_result,
+                    media_path,
+                    question,
+                    _image_cache_root(),
+                )
 
             def owns_artifact_session(session_id: str) -> bool:
                 if session_id == current_session:
@@ -396,8 +409,10 @@ def _register_input_image_tool() -> None:
                 "historical image (for example 上一张图, 第一张图, or a specific "
                 "object_key), resolve the intended marker from conversation order. "
                 "Generated images use /artifacts/<session>/<path>. Open each artifact "
-                "the user asks you to inspect, one tool call per image. Provide exactly "
-                "one of object_key or artifact_path; ask when the reference is ambiguous."
+                "the user asks you to inspect, one tool call per image. MCP image tool "
+                "results appear as MEDIA:/.../cache/images/img_<id>.png or img_<id>.png; "
+                "open those with media_path. Provide exactly one of object_key, "
+                "artifact_path, or media_path; ask when the reference is ambiguous."
             ),
             "parameters": {
                 "type": "object",
@@ -411,6 +426,14 @@ def _register_input_image_tool() -> None:
                         "description": (
                             "Exact /artifacts/<session>/<path> URL or "
                             "/opt/data/artifacts/<session>/<path> filesystem path."
+                        ),
+                    },
+                    "media_path": {
+                        "type": "string",
+                        "description": (
+                            "Hermes MCP MEDIA cached image reference, for example "
+                            "MEDIA:/opt/data/cache/images/img_0123abcd4567.png "
+                            "or just img_0123abcd4567.png."
                         ),
                     },
                     "question": {
