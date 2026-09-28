@@ -654,6 +654,29 @@ def test_list_sessions_zero_message_root_resolves_through_the_chain(monkeypatch)
     assert len(rows) == 1 and rows[0]["id"] == "tip" and rows[0]["messageCount"] == 9
 
 
+def test_session_bridge_forwards_user_id(monkeypatch):
+    """The retained JSON-line entrypoint must enforce the same tenant scope."""
+    import io
+    import hermes_session_api as hsa
+
+    seen = []
+    monkeypatch.setattr(
+        hsa, "list_sessions",
+        lambda limit, include_empty, user_id="": seen.append(
+            (limit, include_empty, user_id)
+        ) or [],
+    )
+    stdin = io.StringIO('{"cmd":"list","limit":7,"include_empty":true,"user_id":"u_a"}\n')
+    stdout = io.StringIO()
+    monkeypatch.setattr(hsa.sys, "stdin", stdin)
+    monkeypatch.setattr(hsa.sys, "stdout", stdout)
+    assert hsa.serve() == 0
+    assert seen == [(7, True, "u_a")]
+    assert [json.loads(line) for line in stdout.getvalue().splitlines()] == [
+        {"ok": "ready"}, {"ok": []},
+    ]
+
+
 # ── the project a conversation belongs to ───────────────────────────────────
 
 

@@ -487,6 +487,15 @@ def build_app(
         return json_response({
             "sessions": rows,
             "streaming": running,
+            # The access cookie is HttpOnly, so the browser cannot otherwise
+            # tell that another tab replaced it with a different subject.  A
+            # stable opaque scope lets the client discard the previous
+            # identity's in-memory transcript, URL and stream handles instead
+            # of leaving clickable rows that the new subject correctly gets a
+            # 404 for.  Never return the subject itself.
+            "identityScope": (
+                hashlib.sha256(req.user_id.encode()).hexdigest() if req.user_id else ""
+            ),
             "profiles": [p.as_json() for p in profile_list],
             "defaultProfile": default_profile.key,
             # `running` per endpoint, not a global: the composer gates on the

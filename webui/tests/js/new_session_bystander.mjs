@@ -155,6 +155,7 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
   // localStorage, same server, fresh page.
   const server = shared || {
     streaming: { ...streaming }, sessions: [...sessions], history: { ...history }, events: {},
+    identityScope: "scope-a",
     endpoints: [
       { key: "dsv4", label: "DSV4", model: "dsv4", maxConcurrent: 1, running: 0 },
       { key: "mm2", label: "MM2", model: "mm2", maxConcurrent: 1, running: 0 },
@@ -170,7 +171,7 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
     calls.push({ path: u.pathname, query: Object.fromEntries(u.searchParams), body });
     switch (u.pathname) {
       case "/api/sessions":
-        return (server.sessionsGate || Promise.resolve()).then(() => reply({ defaultProfile: "default", sessions: server.sessions, streaming: server.streaming, endpoints: server.endpoints }));
+        return (server.sessionsGate || Promise.resolve()).then(() => reply({ identityScope: server.identityScope, defaultProfile: "default", sessions: server.sessions, streaming: server.streaming, endpoints: server.endpoints }));
       case "/api/status":
         return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4", profiles: [{ key: "default", label: "默认" }], defaultProfile: "default" });
       case "/api/chat/start": return (server.startGate || Promise.resolve()).then(() => {
@@ -635,6 +636,59 @@ const count = (hay, needle) => hay.split(needle).length - 1;
   assert.strictEqual(h.$("#messages").querySelectorAll("[data-since]").length >= 2, true,
     "a live running tool lost its timer");   // the tool row's and the pending row's
   assert.ok(h.$("#pending"));
+}
+
+/* ---------- 10. replacing the JWT subject clears the previous identity ---------- */
+{
+  const h = harness({
+    streaming: { old: "old-stream" },
+    sessions: [{ id: "old", title: "old user's question", messageCount: 2 }],
+    history: { old: [
+      { kind: "history_user", text: "old user's question" },
+      { kind: "delta", text: "old user's answer", thought: false },
+    ] },
+  });
+  await settle();
+  h.run('openSession("old")'); await settle(); await settle();
+  assert.ok(h.$("#messages").textContent.includes("old user's answer"));
+  assert.ok(h.sources.some((source) => !source.closed), "precondition: old user's stream is attached");
+
+  // Another tab completes login as a different user and replaces the
+  // Host-only cookie.  The next authenticated list response is the first
+  // thing this still-live page can use to observe the change.
+  h.server.identityScope = "scope-b";
+  h.server.sessions = [{ id: "new", title: "new user's question", messageCount: 1 }];
+  h.server.streaming = {};
+  h.run("loadSessions()"); await settle(); await settle();
+
+  assert.strictEqual(h.S().sessionId, null, "the old user's selected session survived the identity change");
+  assert.strictEqual(h.location.searchParams.get("session"), null, "the old session id survived in the URL");
+  assert.ok(h.S().pendingNew && h.$(".chat").classList.contains("fresh"),
+    "the new identity did not land on a clean conversation");
+  assert.ok(!h.$("#messages").textContent.includes("old user's answer"),
+    "the previous identity's transcript remained visible");
+  assert.ok(h.sources.every((source) => source.closed),
+    "a stream owned by the previous identity remained attached");
+  assert.deepStrictEqual(h.S().sessionRows.map((row) => row.id), ["new"]);
+
+  // A chat/start already authenticated as the old subject may finish after
+  // the scope reset.  Its response must not reintroduce that subject's newly
+  // allocated session id or stream into the page.
+  const h2 = harness(); await settle();
+  let releaseStart;
+  h2.server.startGate = new Promise((resolve) => { releaseStart = resolve; });
+  h2.type("old identity in flight"); h2.$("#send").click(); await settle();
+  h2.server.identityScope = "scope-b";
+  h2.server.sessions = [];
+  h2.server.streaming = {};
+  h2.run("loadSessions()"); await settle();
+  releaseStart(); await settle(); await settle();
+  assert.strictEqual(h2.S().sessionId, null,
+    "an old identity's in-flight chat/start took over the new identity");
+  assert.deepStrictEqual(h2.S().streaming, {},
+    "an old identity's stream was adopted after the scope reset");
+  assert.ok(!Object.hasOwn(h2.S().sessionEp, "new-1"),
+    "an old identity's session id was persisted after the scope reset");
 }
 
 console.log("ok - a new session leaves the running one alone");

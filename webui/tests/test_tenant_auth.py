@@ -86,19 +86,30 @@ def test_cross_user_access_is_denied(tenants, path, body):
 
 def test_lists_and_history_only_show_current_user(tenants):
     call, _ = tenants
+    scopes = {}
     for user, sid in (("u_a", "s-a"), ("u_b", "s-b")):
         status, data, _ = call("/api/sessions", user)
         assert status == 200
         result = json.loads(data)
         assert [s["id"] for s in result["sessions"]] == [sid]
         assert set(result["streaming"]) == {sid}
+        assert len(result["identityScope"]) == 64
+        scopes[user] = result["identityScope"]
         status, data, _ = call("/api/status", user)
         assert [s["session"] for s in json.loads(data)["turns"]] == [sid]
         status, data, _ = call("/api/session/history?id=" + sid, user)
         assert status == 200 and sid.encode() in data
+    assert scopes["u_a"] != scopes["u_b"]
     status, data, headers = call("/artifacts/s-a/file.txt")
     assert status == 200 and data == b"u_a"
     assert "private" in headers["Cache-Control"]
+
+
+def test_cross_user_stream_status_is_indistinguishable_from_unknown(tenants):
+    call, _ = tenants
+    status, data, _ = call("/api/chat/status?stream_id=stream-s-b", user="u_a")
+    assert status == 200
+    assert json.loads(data) == {"known": False}
 
 
 def test_other_users_images_and_forged_markers_denied(tenants):
@@ -142,4 +153,50 @@ def test_mixed_lineage_is_not_owned():
     db = types.SimpleNamespace(_conn=conn)
     assert hs._owner_from_db(db, "child") == "u_a"
     assert hs._owner_from_db(db, "bad") == ""
+    conn.close()
+
+
+def test_authenticated_list_filters_roots_before_tip_projection(monkeypatch):
+    """A compression tip from another identity must contribute no metadata."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE sessions (id TEXT, parent_session_id TEXT, user_id TEXT)")
+    conn.executemany("INSERT INTO sessions VALUES (?, ?, ?)", [
+        ("root-a", None, "u_a"), ("tip-a", "root-a", "u_a"),
+        ("root-mixed", None, "u_a"), ("tip-mixed", "root-mixed", "u_b"),
+        ("root-b", None, "u_b"),
+    ])
+    seen = []
+
+    class DB:
+        _conn = conn
+        def list_sessions_rich(self, **kw):
+            seen.append(kw)
+            assert kw["project_compression_tips"] is False
+            return [
+                {"id": "root-a", "user_id": "u_a", "end_reason": "compression",
+                 "message_count": 1, "title": "a-root", "preview": "a-root", "started_at": 1},
+                {"id": "root-mixed", "user_id": "u_a", "end_reason": "compression",
+                 "message_count": 1, "title": "must-not-leak", "preview": "must-not-leak", "started_at": 2},
+                {"id": "root-b", "user_id": "u_b", "end_reason": None,
+                 "message_count": 2, "title": "b", "preview": "b", "started_at": 3},
+            ]
+        def get_compression_tip(self, sid):
+            return {"root-a": "tip-a", "root-mixed": "tip-mixed"}.get(sid, sid)
+        def _get_session_rich_row(self, sid):
+            return {
+                "tip-a": {"id": "tip-a", "message_count": 3, "title": "a-tip",
+                          "preview": "a-tip", "last_active": 11, "end_reason": None},
+                "tip-mixed": {"id": "tip-mixed", "message_count": 4,
+                              "title": "other-user-secret", "preview": "other-user-secret",
+                              "last_active": 12, "end_reason": None},
+            }.get(sid)
+
+    db = DB()
+    monkeypatch.setattr(hs, "_db", lambda: db)
+    assert [r["id"] for r in hs.list_sessions(100, False, "u_a")] == ["tip-a"]
+    assert [r["id"] for r in hs.list_sessions(100, False, "u_b")] == ["root-b"]
+    assert all("other-user-secret" not in json.dumps(rows) for rows in (
+        hs.list_sessions(100, False, "u_a"), hs.list_sessions(100, False, "u_b")
+    ))
+    assert seen
     conn.close()

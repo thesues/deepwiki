@@ -92,6 +92,43 @@ def owner(session_id: str) -> str:
     return _owner_from_db(_db(), session_id)
 
 
+_PROJECTED_TIP_FIELDS = (
+    "id", "ended_at", "end_reason", "message_count", "tool_call_count",
+    "title", "last_active", "preview", "model", "system_prompt", "cwd",
+    "git_branch", "git_repo_root",
+)
+
+
+def _project_owned_compression_tip(db, row: dict, user_id: str) -> dict | None:
+    """Project one already-owner-filtered root without crossing identities.
+
+    Hermes' public list API has no ``user_id`` predicate.  Asking it to project
+    first therefore lets a continuation belonging to another identity
+    contribute its id, preview and message count before this module gets a
+    chance to filter the result.  Filter the raw root first, then reproduce the
+    small projection step only when the complete ancestry still has one owner.
+    """
+    if row.get("end_reason") != "compression":
+        return row
+    try:
+        tip_id = db.get_compression_tip(row["id"])
+        if not tip_id or tip_id == row["id"]:
+            return row
+        if _owner_from_db(db, tip_id) != user_id:
+            return None
+        tip = db._get_session_rich_row(tip_id)
+    except Exception:  # noqa: BLE001 -- an unreadable chain is not listable
+        return None
+    if not tip:
+        return row
+    merged = dict(row)
+    for key in _PROJECTED_TIP_FIELDS:
+        if key in tip:
+            merged[key] = tip[key]
+    merged["_lineage_root_id"] = row["id"]
+    return merged
+
+
 def list_sessions(limit: int, include_empty: bool, user_id: str = "") -> list[dict]:
     # exclude_sources=["tool"] mirrors the CLI's default: hide third-party tool
     # sessions, which are not conversations anyone opened.
@@ -118,7 +155,12 @@ def list_sessions(limit: int, include_empty: bool, user_id: str = "") -> list[di
         while True:
             options = dict(
                 source=None, exclude_sources=["tool"], limit=batch,
-                include_children=False, project_compression_tips=True,
+                include_children=False,
+                # Authenticated listing must filter the raw root before a tip
+                # can contribute metadata.  Projection is reproduced below,
+                # after the owner check.  Anonymous/admin listing keeps
+                # Hermes' native fast path unchanged.
+                project_compression_tips=not bool(user_id),
                 order_by_last_active=True,
             )
             if user_id:
@@ -131,8 +173,15 @@ def list_sessions(limit: int, include_empty: bool, user_id: str = "") -> list[di
     rows = pages()
     out = []
     for r in rows:
-        if user_id and _owner_from_db(db, str(r.get("id") or "")) != user_id:
-            continue
+        if user_id:
+            # Exact row ownership is checked before projection.  An anonymous
+            # root must not become a user's conversation merely because an
+            # authenticated continuation was attached to it later.
+            if str(r.get("user_id") or "") != user_id:
+                continue
+            r = _project_owned_compression_tip(db, r, user_id)
+            if r is None or _owner_from_db(db, str(r.get("id") or "")) != user_id:
+                continue
         # A session with no messages is a ghost — unless it is a compression
         # root whose messages live in a descendant (the tip flushed nothing
         # yet). `resolve_resume_session_id` (#15000) walks the chain forward;
@@ -482,7 +531,8 @@ def serve() -> int:
             cmd = req.get("cmd")
             if cmd == "list":
                 out = list_sessions(int(req.get("limit", 200)),
-                                    bool(req.get("include_empty", False)))
+                                    bool(req.get("include_empty", False)),
+                                    str(req.get("user_id") or ""))
             elif cmd == "history":
                 out = history(req["id"], int(req.get("limit", 2000)))
             else:

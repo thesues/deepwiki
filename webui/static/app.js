@@ -38,8 +38,17 @@ const LS_OPEN = "hermes.open";      // which activity groups the reader had open
 const LS_EP = "hermes.endpoint";    // last-used endpoint: the DEFAULT new sessions start on
 const LS_SESS_EP = "hermes.sessionEndpoints";   // session_id -> endpoint, so the picker
                         // still shows a conversation's model after a reload
+const LS_IDENTITY_SCOPE = "hermes.identityScope"; // opaque hash of the authenticated subject
 const LS_THEME = "hermes.theme";    // "light" | "dark"; unset = dark (the original look)
 const LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed";
+
+function loadIdentityScope() {
+  try { return localStorage.getItem(LS_IDENTITY_SCOPE); } catch (_) { return null; }
+}
+
+function saveIdentityScope(scope) {
+  try { localStorage.setItem(LS_IDENTITY_SCOPE, scope); } catch (_) {}
+}
 
 function sessionsCollapsed() {
   try { return localStorage.getItem(LS_SESSIONS_COLLAPSED) === "1"; } catch (_) { return false; }
@@ -534,6 +543,7 @@ const S = {
                          // disclosure can be put in front of it — see
                          // activityGroup. Cleared wherever a turn begins.
   sessionId: null,
+  identityScope: loadIdentityScope(),
   switching: null,      // a history read in flight; sending must wait for it
   viewGen: 0,           // bumped whenever the view changes (openSession/newSession);
                         // an await that returns to a different gen must not touch it
@@ -1175,6 +1185,8 @@ async function answerApproval(id, optionId, card) {
 }
 
 async function pollApprovals() {
+  const identityScope = S.identityScope;
+  const sessionId = S.sessionId;
   try {
     // Say which conversation we are in. Unscoped, this poll showed a second
     // person a permission prompt raised in a conversation they had never
@@ -1182,8 +1194,9 @@ async function pollApprovals() {
     // The `?` stays OUTSIDE the interpolation: a reader — and the test that
     // checks the client only asks for paths the router serves — cannot tell a
     // query from a path segment when the separator is hidden inside `${…}`.
-    const q = S.sessionId ? `session=${encodeURIComponent(S.sessionId)}` : "";
+    const q = sessionId ? `session=${encodeURIComponent(sessionId)}` : "";
     const j = await (await authFetch(`/api/approval/pending?${q}`)).json();
+    if (identityScope !== S.identityScope || sessionId !== S.sessionId) return;
     const p = (j.pending || [])[0];
     if (p) showApproval(p);
     else S.awaitingPerm = false;
@@ -1668,6 +1681,39 @@ function watchWhileOthersRun() {
 async function loadSessions() {
   let j;
   try { j = await (await authFetch("/api/sessions")).json(); } catch (_) { return; }
+  const nextScope = typeof j.identityScope === "string" ? j.identityScope : "";
+  if (S.identityScope !== null && S.identityScope !== nextScope) {
+    // Another tab can replace the Host-only access cookie while this page is
+    // still alive (and bfcache can restore the old DOM after login).  The
+    // server correctly rejects the old subject's history, but without this
+    // boundary the old rows remain clickable and open onto a blank 404.
+    // Drop every identity-owned client object before rendering the new list.
+    S.viewGen++;
+    S.ess.forEach((source) => source.close());
+    S.ess.clear();
+    S.streaming = {};
+    S.streamId = null;
+    S.ownStream = null;
+    S.sessionId = null;
+    S.switching = null;
+    S.pendingNew = true;
+    S.awaitingPerm = false;
+    S.lastSeq = 0;
+    S.busy = false;
+    HISTORY_CACHE.clear();
+    clearApprovalDock();
+    clearPendingMedia();
+    S.sessionEp = {};
+    try {
+      localStorage.removeItem(LS_OPEN);
+      localStorage.removeItem(LS_SESS_EP);
+    } catch (_) {}
+    rememberView(null);
+    showFresh();
+    setBusy(false);
+  }
+  S.identityScope = nextScope;
+  saveIdentityScope(nextScope);
   // Only openSession and a send decide what is on screen; boot() restores
   // the session from this tab's URL. Polling never changes the selected view.
   const was = S.streaming;
@@ -1951,6 +1997,7 @@ async function send() {
   S.activity = null; S.turnTop = null;
   S.skipUserEcho = true;
   const gen = S.viewGen;    // the view this send was typed into
+  const identityScope = S.identityScope;
   let j;
   try {
     j = await (await authFetch("/api/chat/start", {
@@ -1978,6 +2025,13 @@ async function send() {
     if (!input.value) input.value = draftText;
     dropLastUser();
     status("发送失败");
+    return;
+  }
+  if (identityScope !== S.identityScope) {
+    // The request was authenticated as the previous subject.  Its turn may
+    // continue server-side for that owner, but no id, stream or endpoint hint
+    // from it may be adopted into the new subject's page.
+    S.skipUserEcho = false;
     return;
   }
   if (gen !== S.viewGen) {
