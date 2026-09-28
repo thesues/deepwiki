@@ -32,6 +32,9 @@ def test_media_skill_keeps_runtime_output_out_of_static():
     assert "JWT 模式只发布属于当前用户会话的目录" in skill
     assert "`/static/` 只服务镜像中的 HTML/JS/CSS" in skill
     assert "Artifact 路径永不重用" in skill
+    assert "图片交付前逐张目检" in skill
+    assert "input_image_open" in skill
+    assert "artifact_path=/artifacts/<当前会话 id>/..." in skill
 
 
 def test_vllm_media_skill_and_client_forbid_artifact_overwrite():

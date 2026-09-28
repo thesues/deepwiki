@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import base64
+import io
 import mimetypes
 import os
 import re
 import urllib.parse
 import urllib.request
+from pathlib import Path, PurePosixPath
+from typing import Callable
 
 
 MAX_IMAGE_BYTES = 8 << 20
+MAX_ARTIFACT_IMAGE_BYTES = 64 << 20
+ARTIFACT_PREVIEW_SIZE = (2048, 2048)
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+ARTIFACT_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+ARTIFACT_SESSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 IMAGE_KEY_PATTERN = re.compile(
     r"input/webui/(?:u_[A-Za-z0-9_-]+/)?[A-Za-z0-9_.-]+/[0-9a-f]{32}\.(?:png|jpe?g|webp|heic|heif)",
     re.IGNORECASE,
@@ -112,4 +119,111 @@ def tool_result(key: str, question: str) -> dict:
         ],
         "text_summary": f"Loaded historical image {key} ({size} bytes) from Autumn S3.",
         "meta": {"object_key": key, "size_bytes": size},
+    }
+
+
+def _artifact_path(reference: str, artifacts_root: Path) -> tuple[Path, str, str]:
+    """Resolve one public or filesystem artifact reference below its root."""
+    reference = reference.strip()
+    if not reference:
+        raise ValueError("artifact_path is required")
+
+    parsed = urllib.parse.urlsplit(reference)
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        raise ValueError("artifact_path must be an artifact URL or local artifact path")
+    raw_path = urllib.parse.unquote(parsed.path if parsed.scheme else reference.split("?", 1)[0].split("#", 1)[0])
+    root = artifacts_root.resolve()
+    prefix = "/artifacts/"
+    if raw_path.startswith(prefix):
+        relative_text = raw_path[len(prefix):]
+    else:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            raise ValueError("artifact_path must start with /artifacts/ or the artifact filesystem root")
+        try:
+            relative_text = candidate.resolve().relative_to(root).as_posix()
+        except (OSError, ValueError) as exc:
+            raise ValueError("artifact_path is outside the artifact root") from exc
+
+    relative = PurePosixPath(relative_text)
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("invalid artifact_path")
+    session_id = relative.parts[0]
+    if not ARTIFACT_SESSION_PATTERN.fullmatch(session_id):
+        raise ValueError("invalid artifact session")
+
+    candidate = root.joinpath(*relative.parts).resolve()
+    try:
+        resolved_relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("artifact_path is outside the artifact root") from exc
+    if not resolved_relative.parts:
+        raise ValueError("invalid artifact_path")
+    # Authorize the real target's session.  A symlink inside session A must
+    # not make an image belonging to session B readable as an A artifact.
+    session_id = resolved_relative.parts[0]
+    if not ARTIFACT_SESSION_PATTERN.fullmatch(session_id):
+        raise ValueError("invalid artifact session")
+    if candidate.suffix.lower() not in ARTIFACT_IMAGE_SUFFIXES:
+        raise ValueError("artifact is not a supported raster image")
+    return candidate, session_id, prefix + "/".join(
+        urllib.parse.quote(part, safe="") for part in relative.parts
+    )
+
+
+def _artifact_preview(path: Path) -> tuple[str, int, int, int]:
+    source_bytes = path.stat().st_size
+    if source_bytes > MAX_ARTIFACT_IMAGE_BYTES:
+        raise ValueError("artifact image exceeds 64 MiB")
+
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as opened:
+        opened.verify()
+    with Image.open(path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        width, height = image.size
+        image.thumbnail(ARTIFACT_PREVIEW_SIZE, Image.Resampling.LANCZOS)
+        if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+            rgba = image.convert("RGBA")
+            background = Image.new("RGB", rgba.size, "white")
+            background.paste(rgba, mask=rgba.getchannel("A"))
+            image = background
+        else:
+            image = image.convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90, optimize=True)
+    preview = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{preview}", source_bytes, width, height
+
+
+def artifact_tool_result(
+    reference: str,
+    question: str,
+    artifacts_root: Path,
+    owns_session: Callable[[str], bool],
+) -> dict:
+    """Load one authorized artifact image as a transient multimodal result."""
+    path, session_id, public_url = _artifact_path(reference, artifacts_root)
+    if not owns_session(session_id):
+        raise ValueError("artifact image is not owned by the current user and session")
+    if not path.is_file():
+        raise ValueError("artifact image does not exist")
+    data_url, source_bytes, width, height = _artifact_preview(path)
+    note = f"Loaded generated artifact image {public_url} at {width}x{height}."
+    if question.strip():
+        note += f"\nQuestion: {question.strip()}"
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": note},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ],
+        "text_summary": f"Loaded artifact image {public_url} ({source_bytes} bytes, {width}x{height}).",
+        "meta": {
+            "artifact_url": public_url,
+            "size_bytes": source_bytes,
+            "width": width,
+            "height": height,
+        },
     }

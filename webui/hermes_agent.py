@@ -328,7 +328,7 @@ def _artifacts_root() -> Path:
 
 
 def _register_input_image_tool() -> None:
-    """Expose one S3 image at a time as a native multimodal tool result."""
+    """Expose one uploaded or generated image as a multimodal tool result."""
     from tools.registry import registry, tool_error
 
     if registry.get_entry("input_image_open") is not None:
@@ -336,18 +336,46 @@ def _register_input_image_tool() -> None:
 
     async def _open(args: dict, **_: Any) -> Any:
         import asyncio
-        from media_input import tool_result, owned_key
+        from media_input import artifact_tool_result, tool_result, owned_key
         from gateway.session_context import get_session_env
 
         key = str(args.get("object_key") or "").strip()
+        artifact_path = str(args.get("artifact_path") or "").strip()
         question = str(args.get("question") or "").strip()
-        if not owned_key(key, get_session_env("HERMES_SESSION_USER_ID", "")):
-            return tool_error("Invalid input image object_key", success=False)
+        if bool(key) == bool(artifact_path):
+            return tool_error("Provide exactly one of object_key or artifact_path", success=False)
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+        current_session = (
+            get_session_env("HERMES_SESSION_KEY", "")
+            or get_session_env("HERMES_UI_SESSION_ID", "")
+            or get_session_env("HERMES_SESSION_ID", "")
+        )
         try:
-            return await asyncio.to_thread(tool_result, key, question)
+            if key:
+                if not owned_key(key, user_id):
+                    return tool_error("Invalid input image object_key", success=False)
+                return await asyncio.to_thread(tool_result, key, question)
+
+            def owns_artifact_session(session_id: str) -> bool:
+                if session_id == current_session:
+                    return True
+                if not user_id:
+                    return False
+                from hermes_session_api import owner
+
+                return owner(session_id) == user_id
+
+            return await asyncio.to_thread(
+                artifact_tool_result,
+                artifact_path,
+                question,
+                _artifacts_root(),
+                owns_artifact_session,
+            )
         except Exception as exc:  # noqa: BLE001
-            log.warning("input_image_open(%s) failed: %s", key, exc)
-            return tool_error(f"Could not load input image: {exc}", success=False)
+            source = key or artifact_path
+            log.warning("input_image_open(%s) failed: %s", source, exc)
+            return tool_error(f"Could not load image: {exc}", success=False)
 
     registry.register(
         name="input_image_open",
@@ -355,13 +383,14 @@ def _register_input_image_tool() -> None:
         schema={
             "name": "input_image_open",
             "description": (
-                "Load exactly one browser-uploaded image from Autumn S3 into your "
-                "visual context. User history contains markers like "
+                "Load exactly one browser-uploaded image or generated artifact image "
+                "into your visual context. User history contains markers like "
                 "[输入图片 object_key: input/webui/...]. When the user refers to a "
                 "historical image (for example 上一张图, 第一张图, or a specific "
-                "object_key), resolve the intended marker from conversation order "
-                "and call this tool. Do not open every historical image speculatively; "
-                "ask for clarification when the reference is ambiguous."
+                "object_key), resolve the intended marker from conversation order. "
+                "Generated images use /artifacts/<session>/<path>. Open each artifact "
+                "the user asks you to inspect, one tool call per image. Provide exactly "
+                "one of object_key or artifact_path; ask when the reference is ambiguous."
             ),
             "parameters": {
                 "type": "object",
@@ -370,12 +399,19 @@ def _register_input_image_tool() -> None:
                         "type": "string",
                         "description": "Exact input/webui/... object_key copied from conversation history.",
                     },
+                    "artifact_path": {
+                        "type": "string",
+                        "description": (
+                            "Exact /artifacts/<session>/<path> URL or "
+                            "/opt/data/artifacts/<session>/<path> filesystem path."
+                        ),
+                    },
                     "question": {
                         "type": "string",
                         "description": "What the user wants determined from this image.",
                     },
                 },
-                "required": ["object_key", "question"],
+                "required": ["question"],
             },
         },
         handler=_open,

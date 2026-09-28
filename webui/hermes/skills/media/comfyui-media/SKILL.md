@@ -30,6 +30,7 @@ metadata:
 3. 改的只有**参数值**（prompt、seed、尺寸、文件名），不改结构。每个 workflow 可改的参数见下表。
 4. 提交前 workflow JSON 里所有 `[节点id, 输出槽]` 形式的连线值保持原样——那是节点间的连线，不是数据。
 5. **Artifact 路径永不重用。** 每次生成（包括同一提示词的重跑）都创建新的 UUID 子目录，或使用带 UUID 的新文件名；写入前必须 `test ! -e "$dest"`。绝不覆盖、替换或复用回复里已经出现过的 `/artifacts/...` URL。
+6. **图片交付前逐张目检。** 图片复制到当前会话的 artifact 目录后，对每张最终候选分别调用 `input_image_open`，参数使用 `artifact_path=/artifacts/<当前会话 id>/...`；根据返回的视觉内容检查人物身份、构图、肢体、文字和明显伪影。多张图必须逐张调用，不能只看文件名或假定生成成功。
 
 ## ComfyUI 地址
 集群内 `http://comfyui-autumn.autumn.svc:8188`（带 basic auth 的代理是给浏览器用的，API 走集群内直连）。用 terminal 里的 curl/python 访问。
@@ -40,7 +41,7 @@ metadata:
 3. `POST /prompt`，body 为 `{"prompt": <workflow对象>}`，可自带 `"prompt_id": "<uuid4>"`。返回 `{"prompt_id": ...}`。
 4. 轮询 `GET /history/<prompt_id>`（生图每 2-3s，视频/3D 每 5-10s）。响应里该 id 存在且 `status.status_str == "success"` 即完成；`error` 字段非空则把 `node_errors` 原样报给用户。
 5. 从 `outputs` 里取产物文件名，`GET /view?filename=<filename>&subfolder=<subfolder>&type=output` 下载。
-6. 生图/生视频结果发给用户看；3D 结果是 glb 文件，告诉用户文件位置。
+6. 生图结果先用 `input_image_open(artifact_path=...)` 逐张检查，再发给用户；生视频结果发给用户看；3D 结果是 glb 文件，告诉用户文件位置。
 
 ## Workflow 一览
 
