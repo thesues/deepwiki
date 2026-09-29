@@ -42,7 +42,7 @@ func (p *FeishuProvider) AuthorizationURL(flow OAuthRequest) string {
 	return u.String()
 }
 
-func (p *FeishuProvider) Authenticate(ctx context.Context, code, _ string) (Identity, error) {
+func (p *FeishuProvider) Authenticate(ctx context.Context, code string) (Identity, error) {
 	body, _ := json.Marshal(map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     p.appID,

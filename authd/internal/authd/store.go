@@ -10,7 +10,6 @@ import (
 
 type OAuthState struct {
 	Provider    string
-	Verifier    string
 	AppID       string
 	ReturnPath  string
 	BrowserHash string
@@ -41,7 +40,7 @@ func (s *SQLStore) CreateOAuthState(ctx context.Context, state OAuthState, expir
 	now := time.Now().Unix()
 	err := s.q.CreateOAuthState(ctx, dbgen.CreateOAuthStateParams{
 		StateHash: tokenHash(raw), AppID: state.AppID, ReturnPath: state.ReturnPath, BrowserHash: state.BrowserHash,
-		Provider: state.Provider, Verifier: state.Verifier,
+		Provider: state.Provider, Verifier: "",
 		ExpiresAt: expires.Unix(), CreatedAt: now,
 	})
 	return raw, err
@@ -51,7 +50,7 @@ func (s *SQLStore) ConsumeOAuthState(ctx context.Context, raw string, now time.T
 	row, err := s.q.ConsumeOAuthState(ctx, dbgen.ConsumeOAuthStateParams{
 		StateHash: tokenHash(raw), ExpiresAt: now.Unix(),
 	})
-	return OAuthState{Provider: row.Provider, Verifier: row.Verifier, AppID: row.AppID, ReturnPath: row.ReturnPath, BrowserHash: row.BrowserHash}, err
+	return OAuthState{Provider: row.Provider, AppID: row.AppID, ReturnPath: row.ReturnPath, BrowserHash: row.BrowserHash}, err
 }
 
 func (s *SQLStore) CreateAuthCode(ctx context.Context, code AuthCode, expires time.Time) (string, error) {

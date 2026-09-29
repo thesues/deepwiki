@@ -28,7 +28,7 @@ type fakeProvider struct{ calls int }
 func (p *fakeProvider) AuthorizationURL(flow OAuthRequest) string {
 	return "https://feishu.test/?state=" + flow.State
 }
-func (p *fakeProvider) Authenticate(_ context.Context, code, _ string) (Identity, error) {
+func (p *fakeProvider) Authenticate(_ context.Context, code string) (Identity, error) {
 	p.calls++
 	return Identity{ID: "union-1"}, nil
 }

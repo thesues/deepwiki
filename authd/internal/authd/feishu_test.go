@@ -41,7 +41,7 @@ func TestFeishuV2Exchange(t *testing.T) {
 	if target.Query().Get("client_id") != "client" || target.Query().Get("response_type") != "code" || target.Query().Get("state") != "state" {
 		t.Fatal("invalid Feishu authorize URL")
 	}
-	identity, err := provider.Authenticate(context.Background(), "code", "")
+	identity, err := provider.Authenticate(context.Background(), "code")
 	if err != nil || identity.ID != "union" || tokenCalls != 1 || userCalls != 1 {
 		t.Fatalf("exchange failed: %+v %v", identity, err)
 	}

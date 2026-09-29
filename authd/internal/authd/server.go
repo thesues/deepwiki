@@ -105,25 +105,20 @@ func (s *Server) authorize(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "start login from the application"})
 		return
 	}
-	// GitHub must fetch the current username and recheck the file on every
-	// login; an older SSO cookie must not bypass a changed allowlist.
-	if raw, err := c.Cookie(SSOCookieName); err == nil && s.cfg.Provider != "github" {
+	if raw, err := c.Cookie(SSOCookieName); err == nil {
 		if claims, err := s.tokens.VerifySSO(raw); err == nil {
 			s.redirectWithCode(c, app, claims.Subject, returnPath, browserHash)
 			return
 		}
 	}
 	flow := OAuthState{AppID: app.ID, ReturnPath: returnPath, BrowserHash: browserHash, Provider: s.cfg.Provider}
-	if s.cfg.Provider == "github" {
-		flow.Verifier = randomString(32)
-	}
 	state, err := s.store.CreateOAuthState(c.Request.Context(), flow, s.now().Add(oauthLifetime))
 	if err != nil {
 		s.internalError(c, "create oauth state", err)
 		return
 	}
 	setFlowCookie(c, "__Host-auth_flow", state, int(oauthLifetime.Seconds()))
-	c.Redirect(http.StatusFound, s.provider.AuthorizationURL(OAuthRequest{State: state, Verifier: flow.Verifier}))
+	c.Redirect(http.StatusFound, s.provider.AuthorizationURL(OAuthRequest{State: state}))
 }
 
 func (s *Server) oauthCallback(c *gin.Context) {
@@ -151,17 +146,9 @@ func (s *Server) oauthCallback(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "login was not authorized; please start again"})
 		return
 	}
-	identity, err := s.provider.Authenticate(c.Request.Context(), c.Query("code"), state.Verifier)
+	identity, err := s.provider.Authenticate(c.Request.Context(), c.Query("code"))
 	if err != nil {
 		s.log.Warn("authentication failed", zap.String("provider", s.cfg.Provider), zap.Error(err))
-		if errors.Is(err, errGitHubNotAllowed) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": errGitHubNotAllowed.Error()})
-			return
-		}
-		if errors.Is(err, errGitHubAllowlistUnavailable) {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": errGitHubAllowlistUnavailable.Error()})
-			return
-		}
 		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "authentication failed"})
 		return
 	}
@@ -169,11 +156,7 @@ func (s *Server) oauthCallback(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "identity missing"})
 		return
 	}
-	tenant := s.cfg.TenantKey
-	if s.cfg.Provider != "feishu" {
-		tenant += "\x00" + s.cfg.Provider
-	}
-	subject := deterministicSubject(tenant, identity.ID)
+	subject := deterministicSubject(s.cfg.TenantKey, identity.ID)
 	sso, err := s.tokens.Mint(subject, SSOAudience)
 	if err != nil {
 		s.internalError(c, "mint sso token", err)
