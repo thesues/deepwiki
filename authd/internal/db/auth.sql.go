@@ -53,7 +53,7 @@ func (q *Queries) ConsumeAuthCode(ctx context.Context, arg ConsumeAuthCodeParams
 const consumeOAuthState = `-- name: ConsumeOAuthState :one
 DELETE FROM oauth_states
 WHERE state_hash = ? AND expires_at >= ?
-RETURNING state_hash, app_id, return_path, browser_hash, expires_at, created_at
+RETURNING state_hash, app_id, return_path, browser_hash, expires_at, created_at, provider, verifier
 `
 
 type ConsumeOAuthStateParams struct {
@@ -71,6 +71,8 @@ func (q *Queries) ConsumeOAuthState(ctx context.Context, arg ConsumeOAuthStatePa
 		&i.BrowserHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.Provider,
+		&i.Verifier,
 	)
 	return i, err
 }
@@ -105,8 +107,8 @@ func (q *Queries) CreateAuthCode(ctx context.Context, arg CreateAuthCodeParams) 
 }
 
 const createOAuthState = `-- name: CreateOAuthState :exec
-INSERT INTO oauth_states (state_hash, app_id, return_path, browser_hash, expires_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO oauth_states (state_hash, app_id, return_path, browser_hash, expires_at, created_at, provider, verifier)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateOAuthStateParams struct {
@@ -116,6 +118,8 @@ type CreateOAuthStateParams struct {
 	BrowserHash string `json:"browser_hash"`
 	ExpiresAt   int64  `json:"expires_at"`
 	CreatedAt   int64  `json:"created_at"`
+	Provider    string `json:"provider"`
+	Verifier    string `json:"verifier"`
 }
 
 func (q *Queries) CreateOAuthState(ctx context.Context, arg CreateOAuthStateParams) error {
@@ -126,6 +130,8 @@ func (q *Queries) CreateOAuthState(ctx context.Context, arg CreateOAuthStatePara
 		arg.BrowserHash,
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.Provider,
+		arg.Verifier,
 	)
 	return err
 }

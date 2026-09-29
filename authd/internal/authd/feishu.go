@@ -12,16 +12,6 @@ import (
 	"time"
 )
 
-type Identity struct {
-	UnionID string
-	OpenID  string
-}
-
-type IdentityProvider interface {
-	AuthorizationURL(state string) string
-	Authenticate(context.Context, string) (Identity, error)
-}
-
 type FeishuProvider struct {
 	appID       string
 	secret      string
@@ -41,18 +31,18 @@ func NewFeishuProvider(cfg Config) *FeishuProvider {
 	}
 }
 
-func (p *FeishuProvider) AuthorizationURL(state string) string {
+func (p *FeishuProvider) AuthorizationURL(flow OAuthRequest) string {
 	u, _ := url.Parse(p.authURL)
 	q := u.Query()
 	q.Set("client_id", p.appID)
 	q.Set("response_type", "code")
 	q.Set("redirect_uri", p.redirectURI)
-	q.Set("state", state)
+	q.Set("state", flow.State)
 	u.RawQuery = q.Encode()
 	return u.String()
 }
 
-func (p *FeishuProvider) Authenticate(ctx context.Context, code string) (Identity, error) {
+func (p *FeishuProvider) Authenticate(ctx context.Context, code, _ string) (Identity, error) {
 	body, _ := json.Marshal(map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     p.appID,
@@ -128,5 +118,9 @@ func (p *FeishuProvider) Authenticate(ctx context.Context, code string) (Identit
 	if user.Code != 0 || (user.UnionID == "" && user.OpenID == "") {
 		return Identity{}, errors.New("Feishu identity did not contain union_id or open_id")
 	}
-	return Identity{UnionID: user.UnionID, OpenID: user.OpenID}, nil
+	id := user.UnionID
+	if id == "" {
+		id = user.OpenID
+	}
+	return Identity{ID: id}, nil
 }

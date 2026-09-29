@@ -54,7 +54,7 @@ func main() {
 		log.Fatal("load previous public keys", zap.Error(err))
 	}
 	store := authd.NewSQLStore(conn)
-	provider := authd.NewFeishuProvider(cfg)
+	provider := authd.NewIdentityProvider(cfg)
 	handler := authd.NewServer(cfg, store, provider, tokens, log).Router()
 	httpServer := &http.Server{
 		Addr: cfg.ListenAddr, Handler: handler,

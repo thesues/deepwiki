@@ -26,4 +26,6 @@ type OauthState struct {
 	BrowserHash string `json:"browser_hash"`
 	ExpiresAt   int64  `json:"expires_at"`
 	CreatedAt   int64  `json:"created_at"`
+	Provider    string `json:"provider"`
+	Verifier    string `json:"verifier"`
 }

@@ -33,6 +33,9 @@ type Config struct {
 	TenantKey      string
 	PrivateKeyFile string
 	KeyID          string
+	Provider       string
+	GitHubClientID string
+	GitHubSecret   string
 	FeishuAppID    string
 	FeishuSecret   string
 	FeishuAuthURL  string
@@ -83,6 +86,9 @@ func LoadConfig() (Config, error) {
 		TenantKey:      envOr("AUTH_TENANT_KEY", "default"),
 		PrivateKeyFile: strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY_FILE")),
 		KeyID:          strings.TrimSpace(os.Getenv("JWT_KID")),
+		Provider:       envOr("AUTH_PROVIDER", "feishu"),
+		GitHubClientID: strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID")),
+		GitHubSecret:   strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET")),
 		FeishuAppID:    strings.TrimSpace(os.Getenv("FEISHU_APP_ID")),
 		FeishuSecret:   strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET")),
 		FeishuAuthURL:  envOr("FEISHU_AUTH_URL", "https://accounts.feishu.cn/open-apis/authen/v1/authorize"),
@@ -92,7 +98,13 @@ func LoadConfig() (Config, error) {
 	if cfg.PrivateKeyFile == "" || cfg.KeyID == "" {
 		return Config{}, errors.New("JWT_PRIVATE_KEY_FILE and JWT_KID are required")
 	}
-	if cfg.FeishuAppID == "" || cfg.FeishuSecret == "" {
+	if providerFactories[cfg.Provider] == nil {
+		return Config{}, fmt.Errorf("unknown AUTH_PROVIDER %q", cfg.Provider)
+	}
+	if cfg.Provider == "github" && (cfg.GitHubClientID == "" || cfg.GitHubSecret == "") {
+		return Config{}, errors.New("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required")
+	}
+	if cfg.Provider == "feishu" && (cfg.FeishuAppID == "" || cfg.FeishuSecret == "") {
 		return Config{}, errors.New("FEISHU_APP_ID and FEISHU_APP_SECRET are required")
 	}
 	return cfg, nil

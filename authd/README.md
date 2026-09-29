@@ -1,6 +1,6 @@
 # authd
 
-A standalone Go 1.26 / Gin 1.12 service for Feishu login and central SSO.
+A standalone Go 1.26 / Gin 1.12 service for GitHub / Feishu login and central SSO.
 SQLite uses `mattn/go-sqlite3` (CGO), queries are generated with sqlc 1.30,
 and embedded schema migrations run through goose on startup.
 
@@ -9,8 +9,8 @@ and embedded schema migrations run through goose on startup.
 ```text
 DeepWiki /auth/login -> authd (DeepWiki Host)
   -> AUTH_HOST/sso/authorize
-  -> Feishu (only if the central SSO cookie is absent/expired)
-  -> AUTH_HOST/oauth/feishu/callback
+  -> Configured provider (only if the central SSO cookie is absent/expired)
+  -> AUTH_HOST/oauth/{github|feishu}/callback
   -> DEEPWIKI_HOST/auth/callback?code=...
   -> DeepWiki /
 ```
@@ -23,10 +23,11 @@ The backend only verifies its audience-specific JWT using the JWKS endpoint.
 * `__Host-auth_access`: each app Host separately, `aud=<registered app ID>`.
 * Both are RS256 JWTs, eight hours, `Secure; HttpOnly; SameSite=Lax; Path=/`,
   no Domain attribute and no refresh token/session.
-* Temporary `__Host-auth_request` (app Host, five minutes) and `__Host-auth_flow`
-  (central Host, 60 seconds) bind redirects to the initiating browser. They are
+* Temporary `__Host-auth_request` (app Host, ten minutes) and `__Host-auth_flow`
+  (central Host, five minutes) bind redirects to the initiating browser. They are
   removed after callback. They are not additional long-lived login credentials.
-* Codes and OAuth state expire after 60 seconds. SQLite stores hashes only.
+* Application codes expire after 60 seconds; OAuth state expires after five minutes.
+  SQLite stores code/state hashes plus provider name and a temporary PKCE verifier.
   Code consumption atomically checks app, Host, browser binding, expiry and
   single use. URLs and cookies are never included in request logs.
 
@@ -34,7 +35,11 @@ JWT claims: `iss=buda-authd`, deterministic `sub`, application `aud`, `iat`,
 `nbf`, `exp`, `jti`, `tenant=default`, `ver=1`. Subject is the unpadded base64url
 SHA-256 of `authd:v1\0<tenant_key>\0<union_id or open_id>`, prefixed with `u_`.
 Keep the Feishu application/identifier policy stable: changing from open_id to
-union_id changes the derived subject. No SQLite user-ID mapping is needed.
+union_id changes the derived subject. GitHub subjects hash
+`authd:v1\0<tenant_key>\0github\0<numeric GitHub user ID>` and use the same `u_`
+prefix. GitHub usernames and email addresses are not identity keys; renaming a
+GitHub account does not change its authd identity. Providers are separate identity
+spaces and are not automatically merged. No SQLite user-ID mapping is needed.
 
 ## Configuration
 
@@ -42,7 +47,9 @@ union_id changes the derived subject. No SQLite user-ID mapping is needed.
 | --- | --- |
 | `AUTH_PUBLIC_URL` | HTTPS central SSO origin, no path |
 | `AUTH_APPS_JSON` | App-ID to HTTPS origin map, e.g. `{"deepwiki":"https://wiki.example.com","lerobot":"https://robot.example.com"}` |
-| `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Feishu application credentials |
+| `AUTH_PROVIDER` | `github` or `feishu`; default `feishu` for existing deployments |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Required when `AUTH_PROVIDER=github` |
+| `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Required when `AUTH_PROVIDER=feishu` |
 | `JWT_PRIVATE_KEY_FILE`, `JWT_KID` | RSA PEM signing key file and unique key ID |
 | `JWT_PREVIOUS_JWKS_FILE` | Optional JSON file of previous public keys for rotation |
 | `AUTH_DB_PATH` | Default `/var/lib/authd/authd.db` |
@@ -53,6 +60,33 @@ Register `https://AUTH_HOST/oauth/feishu/callback` as the Feishu redirect URL.
 Feishu v2 token exchange uses `client_id`, `client_secret`, `redirect_uri` and
 `grant_type=authorization_code`; no Feishu access/refresh token is persisted.
 The deployment's Feishu application visibility determines who may authorize.
+
+### GitHub OAuth
+
+Register a GitHub OAuth App with the application's public homepage and exact
+callback `https://AUTH_HOST/oauth/github/callback`. The provider uses GitHub's
+authorization code flow with PKCE S256 and browser-bound, single-use state. It
+requests no scopes: public identity is enough, and repository/private email
+permissions are not needed. The access token is used only for `GET /user`; neither
+access nor refresh tokens are persisted. Token and user requests refuse redirects.
+
+Select `AUTH_PROVIDER=github` and supply `GITHUB_CLIENT_ID` and
+`GITHUB_CLIENT_SECRET`. The Kubernetes template reads these from the separate
+`authd-github-secrets` Secret, keys `client-id` and `client-secret`. Keep credentials
+out of the repository. Feishu code and secrets remain available, but only the
+selected provider's callback is served. Unknown provider names fail startup.
+
+This configuration allows any GitHub user who authorizes the app to obtain an
+isolated user identity, suitable for a multi-user demo. It demonstrates per-user
+isolation within the configured tenant, not organization membership enforcement.
+
+Before rollout, test `github.com` and `api.github.com` from the authd Pod itself.
+When replacing Feishu with GitHub exclusively, stop authd, clear pending OAuth
+states/application codes (or wait for their expiry), and switch to a fresh signing
+key and key ID without retaining the old public key. Refresh/restart downstream
+JWKS verifiers so old Feishu cookies cannot remain authenticated. Preserve the
+old signing Secret for rollback and existing user data; do not assign that data
+to GitHub users. A provider setting alone does not revoke issued cookies.
 
 For key rotation, save the current JWKS, mount it as `JWT_PREVIOUS_JWKS_FILE`,
 then deploy the new private key and a new `JWT_KID`. Keep previous keys for at
@@ -119,7 +153,8 @@ strategy. Multiple replicas require a shared code/state store first.
 
 Roll back with the retained images/config and backup, while keeping the public
 endpoint protected. Do not restore an anonymous image behind an open gateway.
-Local tests use an in-process fake Feishu provider; a real Feishu/APIG smoke test
+Local tests cover Feishu and GitHub exchanges, PKCE, identity stability, provider
+isolation and callback replay. A real provider/APIG smoke test
 requires actual app credentials, registered public Hosts and TLS configuration.
 
 Python backend integration (including authentication-only services) is documented

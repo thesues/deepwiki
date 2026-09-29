@@ -11,6 +11,7 @@ data:
   AUTH_PUBLIC_URL: "https://AUTH_HOST"
   AUTH_APPS_JSON: '{"deepwiki":"https://DEEPWIKI_HOST"}'
   AUTH_TENANT_KEY: default
+  AUTH_PROVIDER: github
   AUTH_DB_PATH: /var/lib/authd/authd.db
   JWT_PRIVATE_KEY_FILE: /var/run/authd/private.pem
 ---
@@ -70,6 +71,12 @@ spec:
             - name: FEISHU_APP_SECRET
               valueFrom:
                 secretKeyRef: { name: authd-secrets, key: feishu-app-secret }
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: authd-github-secrets, key: client-id, optional: true }
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: authd-github-secrets, key: client-secret, optional: true }
             - name: JWT_KID
               valueFrom:
                 secretKeyRef: { name: authd-secrets, key: jwt-kid }

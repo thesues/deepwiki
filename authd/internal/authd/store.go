@@ -9,6 +9,8 @@ import (
 )
 
 type OAuthState struct {
+	Provider    string
+	Verifier    string
 	AppID       string
 	ReturnPath  string
 	BrowserHash string
@@ -23,7 +25,7 @@ type AuthCode struct {
 }
 
 type Store interface {
-	CreateOAuthState(context.Context, string, string, string, time.Time) (string, error)
+	CreateOAuthState(context.Context, OAuthState, time.Time) (string, error)
 	ConsumeOAuthState(context.Context, string, time.Time) (OAuthState, error)
 	CreateAuthCode(context.Context, AuthCode, time.Time) (string, error)
 	ConsumeAuthCode(context.Context, string, string, string, string, time.Time) (AuthCode, error)
@@ -34,11 +36,12 @@ type SQLStore struct{ q *dbgen.Queries }
 
 func NewSQLStore(conn *sql.DB) *SQLStore { return &SQLStore{q: dbgen.New(conn)} }
 
-func (s *SQLStore) CreateOAuthState(ctx context.Context, appID, returnPath, browserHash string, expires time.Time) (string, error) {
+func (s *SQLStore) CreateOAuthState(ctx context.Context, state OAuthState, expires time.Time) (string, error) {
 	raw := randomString(32)
 	now := time.Now().Unix()
 	err := s.q.CreateOAuthState(ctx, dbgen.CreateOAuthStateParams{
-		StateHash: tokenHash(raw), AppID: appID, ReturnPath: returnPath, BrowserHash: browserHash,
+		StateHash: tokenHash(raw), AppID: state.AppID, ReturnPath: state.ReturnPath, BrowserHash: state.BrowserHash,
+		Provider: state.Provider, Verifier: state.Verifier,
 		ExpiresAt: expires.Unix(), CreatedAt: now,
 	})
 	return raw, err
@@ -48,7 +51,7 @@ func (s *SQLStore) ConsumeOAuthState(ctx context.Context, raw string, now time.T
 	row, err := s.q.ConsumeOAuthState(ctx, dbgen.ConsumeOAuthStateParams{
 		StateHash: tokenHash(raw), ExpiresAt: now.Unix(),
 	})
-	return OAuthState{AppID: row.AppID, ReturnPath: row.ReturnPath, BrowserHash: row.BrowserHash}, err
+	return OAuthState{Provider: row.Provider, Verifier: row.Verifier, AppID: row.AppID, ReturnPath: row.ReturnPath, BrowserHash: row.BrowserHash}, err
 }
 
 func (s *SQLStore) CreateAuthCode(ctx context.Context, code AuthCode, expires time.Time) (string, error) {

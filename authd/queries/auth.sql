@@ -1,11 +1,11 @@
 -- name: CreateOAuthState :exec
-INSERT INTO oauth_states (state_hash, app_id, return_path, browser_hash, expires_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO oauth_states (state_hash, app_id, return_path, browser_hash, expires_at, created_at, provider, verifier)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ConsumeOAuthState :one
 DELETE FROM oauth_states
 WHERE state_hash = ? AND expires_at >= ?
-RETURNING state_hash, app_id, return_path, browser_hash, expires_at, created_at;
+RETURNING state_hash, app_id, return_path, browser_hash, expires_at, created_at, provider, verifier;
 
 -- name: CreateAuthCode :exec
 INSERT INTO auth_codes (

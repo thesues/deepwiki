@@ -1,7 +1,7 @@
 version: "2"
 sql:
   - engine: sqlite
-    schema: migrations/001_auth.sql
+    schema: migrations
     queries: queries/auth.sql
     gen:
       go:

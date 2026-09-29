@@ -25,12 +25,12 @@ import (
 
 type fakeProvider struct{ calls int }
 
-func (p *fakeProvider) AuthorizationURL(state string) string {
-	return "https://feishu.test/?state=" + state
+func (p *fakeProvider) AuthorizationURL(flow OAuthRequest) string {
+	return "https://feishu.test/?state=" + flow.State
 }
-func (p *fakeProvider) Authenticate(_ context.Context, code string) (Identity, error) {
+func (p *fakeProvider) Authenticate(_ context.Context, code, _ string) (Identity, error) {
 	p.calls++
-	return Identity{UnionID: "union-1"}, nil
+	return Identity{ID: "union-1"}, nil
 }
 
 func database(t *testing.T) (*sql.DB, *SQLStore) {
@@ -217,7 +217,7 @@ func TestDatabaseContainsOnlyHashes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	browser := base64.RawURLEncoding.EncodeToString(tokenHash("browser"))
-	raw, _ := store.CreateOAuthState(ctx, "deepwiki", "/", browser, now.Add(time.Minute))
+	raw, _ := store.CreateOAuthState(ctx, OAuthState{AppID: "deepwiki", ReturnPath: "/", BrowserHash: browser, Provider: "feishu"}, now.Add(time.Minute))
 	var saved []byte
 	if err := conn.QueryRow("SELECT state_hash FROM oauth_states").Scan(&saved); err != nil {
 		t.Fatal(err)

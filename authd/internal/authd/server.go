@@ -16,6 +16,7 @@ import (
 )
 
 const shortTokenLifetime = 60 * time.Second
+const oauthLifetime = 5 * time.Minute
 
 type Server struct {
 	cfg      Config
@@ -27,6 +28,9 @@ type Server struct {
 }
 
 func NewServer(cfg Config, store Store, provider IdentityProvider, tokens *TokenManager, log *zap.Logger) *Server {
+	if cfg.Provider == "" {
+		cfg.Provider = "feishu"
+	}
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -48,7 +52,7 @@ func (s *Server) Router() *gin.Engine {
 	})
 	r.GET("/auth/login", s.login)
 	r.GET("/sso/authorize", s.authorize)
-	r.GET("/oauth/feishu/callback", s.feishuCallback)
+	r.GET("/oauth/"+s.cfg.Provider+"/callback", s.oauthCallback)
 	r.GET("/auth/callback", s.appCallback)
 	return r
 }
@@ -77,7 +81,7 @@ func (s *Server) login(c *gin.Context) {
 	u := s.cfg.PublicURL.ResolveReference(&url.URL{Path: "/sso/authorize"})
 	q := u.Query()
 	nonce := randomString(32)
-	setFlowCookie(c, "__Host-auth_request", nonce, 300)
+	setFlowCookie(c, "__Host-auth_request", nonce, 600)
 	q.Set("browser", base64.RawURLEncoding.EncodeToString(tokenHash(nonce)))
 	q.Set("app", app.ID)
 	q.Set("return", cleanReturnPath(c.Query("return")))
@@ -107,16 +111,20 @@ func (s *Server) authorize(c *gin.Context) {
 			return
 		}
 	}
-	state, err := s.store.CreateOAuthState(c.Request.Context(), app.ID, returnPath, browserHash, s.now().Add(shortTokenLifetime))
+	flow := OAuthState{AppID: app.ID, ReturnPath: returnPath, BrowserHash: browserHash, Provider: s.cfg.Provider}
+	if s.cfg.Provider == "github" {
+		flow.Verifier = randomString(32)
+	}
+	state, err := s.store.CreateOAuthState(c.Request.Context(), flow, s.now().Add(oauthLifetime))
 	if err != nil {
 		s.internalError(c, "create oauth state", err)
 		return
 	}
-	setFlowCookie(c, "__Host-auth_flow", state, 60)
-	c.Redirect(http.StatusFound, s.provider.AuthorizationURL(state))
+	setFlowCookie(c, "__Host-auth_flow", state, int(oauthLifetime.Seconds()))
+	c.Redirect(http.StatusFound, s.provider.AuthorizationURL(OAuthRequest{State: state, Verifier: flow.Verifier}))
 }
 
-func (s *Server) feishuCallback(c *gin.Context) {
+func (s *Server) oauthCallback(c *gin.Context) {
 	if !s.isPublicHost(c) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "wrong host"})
 		return
@@ -128,7 +136,7 @@ func (s *Server) feishuCallback(c *gin.Context) {
 	}
 	setFlowCookie(c, "__Host-auth_flow", "", -1)
 	state, err := s.store.ConsumeOAuthState(c.Request.Context(), c.Query("state"), s.now())
-	if err != nil {
+	if err != nil || state.Provider != s.cfg.Provider {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid or expired oauth state"})
 		return
 	}
@@ -137,17 +145,25 @@ func (s *Server) feishuCallback(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "unknown application"})
 		return
 	}
-	identity, err := s.provider.Authenticate(c.Request.Context(), c.Query("code"))
-	if err != nil {
-		s.log.Warn("Feishu authentication failed", zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "Feishu authentication failed"})
+	if c.Query("error") != "" || c.Query("code") == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "login was not authorized; please start again"})
 		return
 	}
-	providerID := identity.UnionID
-	if providerID == "" {
-		providerID = identity.OpenID
+	identity, err := s.provider.Authenticate(c.Request.Context(), c.Query("code"), state.Verifier)
+	if err != nil {
+		s.log.Warn("authentication failed", zap.String("provider", s.cfg.Provider), zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "authentication failed"})
+		return
 	}
-	subject := deterministicSubject(s.cfg.TenantKey, providerID)
+	if identity.ID == "" {
+		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "identity missing"})
+		return
+	}
+	tenant := s.cfg.TenantKey
+	if s.cfg.Provider != "feishu" {
+		tenant += "\x00" + s.cfg.Provider
+	}
+	subject := deterministicSubject(tenant, identity.ID)
 	sso, err := s.tokens.Mint(subject, SSOAudience)
 	if err != nil {
 		s.internalError(c, "mint sso token", err)
