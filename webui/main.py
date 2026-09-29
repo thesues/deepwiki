@@ -173,7 +173,7 @@ def main() -> None:
 
     # Hermes' registry is process-global: define custom tools once, before
     # any AIAgent snapshots it. Per-profile visibility is configuration, not
-    # registration — `skills` exposes input_image_open and
+    # registration — `input-image` exposes input_image_open and
     # `mayi-annotation` exposes annotate_image through enabled_toolsets.
     register_webui_tools()
 

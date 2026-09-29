@@ -82,7 +82,7 @@ def test_four_2x_tiles_stitch_in_reading_order(tmp_path):
 
 def test_mayi_directive_requires_the_annotation_skill():
     manifest = (Path(__file__).resolve().parents[2] / "k8s" / "webui.yaml").read_text()
-    assert '"toolsets":["skills","mayi-annotation","terminal"]' in manifest
+    assert '"toolsets":["skills","input-image","mayi-annotation","terminal"]' in manifest
     assert "skill_view('pdf-figure-reading')" in manifest
     assert "skill_view('annotate-screenshot')" in manifest
     assert "掌纹/面纹逐条用独立编号折线和图例区分" in manifest

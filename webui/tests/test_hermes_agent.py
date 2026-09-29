@@ -8,11 +8,37 @@ around it, and each one below is a failure that actually costs a conversation.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import hermes_agent as ha  # noqa: E402
+
+
+def test_input_image_registration_uses_a_dedicated_toolset(monkeypatch):
+    calls = []
+
+    class Registry:
+        def get_entry(self, _name):
+            return None
+
+        def register(self, **kwargs):
+            calls.append(kwargs)
+
+    tools = types.ModuleType("tools")
+    registry = types.ModuleType("tools.registry")
+    registry.registry = Registry()
+    registry.tool_error = lambda message, **_kwargs: message
+    tools.registry = registry
+    monkeypatch.setitem(sys.modules, "tools", tools)
+    monkeypatch.setitem(sys.modules, "tools.registry", registry)
+
+    ha._register_input_image_tool()
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "input_image_open"
+    assert calls[0]["toolset"] == "input-image"
 
 
 # ── supported_kwargs ────────────────────────────────────────────────────────

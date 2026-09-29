@@ -399,7 +399,7 @@ def _register_input_image_tool() -> None:
 
     registry.register(
         name="input_image_open",
-        toolset="skills",
+        toolset="input-image",
         schema={
             "name": "input_image_open",
             "description": (
