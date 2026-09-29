@@ -16,6 +16,7 @@ import (
 
 type GitHubProvider struct {
 	clientID, secret, redirectURI string
+	allowlistFile                 string
 	authURL, tokenURL, userURL    string
 	client                        *http.Client
 }
@@ -23,8 +24,9 @@ type GitHubProvider struct {
 func NewGitHubProvider(cfg Config) *GitHubProvider {
 	return &GitHubProvider{
 		clientID: cfg.GitHubClientID, secret: cfg.GitHubSecret,
-		redirectURI: cfg.PublicURL.ResolveReference(&url.URL{Path: "/oauth/github/callback"}).String(),
-		authURL:     "https://github.com/login/oauth/authorize", tokenURL: "https://github.com/login/oauth/access_token", userURL: "https://api.github.com/user",
+		allowlistFile: cfg.GitHubAllowlistFile,
+		redirectURI:   cfg.PublicURL.ResolveReference(&url.URL{Path: "/oauth/github/callback"}).String(),
+		authURL:       "https://github.com/login/oauth/authorize", tokenURL: "https://github.com/login/oauth/access_token", userURL: "https://api.github.com/user",
 		client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
@@ -63,14 +65,18 @@ func (p *GitHubProvider) Authenticate(ctx context.Context, code, verifier string
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	var user struct {
-		ID   int64  `json:"id"`
-		Type string `json:"type"`
+		ID    int64  `json:"id"`
+		Type  string `json:"type"`
+		Login string `json:"login"`
 	}
 	if err = p.readJSON(req, &user); err != nil {
 		return Identity{}, err
 	}
 	if user.ID <= 0 || user.Type != "User" {
 		return Identity{}, errors.New("invalid GitHub user identity")
+	}
+	if err := checkGitHubAllowlist(p.allowlistFile, user.Login); err != nil {
+		return Identity{}, err
 	}
 	// Numeric GitHub IDs survive username changes; never key isolation by login/email.
 	return Identity{ID: strconv.FormatInt(user.ID, 10)}, nil

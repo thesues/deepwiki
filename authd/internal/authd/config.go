@@ -24,23 +24,24 @@ type App struct {
 }
 
 type Config struct {
-	ListenAddr     string
-	PublicURL      *url.URL
-	PublicHost     string
-	Apps           map[string]App
-	AppsByHost     map[string]App
-	DBPath         string
-	TenantKey      string
-	PrivateKeyFile string
-	KeyID          string
-	Provider       string
-	GitHubClientID string
-	GitHubSecret   string
-	FeishuAppID    string
-	FeishuSecret   string
-	FeishuAuthURL  string
-	FeishuTokenURL string
-	FeishuUserURL  string
+	ListenAddr          string
+	PublicURL           *url.URL
+	PublicHost          string
+	Apps                map[string]App
+	AppsByHost          map[string]App
+	DBPath              string
+	TenantKey           string
+	PrivateKeyFile      string
+	KeyID               string
+	Provider            string
+	GitHubClientID      string
+	GitHubSecret        string
+	GitHubAllowlistFile string
+	FeishuAppID         string
+	FeishuSecret        string
+	FeishuAuthURL       string
+	FeishuTokenURL      string
+	FeishuUserURL       string
 }
 
 func LoadConfig() (Config, error) {
@@ -77,23 +78,24 @@ func LoadConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:     envOr("LISTEN_ADDR", ":8080"),
-		PublicURL:      publicURL,
-		PublicHost:     strings.ToLower(publicURL.Host),
-		Apps:           apps,
-		AppsByHost:     appsByHost,
-		DBPath:         envOr("AUTH_DB_PATH", "/var/lib/authd/authd.db"),
-		TenantKey:      envOr("AUTH_TENANT_KEY", "default"),
-		PrivateKeyFile: strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY_FILE")),
-		KeyID:          strings.TrimSpace(os.Getenv("JWT_KID")),
-		Provider:       envOr("AUTH_PROVIDER", "feishu"),
-		GitHubClientID: strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID")),
-		GitHubSecret:   strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET")),
-		FeishuAppID:    strings.TrimSpace(os.Getenv("FEISHU_APP_ID")),
-		FeishuSecret:   strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET")),
-		FeishuAuthURL:  envOr("FEISHU_AUTH_URL", "https://accounts.feishu.cn/open-apis/authen/v1/authorize"),
-		FeishuTokenURL: envOr("FEISHU_TOKEN_URL", "https://open.feishu.cn/open-apis/authen/v2/oauth/token"),
-		FeishuUserURL:  envOr("FEISHU_USER_URL", "https://open.feishu.cn/open-apis/authen/v1/user_info"),
+		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
+		PublicURL:           publicURL,
+		PublicHost:          strings.ToLower(publicURL.Host),
+		Apps:                apps,
+		AppsByHost:          appsByHost,
+		DBPath:              envOr("AUTH_DB_PATH", "/var/lib/authd/authd.db"),
+		TenantKey:           envOr("AUTH_TENANT_KEY", "default"),
+		PrivateKeyFile:      strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY_FILE")),
+		KeyID:               strings.TrimSpace(os.Getenv("JWT_KID")),
+		Provider:            envOr("AUTH_PROVIDER", "feishu"),
+		GitHubClientID:      strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID")),
+		GitHubSecret:        strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET")),
+		GitHubAllowlistFile: envOr("GITHUB_ALLOWLIST_FILE", "/var/lib/authd/github-allowlist.txt"),
+		FeishuAppID:         strings.TrimSpace(os.Getenv("FEISHU_APP_ID")),
+		FeishuSecret:        strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET")),
+		FeishuAuthURL:       envOr("FEISHU_AUTH_URL", "https://accounts.feishu.cn/open-apis/authen/v1/authorize"),
+		FeishuTokenURL:      envOr("FEISHU_TOKEN_URL", "https://open.feishu.cn/open-apis/authen/v2/oauth/token"),
+		FeishuUserURL:       envOr("FEISHU_USER_URL", "https://open.feishu.cn/open-apis/authen/v1/user_info"),
 	}
 	if cfg.PrivateKeyFile == "" || cfg.KeyID == "" {
 		return Config{}, errors.New("JWT_PRIVATE_KEY_FILE and JWT_KID are required")

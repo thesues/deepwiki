@@ -12,6 +12,7 @@ data:
   AUTH_APPS_JSON: '{"deepwiki":"https://DEEPWIKI_HOST"}'
   AUTH_TENANT_KEY: default
   AUTH_PROVIDER: github
+  GITHUB_ALLOWLIST_FILE: /var/lib/authd/github-allowlist.txt
   AUTH_DB_PATH: /var/lib/authd/authd.db
   JWT_PRIVATE_KEY_FILE: /var/run/authd/private.pem
 ---

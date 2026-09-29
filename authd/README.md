@@ -49,6 +49,7 @@ spaces and are not automatically merged. No SQLite user-ID mapping is needed.
 | `AUTH_APPS_JSON` | App-ID to HTTPS origin map, e.g. `{"deepwiki":"https://wiki.example.com","lerobot":"https://robot.example.com"}` |
 | `AUTH_PROVIDER` | `github` or `feishu`; default `feishu` for existing deployments |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Required when `AUTH_PROVIDER=github` |
+| `GITHUB_ALLOWLIST_FILE` | Username list on persistent storage; default `/var/lib/authd/github-allowlist.txt` |
 | `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Required when `AUTH_PROVIDER=feishu` |
 | `JWT_PRIVATE_KEY_FILE`, `JWT_KID` | RSA PEM signing key file and unique key ID |
 | `JWT_PREVIOUS_JWKS_FILE` | Optional JSON file of previous public keys for rotation |
@@ -76,9 +77,26 @@ Select `AUTH_PROVIDER=github` and supply `GITHUB_CLIENT_ID` and
 out of the repository. Feishu code and secrets remain available, but only the
 selected provider's callback is served. Unknown provider names fail startup.
 
-This configuration allows any GitHub user who authorizes the app to obtain an
-isolated user identity, suitable for a multi-user demo. It demonstrates per-user
-isolation within the configured tenant, not organization membership enforcement.
+GitHub login requires a username in `GITHUB_ALLOWLIST_FILE` (default:
+`/var/lib/authd/github-allowlist.txt`). Store this file on the authd PVC, never in
+Git. Use one GitHub username per line, without `@` or a profile URL. Matching is
+case-insensitive; blank lines and lines starting with `#` are ignored. The file
+is read on every login. Empty lists deny all users (HTTP 403); missing, unreadable
+or malformed files disable GitHub login (HTTP 503), with details in authd logs.
+Username changes require updating the list; data ownership still uses numeric ID.
+
+To replace the list from a local file without restarting authd:
+
+```sh
+AUTHD_POD=$(kubectl -n autumn get pod -l app=authd -o jsonpath='{.items[0].metadata.name}')
+kubectl -n autumn cp ./github-allowlist.txt "$AUTHD_POD:/var/lib/authd/github-allowlist.txt.new" -c authd --no-preserve
+kubectl -n autumn exec "$AUTHD_POD" -c authd -- mv /var/lib/authd/github-allowlist.txt.new /var/lib/authd/github-allowlist.txt
+```
+
+Copy to `.new` then rename so concurrent logins never read a half-written file.
+GitHub SSO cookies do not skip the username/allowlist check. Removing a username
+blocks subsequent logins; existing application JWTs remain valid for up to eight
+hours plus clock leeway. This is a login allowlist, not immediate session revocation.
 
 Before rollout, test `github.com` and `api.github.com` from the authd Pod itself.
 When replacing Feishu with GitHub exclusively, stop authd, clear pending OAuth

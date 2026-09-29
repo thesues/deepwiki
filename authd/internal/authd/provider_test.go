@@ -12,6 +12,7 @@ type githubFlowProvider struct {
 	flow     OAuthRequest
 	verifier string
 	calls    int
+	err      error
 }
 
 func (p *githubFlowProvider) AuthorizationURL(flow OAuthRequest) string {
@@ -21,7 +22,7 @@ func (p *githubFlowProvider) AuthorizationURL(flow OAuthRequest) string {
 func (p *githubFlowProvider) Authenticate(_ context.Context, code, verifier string) (Identity, error) {
 	p.verifier = verifier
 	p.calls++
-	return Identity{ID: "12345"}, nil
+	return Identity{ID: "12345"}, p.err
 }
 
 func TestGitHubFlowIsolationAndReplay(t *testing.T) {
@@ -52,6 +53,11 @@ func TestGitHubFlowIsolationAndReplay(t *testing.T) {
 	}
 	if p.calls != 1 || p.verifier != p.flow.Verifier {
 		t.Fatal("PKCE verifier lost")
+	}
+	// A valid old SSO cookie still has to go through GitHub and the current list.
+	check := request(h, expectRedirect(t, login), getCookie(t, callback, SSOCookieName))
+	if !strings.HasPrefix(expectRedirect(t, check), "https://github.test/") {
+		t.Fatal("GitHub SSO cookie bypassed allowlist revalidation")
 	}
 	if w := request(h, callbackURL, flow); w.Code != 400 || p.calls != 1 {
 		t.Fatal("replay accepted")
@@ -117,6 +123,33 @@ func TestGitHubRejectedAuthorization(t *testing.T) {
 		w := request(h, "https://auth.test/oauth/github/callback?state="+p.flow.State+"&"+query, getCookie(t, authorize, "__Host-auth_flow"))
 		if w.Code != 400 || p.calls != 0 {
 			t.Fatal("denied or missing code was exchanged")
+		}
+	}
+}
+
+func TestGitHubAllowlistHTTPRejection(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{
+		{errGitHubNotAllowed, http.StatusForbidden},
+		{errGitHubAllowlistUnavailable, http.StatusServiceUnavailable},
+	} {
+		s, _ := fixture(t)
+		s.cfg.Provider = "github"
+		p := &githubFlowProvider{err: tc.err}
+		s.provider = p
+		h := s.Router()
+		login := request(h, "https://deepwiki.test/auth/login")
+		authorize := request(h, expectRedirect(t, login))
+		w := request(h, "https://auth.test/oauth/github/callback?code=code&state="+p.flow.State, getCookie(t, authorize, "__Host-auth_flow"))
+		if w.Code != tc.status {
+			t.Fatalf("got %d want %d", w.Code, tc.status)
+		}
+		for _, cookie := range w.Result().Cookies() {
+			if cookie.Name == SSOCookieName || cookie.Name == AccessCookieName {
+				t.Fatal("rejected login minted cookie")
+			}
 		}
 	}
 }

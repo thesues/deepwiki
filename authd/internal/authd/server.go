@@ -105,7 +105,9 @@ func (s *Server) authorize(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "start login from the application"})
 		return
 	}
-	if raw, err := c.Cookie(SSOCookieName); err == nil {
+	// GitHub must fetch the current username and recheck the file on every
+	// login; an older SSO cookie must not bypass a changed allowlist.
+	if raw, err := c.Cookie(SSOCookieName); err == nil && s.cfg.Provider != "github" {
 		if claims, err := s.tokens.VerifySSO(raw); err == nil {
 			s.redirectWithCode(c, app, claims.Subject, returnPath, browserHash)
 			return
@@ -152,6 +154,14 @@ func (s *Server) oauthCallback(c *gin.Context) {
 	identity, err := s.provider.Authenticate(c.Request.Context(), c.Query("code"), state.Verifier)
 	if err != nil {
 		s.log.Warn("authentication failed", zap.String("provider", s.cfg.Provider), zap.Error(err))
+		if errors.Is(err, errGitHubNotAllowed) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": errGitHubNotAllowed.Error()})
+			return
+		}
+		if errors.Is(err, errGitHubAllowlistUnavailable) {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": errGitHubAllowlistUnavailable.Error()})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "authentication failed"})
 		return
 	}

@@ -3,10 +3,13 @@ package authd
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,6 +44,10 @@ func TestGitHubExchangeAndIdentity(t *testing.T) {
 	defer upstream.Close()
 	public, _ := url.Parse("https://auth.test")
 	p := NewGitHubProvider(Config{PublicURL: public, GitHubClientID: "client", GitHubSecret: "test-secret"})
+	p.allowlistFile = filepath.Join(t.TempDir(), "allowlist.txt")
+	if err := os.WriteFile(p.allowlistFile, []byte("before-rename\nafter-rename\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	p.tokenURL = upstream.URL + "/token"
 	p.userURL = upstream.URL + "/user"
 	target, _ := url.Parse(p.AuthorizationURL(OAuthRequest{State: "state", Verifier: verifier}))
@@ -56,6 +63,10 @@ func TestGitHubExchangeAndIdentity(t *testing.T) {
 	next, err := p.Authenticate(context.Background(), "code", verifier)
 	if err != nil || identity != next {
 		t.Fatal("username change changed identity")
+	}
+	userResponse = `{"id":12345,"login":"not-listed","type":"User"}`
+	if _, err := p.Authenticate(context.Background(), "code", verifier); !errors.Is(err, errGitHubNotAllowed) {
+		t.Fatalf("unlisted username accepted: %v", err)
 	}
 	for _, body := range []string{`{"id":0,"type":"User"}`, `{"id":12345,"type":"Bot"}`, `{"id":-1,"type":"User"}`, `{"id":12345.1,"type":"User"}`, `not json`} {
 		userResponse = body
