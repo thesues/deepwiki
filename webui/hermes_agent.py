@@ -457,6 +457,18 @@ def _register_annotation_tool() -> None:
     register_annotation_tool()
 
 
+def register_webui_tools() -> None:
+    """Register this process's custom tools before any agent is constructed.
+
+    Hermes' registry is process-global. Registration defines each tool once
+    and assigns its toolset; an agent's ``enabled_toolsets`` then decides
+    whether the registered tool is exposed. Agent construction must not also
+    be a registry mutation.
+    """
+    _register_input_image_tool()
+    _register_annotation_tool()
+
+
 def _install_multimodal_persistence_guard(agent: Any) -> None:
     """Apply WebUI-only persistence metadata without changing the API prompt.
 
@@ -550,9 +562,6 @@ def build_agent(
     from profile_skills import install as install_profile_skill_scope
 
     install_profile_skill_scope()
-
-    _register_input_image_tool()
-    _register_annotation_tool()
 
     mcp_servers = []
     cfg: dict = {}

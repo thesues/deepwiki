@@ -761,6 +761,9 @@ def test_main_gets_all_the_way_to_serving(tmp_path, monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
     served = {}
+    registered = []
+
+    monkeypatch.setattr(main_mod, "register_webui_tools", lambda: registered.append("webui"))
 
     def fake_serve(app, host, port):
         served["app"] = app
@@ -772,6 +775,7 @@ def test_main_gets_all_the_way_to_serving(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         main_mod.main()
     assert served["app"] is not None
+    assert registered == ["webui"]
     # The config the app writes for hermes names both servers, in order.
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert list(cfg["mcp_servers"]) == ["memory", "code-index"]

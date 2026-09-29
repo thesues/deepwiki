@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from app_routes import build_app  # noqa: E402
-from hermes_agent import AgentPool, load_endpoints, load_endpoints_env  # noqa: E402
+from hermes_agent import AgentPool, load_endpoints, load_endpoints_env, register_webui_tools  # noqa: E402
 from http_shell import serve  # noqa: E402
 from mcp_resilience import install_semantic_error_guard  # noqa: E402
 from profiles import load_profiles  # noqa: E402
@@ -170,6 +170,12 @@ def main() -> None:
     from tool_budget import install as install_tool_ceiling
 
     install_tool_ceiling()
+
+    # Hermes' registry is process-global: define custom tools once, before
+    # any AIAgent snapshots it. Per-profile visibility is configuration, not
+    # registration — `skills` exposes input_image_open and
+    # `mayi-annotation` exposes annotate_image through enabled_toolsets.
+    register_webui_tools()
 
     # Point hermes at the retrieval server before any agent is built: the MCP
     # list is read when an agent is constructed, so writing it afterwards would
