@@ -8,7 +8,7 @@
 # webui code-autumn-rs brief (read_file after a search_code hit,
 # find_callers for edges) works unchanged.
 #
-# Replaces the old code-index-mcp deployment (Rust memory-mcp binary + FUSE
+# Replaces the legacy Rust retrieval deployment (memory-mcp binary + FUSE
 # mount + init-container tarball unpack): same tool surface, no privileged
 # container, no autumnfs credential in the pod, and code search gains the
 # vector mode the lexical-only Rust index never had.

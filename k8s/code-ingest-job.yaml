@@ -11,7 +11,7 @@
 # server answers 64 inputs in ~0.12s.
 #
 # The tarball — not a git clone — is the shipping format, exactly as for the
-# old Rust code-index-mcp: pinned, reproducible, no egress needed. Refresh it
+# legacy Rust retrieval deployment: pinned, reproducible, no egress needed. Refresh it
 # with:  git -C ~/upstream/autumn-rs archive HEAD --prefix=autumn-rs/ | gzip
 #        > /tmp/autumn-rs.tar.gz   (then upload via the gateway)
 ---
@@ -35,7 +35,7 @@ spec:
         - name: repo
           emptyDir: {}
       initContainers:
-        # Unpack the pinned tarball: same shape the old code-index-mcp init
+        # Unpack the pinned tarball: same shape the legacy retrieval init
         # container used, but over the gateway HTTP API instead of FUSE.
         - name: unpack
           image: IMAGE_LANCE_MCP

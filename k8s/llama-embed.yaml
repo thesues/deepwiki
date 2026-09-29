@@ -1,6 +1,6 @@
 # An embedding model, on CPU, reading its weights out of autumn.
 #
-# memory-mcp's vector leg needs embeddings and freetoken cannot supply them: it
+# lance-mcp's vector leg needs embeddings and freetoken cannot supply them: it
 # serves /v1/chat/completions, /v1/messages and /v1/responses, and has no
 # /v1/embeddings at all. That is not an oversight to patch — an embedding model
 # pools a whole sequence into one vector, where freetoken's entire path is KV
@@ -86,7 +86,7 @@ spec:
           # -ub/-b at the context size: an embedding model is non-causal, so
           # llama.cpp requires the physical batch to hold the whole sequence —
           # a smaller ubatch rejects long inputs rather than splitting them, and
-          # long inputs are exactly what this exists to serve (memory-mcp chunks
+          # long inputs are exactly what this exists to serve (retrieval chunks
           # run to ~930 CJK tokens).
           args:
             - --model

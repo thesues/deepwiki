@@ -230,11 +230,11 @@ leak. **None can regress here, because there is no terminal.**
 | Depends on | How | Consequence |
 |---|---|---|
 | `hermes` | **library** — `run_agent.AIAgent` in this process, on threads | no subprocess to respawn or multiplex; an endpoint is a cache key, so one deployment serves several providers (see "Endpoints"). Import resolves only inside hermes' venv, which is why `main.py` runs under `/opt/hermes/.venv/bin/python` |
-| `memory-mcp` | **HTTP MCP** (`MEMORY_MCP_URL`) | no spawned process, no autumn credential, **not under autumn's WIRE lockstep** |
+| `lance-mcp` | **HTTP MCP** (`MCP_SERVERS`) | no spawned process, no autumn credential, **not under autumn's WIRE lockstep** |
 | providers | OpenAI-compatible HTTP, from `DEEPWIKI_ENDPOINTS` | `hermes config set model.*` still runs at pod start as the fallback single-model path, but a turn's model comes from the `Endpoint` the picker named |
 
 The MCP transport is the load-bearing choice. A stdio MCP server must be spawned
-by its client, so this image would have needed `memory-mcp`'s binary, an autumn
+by its client, so this image would have needed the retrieval server's binary, an autumn
 credential, and the wire-lockstep rebuild on every cluster bump. Over HTTP the
 dependency is a URL.
 

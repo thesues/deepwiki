@@ -57,9 +57,9 @@ H3 skill GETs the object and sends image bytes to vLLM's Video API.
 Here: the FreeToken image, and the manifests for these workloads.
 
 In autumn-rs: the cluster itself (manager / extent-node / partition-server /
-etcd / dashboard), the all-roles image and its entrypoint, `autumn-fuse`, and
-`memory-mcp`'s source. This repo consumes those as binaries in a published
-image — it does not fork or vendor them.
+etcd / dashboard), the all-roles image and its entrypoint, and `autumn-fuse`.
+This repo consumes those as binaries in a published image — it does not fork
+or vendor them. Retrieval is provided by this repo's `lance-mcp` image.
 
 The dividing question is "would this exist if the workload went away?" The
 `fuse` entrypoint role would: it is a capability of the storage system. The
@@ -133,15 +133,13 @@ kubectl -n autumn apply -f k8s/freetoken.yaml
 kubectl apply -f k8s/vllm-omni-h3.yaml
 ```
 
-Fill the `IMAGE_*` placeholders first. Deploy `lance-mcp` before switching the
-webui endpoint; its first start builds the persistent LanceDB index and only
-becomes ready after that succeeds.
+Fill the `IMAGE_*` placeholders first. Build the corpus with its ingest job,
+then deploy `lance-mcp` before switching the webui endpoint.
 
 ## Status
 
 FreeToken is deployed and reads its weights from an autumn-fuse mount. The
-tracked retrieval target is `lance-mcp`; until that image and the updated
-webui manifest are rolled out, the live webui remains on `memory-mcp`. The
+deployed retrieval target is `lance-mcp`, backed by Autumn's S3 gateway. The
 storage path itself has been verified against the live cluster:
 
 - `O_DIRECT` reads work on an autumn-fuse mount at 4 KiB and 8 MiB — the load

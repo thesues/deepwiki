@@ -400,7 +400,7 @@ spec:
             # PVC config on startup, so a retired MCP does not linger in the
             # tool list and trip the circuit breaker.
             #   memory       — 佛典 (lance-mcp, s3://lancedb/buda)
-            #   code-index   — autumn-rs 代码 (Rust memory-mcp binary, FUSE)
+            #   code-index   — autumn-rs 代码 (lance-mcp, s3://lancedb/code)
             #   mayi         — 麻衣神相 / 风水 / 手面相 (lance-mcp s3://lancedb/mayi,
             #                  含插图；必须配多模态端点才能看图)
             # One lance-mcp image serves ONE corpus; extra corpora are
@@ -453,7 +453,7 @@ spec:
             #
             # 架构长注（为什么 no file/no terminal/为什么 location-only/为什么
             # 不 pin 端点）放在各 MCP 自己的 manifest 顶部（k8s/lance-mcp*.yaml,
-            # k8s/code-index-mcp.yaml），webui 这里只保留配置本身。
+            # k8s/lance-mcp-code.yaml），webui 这里只保留配置本身。
             - name: DEEPWIKI_PROFILES
               value: |
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],

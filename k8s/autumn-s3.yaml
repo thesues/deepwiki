@@ -1,5 +1,5 @@
 # ⚠️ IMAGE_AUTUMN_RS needs the image tag the cluster is running (replace before
-# applying, same as memory-mcp.yaml / lance-mcp.yaml).
+# applying, same as lance-mcp.yaml).
 #
 # The autumn-s3 gateway: an unauthenticated S3 endpoint over the fs/ tree.
 # Bucket = fs/'s first level, key = everything below it, so `s3://lancedb/buda`

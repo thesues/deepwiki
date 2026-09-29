@@ -179,7 +179,7 @@ def main() -> None:
     hermes_cfg = Path(
         os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     ) / "config.yaml"
-    # One memory-mcp instance serves ONE corpus, so a second project's index
+    # One retrieval MCP instance serves ONE corpus, so a second project's index
     # is a second instance on its own port. All of them are declared in ONE
     # variable as NAME=URL pairs, in order — the first is the one the UI
     # names, the same "first entry wins" rule `load_endpoints` and
