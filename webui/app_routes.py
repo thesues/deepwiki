@@ -34,7 +34,7 @@ from media_input import get_object as _get_media_object
 from media_input import marker_keys as _media_marker_keys
 from media_input import owned_key as _owned_media_key
 from media_input import put_object as _put_media_object
-from profiles import AgentProfile, allowed_endpoint, build_profiles
+from profiles import AgentProfile, allowed_endpoint, build_profiles, resolve_profile
 from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_session_stream, write_stream
 from turns import Refused, TurnManager
@@ -109,11 +109,9 @@ def build_app(
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]
     # The project cards. A deploy that declares none gets the built-in default
-    # profile — one card's worth of behaviour change: none. Resolution and the
-    # stale-key fallback live in profiles.resolve_profile; routes only wire.
+    # profile. Explicit unknown keys are rejected by profiles.resolve_profile.
     profile_list = profiles if profiles is not None else build_profiles(None)
     default_profile = profile_list[0]
-    by_profile = {p.key: p for p in profile_list}
     # Which PROJECT each conversation belongs to. Recorded at chat/start (the
     # one moment the profile is known for certain), read by the sidebar so a
     # project page lists only its own conversations.
@@ -144,15 +142,7 @@ def build_app(
         return by_key.get(req.json().get("endpoint") or req.query.get("endpoint", ""), default_ep)
 
     def _profile_of(body: dict) -> AgentProfile:
-        """The profile this request names, with the stale-key fallback.
-
-        Same rule as endpoints: a key the server no longer advertises — a
-        profile renamed in config, a pod behind a rollout — resolves to the
-        DEFAULT profile rather than failing every send until someone notices.
-        The route echoes the resolved key, and the client adopts the echo, so
-        the picker stays honest about what will answer next time.
-        """
-        return by_profile.get((body.get("profile") or "").strip(), default_profile)
+        return resolve_profile(profile_list, body.get("profile"))
 
     # ── health and status ──────────────────────────────────────────────────
 
@@ -267,7 +257,10 @@ def build_app(
         # view recall too, so the two disagree far less often now — but the
         # rule belongs here, where the agent is actually chosen.
         owner = "" if is_new else (_profile_of_session(session_id) or "")
-        profile = by_profile.get(owner, default_profile) if owner else _profile_of(body)
+        try:
+            profile = resolve_profile(profile_list, owner) if owner else _profile_of(body)
+        except ValueError:
+            return json_response({"error": "会话所属项目已不可用，请返回首页选择项目"}, status=400)
         # The profile may pin its endpoints (a video project needs the
         # multimodal model). The pin redirects, never errors — see
         # allowed_endpoint — and the echo below carries the endpoint actually
@@ -442,6 +435,10 @@ def build_app(
         None means "no answer" — the caller files it under the default
         project, which is what an unmarked session served as.
         """
+        if source is None and sessions is not None and hasattr(sessions, "source"):
+            # chat/start has only an id, unlike the sidebar's preloaded rows.
+            # Do not let a missing side-table pin override the persisted mark.
+            source = sessions.source(session_id)
         key = profile_of_source(source)
         if key:
             return key

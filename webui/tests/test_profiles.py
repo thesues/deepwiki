@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 import yaml
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -92,11 +93,10 @@ def test_the_first_entry_is_the_default():
     assert pr.resolve_profile(ps, "code") is ps[1]
 
 
-def test_a_stale_key_falls_back_to_the_default():
-    """A profile renamed in config while an old tab still sends the old key:
-    the send must land somewhere real, not 404 forever."""
+def test_a_stale_key_cannot_change_the_agent_identity():
     ps = pr.build_profiles([{"key": "buda"}, {"key": "code"}])
-    assert pr.resolve_profile(ps, "gone").key == "buda"
+    with pytest.raises(ValueError, match="unknown profile"):
+        pr.resolve_profile(ps, "gone")
 
 
 def test_load_profiles_env_overrides_the_config_file():

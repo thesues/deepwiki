@@ -2165,8 +2165,8 @@ async function boot() {
   authFetch("/api/status").then((r) => r.json()).then((j) => {
     // The profile this page serves comes off the URL (/buda/ → buda). The
     // server's list is the truth: an unknown key (renamed profile, stale
-    // bookmark) sends the reader back to the home page's cards, the same
-    // stale-key fallback the API applies — navigation instead of silence.
+    // bookmark) sends the reader back to the home page's cards. The API
+    // also rejects unknown keys so they cannot select a different agent.
     const keys = new Set((j.profiles || []).map((p) => p.key));
     if (!keys.has(S.profile)) { location.replace("/"); return; }
     S.defaultProfile = j.defaultProfile || (j.profiles || [])[0]?.key || null;

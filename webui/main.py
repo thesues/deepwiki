@@ -268,8 +268,9 @@ def main() -> None:
     # filesystem that has no corpus on it and answered that the corpus "is not
     # available in this environment" — which was true, and entirely our doing.
     #
-    # Once per process, before any agent is built: the registry is global and
+    # Before any agent is built: the registry is global and
     # `refresh_agent_mcp_tools` picks the tools up per turn from there.
+    servers = {}
     try:
         from hermes_cli.config import load_config
         from tools import mcp_tool
@@ -337,6 +338,11 @@ def main() -> None:
     log.info("deepwiki webui on http://%s:%d", args.host, args.port)
 
     stop = threading.Event()
+    if servers:
+        from mcp_resilience import recover_mcp_servers
+
+        threading.Thread(target=recover_mcp_servers, args=(mcp_tool, servers, stop),
+                         name="mcp-recovery", daemon=True).start()
     threading.Thread(target=_reaper, args=(manager, stop), name="reaper", daemon=True).start()
     # Hermes' terminal tool puts notify_on_complete exits on this in-process
     # queue.  The CLI/Gateway normally drains it; this WebUI embeds AIAgent

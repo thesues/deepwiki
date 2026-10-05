@@ -9,7 +9,38 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mcp_resilience import install_semantic_error_guard, is_semantic_tool_error
+from mcp_resilience import install_semantic_error_guard, is_semantic_tool_error, recover_mcp_servers
+
+
+def test_startup_discovery_recovers_without_reconnecting_healthy_servers():
+    import threading
+
+    connected = {"mayi"}
+    attempts = []
+
+    def register(servers):
+        attempts.append(set(servers))
+        if len(attempts) == 1:
+            raise TimeoutError("retriever still starting")
+        connected.update(servers)
+
+    module = SimpleNamespace(
+        get_mcp_status=lambda: [{"name": n, "connected": True} for n in connected],
+        register_mcp_servers=register,
+    )
+    recover_mcp_servers(module, {
+        "memory": {}, "code-index": {}, "mayi": {}, "disabled": {"enabled": False},
+    }, threading.Event(), interval=0)
+    assert attempts == [{"memory", "code-index"}, {"memory", "code-index"}]
+
+
+def test_mcp_recovery_stops_before_retry_on_shutdown():
+    import threading
+
+    stop = threading.Event()
+    stop.set()
+    module = SimpleNamespace(get_mcp_status=lambda: (_ for _ in ()).throw(AssertionError("stopped")))
+    recover_mcp_servers(module, {"memory": {}}, stop, interval=0)
 
 
 def test_only_known_lance_tool_errors_are_semantic():

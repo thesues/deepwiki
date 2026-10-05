@@ -624,7 +624,7 @@ class TurnManager:
         agent = None
         session_tokens = None
         from profile_skills import enter, leave
-        skill_profile = enter(profile.key if profile is not None else None)
+        skill_profile = enter(profile)
         try:
             # Advertise a real async-delivery route even in legacy/basic-auth
             # mode, where user_id is empty.  Hermes otherwise disables the

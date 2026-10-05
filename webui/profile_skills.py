@@ -3,39 +3,43 @@
 from __future__ import annotations
 
 import contextvars
+from fnmatch import fnmatchcase
 import json
 import threading
 
 
-# These are the project skills shipped in /app/hermes/skills. Hermes scans one
-# process-wide directory, so its skills_list/skill_view tools need the same
-# per-conversation boundary that the MCP and annotation tools already have.
-SKILL_OWNER = {
-    "buddhist-canon-retrieval": "buda",
-    "archify": "code-autumn-rs",
-    "annotate-screenshot": "mayi",
-    "pdf-figure-reading": "mayi",
-}
-
-_profile: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "deepwiki_skill_profile", default=None,
+_patterns: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar(
+    "deepwiki_skill_patterns", default=None,
 )
 _install_lock = threading.Lock()
 
 
-def enter(profile_key: str | None):
-    return _profile.set(profile_key)
+def enter(profile):
+    skills = profile.skills if profile is not None else None
+    return _patterns.set(tuple(skills) if skills is not None else None)
 
 
 def leave(token) -> None:
-    _profile.reset(token)
+    _patterns.reset(token)
 
 
-def _visible(name: str) -> bool:
+def _catalog():
+    from tools.skills_tool import _find_all_skills
+
+    return _find_all_skills(skip_disabled=True)
+
+
+def _visible(name: str, category: str | None = None) -> bool:
+    patterns = _patterns.get()
+    if patterns is None:
+        return True
     bare = str(name or "").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-    owner = SKILL_OWNER.get(bare)
-    current = _profile.get()
-    return owner is None or owner == current
+    if category is None:
+        # Resolve category from the catalog, not from an untrusted caller's
+        # prefix. skill_view accepts both bare and qualified names.
+        category = next((s.get("category", "") for s in _catalog() if s["name"] == bare), "")
+    qualified = f"{category}/{bare}" if category else bare
+    return any(fnmatchcase(bare, p) or fnmatchcase(qualified, p) for p in patterns)
 
 
 def install() -> None:
@@ -43,6 +47,22 @@ def install() -> None:
     from tools.registry import registry
 
     with _install_lock:
+        # The prompt index is built separately from skills_list. Use Hermes'
+        # disabled-name input so its prompt cache key includes the project
+        # exclusions too; filtering only tool responses leaks the first index.
+        from agent import prompt_builder
+
+        disabled_names = prompt_builder.get_disabled_skill_names
+        if not getattr(disabled_names, "_deepwiki_skill_scope", False):
+            def scoped_disabled(*args, _original=disabled_names, **kwargs):
+                return set(_original(*args, **kwargs)) | {
+                    s["name"] for s in _catalog()
+                    if not _visible(s["name"], s.get("category", ""))
+                }
+
+            scoped_disabled._deepwiki_skill_scope = True
+            prompt_builder.get_disabled_skill_names = scoped_disabled
+
         for tool_name in ("skills_list", "skill_view"):
             entry = registry.get_entry(tool_name)
             if entry is None or getattr(entry.handler, "_deepwiki_skill_scope", False):
@@ -65,7 +85,7 @@ def install() -> None:
                             return result
                         payload["skills"] = [
                             skill for skill in payload["skills"]
-                            if _visible(skill.get("name", ""))
+                            if _visible(skill.get("name", ""), skill.get("category", ""))
                         ]
                         payload["count"] = len(payload["skills"])
                         payload["categories"] = sorted({

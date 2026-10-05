@@ -44,6 +44,9 @@ class FakeSessions:
     def list_sessions(self, limit, include_empty):
         return [dict(r) for r in self.rows]
 
+    def source(self, sid):
+        return next((r.get("source", "") for r in self.rows if r["id"] == sid), "")
+
     def history(self, sid, limit):
         self.moved.append(sid)
         self.history_limits.append(limit)
@@ -243,13 +246,36 @@ def test_the_profile_named_by_the_client_is_the_one_echoed(app_server):
     _drain(mgr.stream(body["streamId"]))
 
 
-def test_an_unknown_profile_falls_back_to_the_default(app_server):
-    """Same stale-key rule as endpoints: a profile renamed in config while an
-    old tab still sends the old key must land somewhere real."""
+def test_an_unknown_profile_is_rejected_before_starting_a_turn(app_server):
     base, mgr, _ = app_server
-    _, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "gone"})
-    assert body["profile"] == "buda"   # the first entry is the default
+    status, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "gone"})
+    assert status == 400
+    assert "error" in body
+    assert not mgr.running()
+
+
+@pytest.mark.parametrize("request_profile", [None, "buda"])
+def test_resume_reads_the_persisted_mark_without_a_side_table_pin(app_server, monkeypatch, request_profile):
+    base, mgr, state = app_server
+    state["sessions"].rows = [{"id": "compressed-tip", "source": "deepwiki:video"}]
+    seen = []
+    monkeypatch.setattr(ha, "build_agent", lambda sid, ep, profile=None:
+                        seen.append(profile.key) or FakeAgent())
+    status, body = _post(base, "/api/chat/start", {
+        "text": "继续", "sessionId": "compressed-tip", "profile": request_profile,
+    })
+    assert status == 200
     _drain(mgr.stream(body["streamId"]))
+    assert body["profile"] == "video"
+    assert seen == ["video"]
+
+
+def test_removed_persisted_profile_cannot_fall_back_to_buda(app_server):
+    base, mgr, state = app_server
+    state["sessions"].rows = [{"id": "retired", "source": "deepwiki:gone"}]
+    status, _ = _post(base, "/api/chat/start", {"text": "继续", "sessionId": "retired"})
+    assert status == 400
+    assert not mgr.running()
 
 
 def test_a_pinned_profile_redirects_a_foreign_endpoint(app_server):

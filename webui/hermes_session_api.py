@@ -95,6 +95,12 @@ def owner(session_id: str) -> str:
     return _owner_from_db(_db(), session_id)
 
 
+def source(session_id: str) -> str:
+    """Read the persisted identity without depending on the sidebar limit."""
+    row = _db().get_session(session_id)
+    return str((row or {}).get("source") or "")
+
+
 _PROJECTED_TIP_FIELDS = (
     "id", "ended_at", "end_reason", "message_count", "tool_call_count",
     "title", "last_active", "preview", "model", "system_prompt", "cwd",

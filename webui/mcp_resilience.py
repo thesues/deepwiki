@@ -16,7 +16,33 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 from typing import Any
+
+
+log = logging.getLogger("deepwiki.mcp_resilience")
+
+
+def recover_mcp_servers(mcp_tool: Any, servers: dict, stop: Any, interval: float = 30) -> None:
+    """Retry failed startup discovery; Hermes handles registered connections.
+
+    Startup can race the retrievers. A failed discovery registers no tools,
+    so neither an agent's tool refresh nor the transport breaker can retry it.
+    Run off the request threads and stop once all configured servers connect.
+    """
+    pending = {name: cfg for name, cfg in servers.items() if cfg.get("enabled", True) is not False}
+    while pending and not stop.is_set():
+        try:
+            connected = {s["name"] for s in mcp_tool.get_mcp_status() if s.get("connected")}
+            pending = {name: cfg for name, cfg in pending.items() if name not in connected}
+            if not pending or stop.wait(interval):
+                return
+            log.info("retrying MCP discovery for %s", ", ".join(pending))
+            mcp_tool.register_mcp_servers(pending)
+        except Exception:  # keep transient failures off the HTTP server
+            log.exception("MCP discovery retry failed")
+            if stop.wait(interval):
+                return
 
 
 # These are messages raised by lance-mcp after it has successfully received,

@@ -27,10 +27,9 @@ Declarations come from, in order of precedence:
    is exactly the pre-profile behaviour, so an un-migrated deploy still
    boots and still answers.
 
-Hermes reads skills from ONE process-wide directory. The three project skills
-shipped by this app are gated by their tool requirements in the prompt and by
-profile_skills at skills_list/skill_view time. The general `skills` declaration
-is still inert until Hermes grows per-agent directory injection.
+Hermes reads skills from one shared directory. Each profile's `skills` patterns
+select names or category/name paths for the prompt index and skill tools.
+An omitted declaration inherits all skills; an empty list exposes none.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ class AgentProfile:
         toolsets: list[str] | None = None,
         mcp_servers: list[str] | None = None,
         workspace: str = "",
-        skills: str = "",
+        skills: list[str] | None = None,
         endpoints: list[str] | None = None,
         mcp_tools: list[str] | None = None,
     ) -> None:
@@ -80,10 +79,8 @@ class AgentProfile:
         # The profile's folder on autumnfs: the agent's terminal cwd (registered
         # per session, the same injection point ACP's session/load uses).
         self.workspace = str(workspace or "").strip()
-        # Declared but INERT today — see the module docstring. Surfaced so the
-        # API and the logs say what was configured, and so the wiring is a
-        # one-line change when hermes grows the injection point.
-        self.skills = str(skills or "").strip()
+        # Names or category/name glob patterns. Keep [] distinct from None.
+        self.skills = [str(s).strip() for s in skills] if skills is not None else None
         # None = any endpoint. A list restricts /api/chat/start to it.
         self.endpoints = [str(e) for e in endpoints if str(e).strip()] if endpoints else None
         # None means "every tool the granted servers expose" — the
@@ -116,6 +113,9 @@ def _profile_from(entry: dict, key: str, default_directive: str | None) -> Agent
     if not isinstance(entry, dict):
         log.error("profile %s: entry is not a mapping; skipped", key)
         return None
+    if entry.get("skills") is not None and not isinstance(entry["skills"], list):
+        log.error("profile %s: skills must be a list of patterns; skipped", key)
+        return None
     p = AgentProfile(
         key=key,
         label=str(entry.get("label") or key),
@@ -123,7 +123,7 @@ def _profile_from(entry: dict, key: str, default_directive: str | None) -> Agent
         toolsets=entry.get("toolsets") or entry.get("platform_toolsets"),
         mcp_servers=entry["mcp_servers"] if "mcp_servers" in entry else entry.get("mcpServers"),
         workspace=entry.get("workspace") or "",
-        skills=entry.get("skills") or "",
+        skills=entry.get("skills"),
         endpoints=entry.get("endpoints"),
         mcp_tools=entry.get("mcp_tools") or entry.get("mcpTools"),
     )
@@ -207,17 +207,15 @@ def load_profiles(
 
 
 def resolve_profile(profiles: list[AgentProfile], key: str | None) -> AgentProfile:
-    """The profile a request names, with the stale-key fallback.
-
-    Same rule as the endpoint picker: a key the server no longer advertises
-    (a profile renamed in config, a pod behind) resolves to the DEFAULT —
-    the first entry — rather than failing every send until someone notices.
-    """
+    """Resolve an explicit identity; only an omitted key uses the default."""
+    key = (key or "").strip()
     if profiles:
         for p in profiles:
-            if p.key == (key or "").strip():
+            if p.key == key:
                 return p
-        return profiles[0]
+        if not key:
+            return profiles[0]
+        raise ValueError(f"unknown profile: {key}")
     raise ValueError("no profiles configured")  # callers always pass a built list
 
 
