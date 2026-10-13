@@ -6,6 +6,7 @@
 <title>deepwiki</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/vendor/katex-0.19.0/katex.min.css">
 <script>
 /* Apply the saved theme BEFORE first paint — a light reader must not see a
    dark flash on every navigation. Inline, not app.js: app.js loads at the
@@ -103,10 +104,12 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
   </div>
 </div>
 
-<!-- marked renders the model's markdown; DOMPurify sanitises what it produces.
-     Both are vendored, not CDN-loaded: this pod has no egress to the internet. -->
+<!-- Marked parses Markdown and math.js adds KaTeX formulas; DOMPurify sanitises
+     the result. Libraries and fonts are vendored for use without CDN access. -->
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/katex-0.19.0/katex.min.js"></script>
+<script src="/static/math.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

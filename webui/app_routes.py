@@ -732,6 +732,8 @@ def build_app(
     assets = (
         b"app.js", b"home.js", b"style.css", b"favicon.svg",
         b"vendor/marked.min.js", b"vendor/purify.min.js",
+        b"math.js", b"vendor/katex-0.19.0/katex.min.js",
+        b"vendor/katex-0.19.0/katex.min.css",
     )
 
     def _prepare_page(source: Path) -> tuple[bytes, str] | None:
