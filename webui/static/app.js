@@ -26,7 +26,9 @@ async function authFetch(...args) {
  *    which is which.
  */
 
-const $ = (s) => document.querySelector(s);
+let historyRenderRoot = null;
+let transcriptRevision = 0;
+const $ = (s) => s === "#messages" && historyRenderRoot ? historyRenderRoot : document.querySelector(s);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -638,6 +640,7 @@ function belongsHere(id) {
 
 /* ---------- chrome ---------- */
 function status(text) {
+  if (historyRenderRoot) return;
   $("#run-status").textContent = text;
   setPendingText(text);          // the tail row mirrors it, where the eye is
 }
@@ -786,6 +789,7 @@ function tickSlow() {
 }
 
 function scroll(force) {
+  if (historyRenderRoot || (!force && messageWindow?.hasMoreAfter)) return;
   const m = $("#messages");
   // Follow the tail only if the reader is already there. Yanking the viewport
   // away from someone reading back is worse than a missed autoscroll.
@@ -828,6 +832,7 @@ function clearFresh() {
 }
 
 function addMsg(role, text) {
+  if (!historyRenderRoot) transcriptRevision++;
   clearFresh();
   const wrap = el("div", `msg ${role}`);
   const body = el("div", "bubble");
@@ -852,7 +857,7 @@ function addUserMsg(text) {
   // in a row with no reply between, so declining to draw it costs nothing and
   // covers every pairing at once. The pending row is skipped: it sits at the
   // tail while a reply is being waited for, and it is not something said.
-  const rows = $("#messages").children;
+  const rows = $("#messages").querySelectorAll(".msg");
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
     if (row.id === "pending") continue;
@@ -897,6 +902,7 @@ function setPendingText(t) {
   if (n) n.textContent = t;
 }
 function clearPending() {
+  if (historyRenderRoot) return;
   const row = $("#pending");
   if (row) row.remove();
 }
@@ -935,7 +941,7 @@ function activityGroup() {
   const label = el("span", "act-label", "思考中");
   head.append(caret, label);
   const body = el("div", "act-body");
-  const idx = S.actIndex++;
+  const idx = historyRenderRoot ? `history:${messageWindow.renderCursor}` : S.actIndex++;
   const open = isOpen(idx);
   body.hidden = !open;
   caret.textContent = open ? "▾" : "▸";
@@ -997,6 +1003,7 @@ function newOutputSeg() {
 // on every token is what makes a long answer crawl.
 let renderPending = false;
 function scheduleRender() {
+  if (historyRenderRoot) return;
   if (renderPending) return;
   renderPending = true;
   requestAnimationFrame(() => {
@@ -1293,7 +1300,7 @@ function apply(ev, from) {
   // there matched everything, because null matches nothing and the check let it
   // through: another session's reply drew straight into the new one.
   //
-  // paintHistory() replays a committed transcript through this same router:
+  // drawMessageWindow() replays a committed transcript through this router:
   // those events carry no session and arrive with no source stream. The store
   // is the authority on what a conversation said — trust them outright.
   // (Live events always carry `session` and come with `from` set; the gate
@@ -1467,8 +1474,6 @@ function endTurn(error, owner, from) {
     : S.pendingNew && !S.sessionId
       ? (!!from && from === S.ownStream)
       : (!from || from === S.streamId);
-  if (owner) HISTORY_CACHE.delete(owner);
-  if (S.sessionId) HISTORY_CACHE.delete(S.sessionId);
   if (shown) {
     clearPending();         // only ours: a foreign end took this view's 思考中 row
     finalizeSeg();
@@ -1484,6 +1489,7 @@ function endTurn(error, owner, from) {
     S.stopping = false;
     status(error ? "出错" : wasStopping ? "已停止" : "就绪");
   }
+  if (shown && !S.switching) refreshMessageTail();
   loadSessions();   // the turn may have created or retitled a session
 }
 
@@ -1706,7 +1712,6 @@ function watchSession(sessionId) {
     // check reads this map and attaches after the history swap, so early frames
     // cannot be erased by that swap.
     S.streaming[sid] = streamId;
-    HISTORY_CACHE.delete(sid);
     renderSessions();
     if (S.sessionId !== sid || S.switching) return;
     if (S.streamId === streamId && S.ess.has(streamId)) return;
@@ -1727,6 +1732,7 @@ async function loadSessions() {
     // boundary the old rows remain clickable and open onto a blank 404.
     // Drop every identity-owned client object before rendering the new list.
     S.viewGen++;
+    resetMessageWindow();
     S.ess.forEach((source) => source.close());
     S.ess.clear();
     watchSession(null);
@@ -1739,7 +1745,6 @@ async function loadSessions() {
     S.awaitingPerm = false;
     S.lastSeq = 0;
     S.busy = false;
-    HISTORY_CACHE.clear();
     clearApprovalDock();
     clearPendingMedia();
     S.sessionEp = {};
@@ -1764,17 +1769,11 @@ async function loadSessions() {
     if (S.ess.has(streamId)) listed[id] = streamId;
   });
   S.streaming = listed;
-  // A turn can now finish in a conversation this page is not watching, and its
-  // committed transcript only exists once it has. Drop the cached history of
-  // anything that stopped streaming, or a switch back would repaint the stale
-  // copy taken before the reply landed.
-  Object.keys(was).forEach((id) => { if (!S.streaming[id]) HISTORY_CACHE.delete(id); });
   // Fallback reconciliation: session SSE normally announces a synthetic turn
   // immediately, but a disconnected browser can still discover it in this
   // list response. Never attach while openSession is repainting history.
   const resumed = S.sessionId && S.streaming[S.sessionId];
   if (!S.switching && resumed && resumed !== S.streamId && !S.ess.has(resumed)) {
-    HISTORY_CACHE.delete(S.sessionId);
     S.skipUserEcho = false;
     attach(resumed, 0);
     status("后台任务完成，继续处理中…");
@@ -1790,33 +1789,168 @@ async function loadSessions() {
 }
 
 
-// Transcripts already replayed in this page's lifetime. A switch back is then
-// a repaint, not a round trip — which matters because `session/load` costs
-// about a second: hermes re-registers the MCP server and rebuilds its whole
-// tool surface on EVERY load, regardless of how short the transcript is.
-const HISTORY_CACHE = new Map();
+// Only the current view is retained: at most three 40-row database pages.
+// Live output remains outside this root, so paging never replays/drops tokens.
+const HISTORY_WINDOW_SIZE = 120;
+let messageWindow = null;
 
-function paintHistory(history) {
-  // Skip empty replayed messages. A turn that produced only a tool call, or was
-  // cancelled before its first token, leaves a text-less entry that renders as
-  // a blank bubble the reader cannot account for.
-  history
-    .filter((ev) => ev.kind !== "delta" || (ev.text || "").length)
-    // NOT `.forEach(apply)`: forEach passes the INDEX as the second argument,
-    // so `from` arrived as 0, 1, 2… instead of undefined, the replay test in
-    // apply() never matched, and every history event was dropped as foreign —
-    // opening any conversation drew an empty panel.
-    .forEach((ev) => apply(ev));
-  finalizeSeg();
-  // A switched-to conversation opens at its END, not wherever the previous
-  // session's viewport was. The threshold check in scroll() sees a just-
-  // repainted transcript at an arbitrary inherited offset and would skip.
-  scroll(true);
+function resetMessageWindow() {
+  messageWindow?.controller?.abort();
+  messageWindow?.observer?.disconnect();
+  messageWindow = null;
 }
 
-async function fetchHistory(id) {
+function historyControls() {
+  const w = messageWindow;
+  if (!w) return;
+  w.top.hidden = !w.hasMoreBefore;
+  w.bottom.hidden = !w.hasMoreAfter;
+  w.top.disabled = w.bottom.disabled = !!w.loading;
+  w.top.textContent = w.loading === "before" ? "正在加载…" : "加载更早的消息";
+  w.bottom.textContent = w.loading === "after" ? "正在加载…" : "加载后续消息";
+  if (w.error) (w.error === "before" ? w.top : w.bottom).textContent = "加载失败，点击重试";
+}
+
+function drawMessageWindow(followTail = false) {
+  const w = messageWindow;
+  const viewport = $("#messages");
+  const top = viewport.getBoundingClientRect().top;
+  const anchor = [...w.root.querySelectorAll(".msg")].find((n) => n.getBoundingClientRect().bottom > top);
+  const anchorKey = anchor?.dataset.historyCursor;
+  const offset = anchor?.getBoundingClientRect().top;
+  // The ordinary renderer groups text/tools/todos across page boundaries.
+  // Save its LIVE references; historical rendering gets an isolated context.
+  const keys = ["seg", "tools", "activity", "turnTop", "actIndex", "todoCard", "owns"];
+  const saved = Object.fromEntries(keys.map((k) => [k, S[k]]));
+  w.root.textContent = "";
+  historyRenderRoot = w.root;
+  Object.assign(S, { seg: null, tools: new Map(), activity: null, turnTop: null, actIndex: 0, todoCard: null, owns: false });
   try {
-    const response = await authFetch(`/api/session/history?id=${encodeURIComponent(id)}`);
+    for (const item of w.items) {
+      w.renderCursor = item.cursor;
+      for (const event of item.events) apply(event);
+      for (const row of w.root.children) {
+        if (!row.dataset.historyCursor) row.dataset.historyCursor = item.cursor;
+      }
+    }
+    if (w.errorEvent && !w.hasMoreAfter) apply(w.errorEvent);
+    finalizeSeg();
+  } finally {
+    historyRenderRoot = null;
+    Object.assign(S, saved);
+  }
+  historyControls();
+  if (followTail) scroll(true);
+  else if (anchorKey) {
+    const replacement = [...w.root.children].find((n) => n.dataset.historyCursor === anchorKey);
+    if (replacement) viewport.scrollTop += replacement.getBoundingClientRect().top - offset;
+  }
+}
+
+function installMessageWindow(page, followTail = true) {
+  resetMessageWindow();
+  const viewport = $("#messages");
+  const top = el("button", "history-page-control");
+  const bottom = el("button", "history-page-control");
+  top.type = bottom.type = "button";
+  const root = el("div", "history-window");
+  const first = viewport.firstChild;
+  for (const node of [top, root, bottom]) viewport.insertBefore(node, first);
+  messageWindow = {
+    items: page.messages || [], root, top, bottom, loading: null, error: null,
+    hasMoreBefore: !!page.hasMoreBefore, hasMoreAfter: !!page.hasMoreAfter,
+    errorEvent: page.errorEvent,
+  };
+  top.onclick = () => loadMessagePage("before");
+  bottom.onclick = () => loadMessagePage("after");
+  drawMessageWindow(followTail);
+  // A small prefetch margin hides a network round trip while scrolling.
+  // Keep the buttons usable when observers are unavailable or a request fails.
+  if (typeof IntersectionObserver === "function") {
+    messageWindow.observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.target.hidden) continue;
+        loadMessagePage(entry.target === top ? "before" : "after");
+      }
+    }, { root: viewport, rootMargin: "200px 0px" });
+    messageWindow.observer.observe(top);
+    messageWindow.observer.observe(bottom);
+  }
+}
+
+async function loadMessagePage(direction) {
+  const w = messageWindow;
+  if (!w || w.loading || S.switching || !w.items.length) return;
+  if (!(direction === "before" ? w.hasMoreBefore : w.hasMoreAfter)) return;
+  const gen = S.viewGen;
+  const cursor = (direction === "before" ? w.items[0] : w.items[w.items.length - 1]).cursor;
+  w.loading = direction; w.error = null;
+  w.controller = new AbortController();
+  historyControls();
+  const loaded = await fetchHistory(S.sessionId, { [direction]: cursor }, w.controller.signal);
+  if (w !== messageWindow || gen !== S.viewGen) return;
+  w.loading = null;
+  if (loaded.error || loaded.value?.error) {
+    w.error = direction; historyControls(); return;
+  }
+  const page = loaded.value;
+  const existing = new Set(w.items.map((m) => m.cursor));
+  const added = (page.messages || []).filter((m) => !existing.has(m.cursor));
+  if (direction === "before") {
+    w.items = [...added, ...w.items];
+    w.hasMoreBefore = !!page.hasMoreBefore;
+    if (w.items.length > HISTORY_WINDOW_SIZE) {
+      w.items = w.items.slice(0, HISTORY_WINDOW_SIZE); w.hasMoreAfter = true;
+    }
+  } else {
+    w.items.push(...added);
+    w.hasMoreAfter = !!page.hasMoreAfter;
+    w.errorEvent = page.errorEvent;
+    if (w.items.length > HISTORY_WINDOW_SIZE) {
+      w.items = w.items.slice(-HISTORY_WINDOW_SIZE); w.hasMoreBefore = true;
+    }
+  }
+  drawMessageWindow();
+}
+
+async function refreshMessageTail() {
+  const gen = S.viewGen, sid = S.sessionId, stream = S.streamId, revision = transcriptRevision;
+  if (!sid) return;
+  const viewport = $("#messages");
+  const windowBefore = messageWindow, firstBefore = messageWindow?.items[0]?.cursor;
+  const atTail = !messageWindow?.hasMoreAfter && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 200;
+  const readingHistory = messageWindow?.hasMoreAfter || (messageWindow?.items.length
+    && messageWindow.root.getBoundingClientRect().bottom > viewport.getBoundingClientRect().bottom);
+  if (!atTail && readingHistory) {
+    // Keep the reader's window fixed; the finished turn is now available
+    // through the forward cursor. Release its transient DOM and text.
+    for (const child of [...viewport.children]) if (child.classList.contains("msg")) child.remove();
+    messageWindow.hasMoreAfter = true; historyControls();
+    return;
+  }
+  const loaded = await fetchHistory(sid);
+  if (gen !== S.viewGen || sid !== S.sessionId || stream !== S.streamId || revision !== transcriptRevision || S.owns || S.switching) return;
+  if (messageWindow !== windowBefore || messageWindow?.items[0]?.cursor !== firstBefore) return;
+  if (loaded.error || loaded.value?.error) return;
+  // A reader can scroll while the tail refresh is in flight. Preserve the
+  // visible speech when moving the just-finished live DOM into stored history.
+  const followTail = !messageWindow?.hasMoreAfter && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 200;
+  const top = viewport.getBoundingClientRect().top;
+  const anchor = [...viewport.querySelectorAll(".msg")].find((n) => n.getBoundingClientRect().bottom > top);
+  const anchorText = anchor?.textContent.slice(0, 100), anchorOffset = anchor?.getBoundingClientRect().top;
+  viewport.textContent = "";
+  installMessageWindow(loaded.value, followTail);
+  if (!followTail && anchorText) {
+    const replacement = [...messageWindow.root.children].find((n) => n.textContent.startsWith(anchorText));
+    if (replacement) viewport.scrollTop += replacement.getBoundingClientRect().top - anchorOffset;
+  }
+}
+
+async function fetchHistory(id, params = {}, signal) {
+  try {
+    const query = new URLSearchParams({ id, limit: "40", ...params });
+    const response = await authFetch(`/api/session/messages?${query}`, { signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return { value: await response.json(), error: null };
   } catch (error) {
     // A boot-time prefetch can finish before boot has validated the saved view.
@@ -1831,6 +1965,7 @@ async function openSession(id, prefetchedHistory = null) {
   // loading used to paint the transcript twice: both calls passed a "still
   // this session id" check. The first call's generation is stale, so it stops.
   const gen = ++S.viewGen;
+  resetMessageWindow();
   // An approval card belongs to the conversation being left, and its card is
   // about to be erased. Left raised, every send in the tab answered
   // "先回答上方的确认请求" with nothing on screen to answer — and nothing lowers
@@ -1869,14 +2004,8 @@ async function openSession(id, prefetchedHistory = null) {
   $("#messages").textContent = "";
   S.tools.clear(); S.seg = null; S.activity = null; S.turnTop = null; S.actIndex = 0; S.sessionId = id;
 
-  // Paint what we already have BEFORE asking the server, then refresh from the
-  // store. The request moves nothing — sessions are addressed by id now, so a
-  // send lands where it is told regardless of what was read — it is only how
-  // the transcript stays honest when the cached copy predates the last turn.
-  const cached = HISTORY_CACHE.get(id);
-  if (cached) paintHistory(cached);
   S.switching = id;
-  status(cached ? "切换中…" : "载入中…");
+  status("载入中…");
 
   // `S.streaming` is up to one sidebar poll old. A turn that ended since then
   // is committed to the store, so replaying its stream as well painted that
@@ -1917,26 +2046,14 @@ async function openSession(id, prefetchedHistory = null) {
   // empty panel read as "the messages are lost". Not for a LIVE session: a
   // first turn persists only when it ends, so its store is empty while it
   // runs — returning here left a reloaded page never attaching to the reply.
-  if (!(j.events || []).length && !liveStream) {
+  if (!(j.messages || []).length && !j.errorEvent && !liveStream) {
     const row = (S.sessionRows || []).find((r) => r.id === id);
     finalizeSeg();
     addMsg("note", (row && row.messageCount) ? "这个会话的内容已不可读（可能已在别处删除）" : "这个会话还没有内容");
     status("就绪");
     return;
   }
-  // `events`, which is what `/api/session/history` returns. Reading `history`
-  // here yielded undefined and painted an empty transcript — invisible until
-  // now only because the old URL 404'd before reaching this line.
-  const events = j.events || [];
-  HISTORY_CACHE.set(id, events);
-  // The cache is only a fast first paint. It may have been taken before a
-  // reply committed (especially when another tab continued this session), so
-  // the server result is authoritative even when the cache was non-empty.
-  // Clear the provisional paint before replaying, otherwise every cached row
-  // would appear twice.
-  $("#messages").textContent = "";
-  S.tools.clear(); S.seg = null; S.activity = null; S.turnTop = null; S.actIndex = 0;
-  paintHistory(events);
+  installMessageWindow(j);
   // Not gated on S.busy any more: with several turns possible, the one that
   // matters is whether THIS conversation is streaming — which the map answers
   // directly. The old check asked "is anything streaming, and is it this one",
@@ -2005,6 +2122,7 @@ async function newSession() {
   // the session is created by the send that gives it something to hold.
   S.pendingNew = true;
   S.viewGen++;
+  resetMessageWindow();
   S.switching = null;       // a history read still in flight is for a view now gone
   S.awaitingPerm = false;   // see openSession: the card leaves with the view
   S.ownStream = null;       // nothing on screen is ours until we send

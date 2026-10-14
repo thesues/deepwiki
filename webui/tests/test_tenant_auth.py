@@ -33,6 +33,9 @@ def tenants(authority, tmp_path, monkeypatch):
             return [{"id": s, "title": s, "messageCount": 1} for s in ("s-a", "s-b")]
         def history(self, sid, **kw):
             return [{"kind": "history_user", "text": sid}]
+        def history_page(self, sid, **kw):
+            return {"messages": [{"cursor": "c1", "events": self.history(sid)}],
+                    "hasMoreBefore": False, "hasMoreAfter": False}
         def resolve_tip(self, sid):
             return sid
     manager = TurnManager(ha.AgentPool(), history=lambda sid: [], run=lambda *a, **kw: {})
@@ -69,6 +72,7 @@ def tenants(authority, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("path,body", [
     ("/api/session/history?id=s-b", None),
+    ("/api/session/messages?id=s-b&before=cursor", None),
     ("/api/session/delete", {"sessionId": "s-b"}),
     ("/api/chat/start", {"sessionId": "s-b", "text": "hello"}),
     ("/api/chat/stream?stream_id=stream-s-b", None),
@@ -99,6 +103,8 @@ def test_lists_and_history_only_show_current_user(tenants):
         status, data, _ = call("/api/status", user)
         assert [s["session"] for s in json.loads(data)["turns"]] == [sid]
         status, data, _ = call("/api/session/history?id=" + sid, user)
+        assert status == 200 and sid.encode() in data
+        status, data, _ = call("/api/session/messages?id=" + sid, user)
         assert status == 200 and sid.encode() in data
     assert scopes["u_a"] != scopes["u_b"]
     status, data, headers = call("/artifacts/s-a/file.txt")

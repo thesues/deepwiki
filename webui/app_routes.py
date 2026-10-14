@@ -529,6 +529,28 @@ def build_app(
             ],
         })
 
+    @app.route("GET", "/api/session/messages")
+    def _messages(req: Request) -> Response:
+        sid = req.query.get("id", "")
+        if not sid or sessions is None or not _owns_session(req, sid):
+            return _not_found()
+        try:
+            page = sessions.history_page(  # type: ignore[attr-defined]
+                sid, before=req.query.get("before", ""), after=req.query.get("after", ""),
+                limit=int(req.query.get("limit", "40")),
+            )
+        except ValueError as exc:
+            return json_response({"error": str(exc)}, status=400)
+        except Exception:  # noqa: BLE001
+            log.exception("could not read message page for %s", sid)
+            return json_response({"error": "could not read this conversation"}, status=503)
+        # A failed turn has no persisted assistant row. Only attach its error
+        # to the tail, never to an older page in the middle of a conversation.
+        err = manager.last_error(sid)
+        if err and not page["hasMoreAfter"] and not manager.live_for(sid):
+            page["errorEvent"] = {"kind": "error", "text": err.get("text", "")}
+        return json_response(page)
+
     @app.route("GET", "/api/session/history")
     def _history(req: Request) -> Response:
         sid = req.query.get("id", "")

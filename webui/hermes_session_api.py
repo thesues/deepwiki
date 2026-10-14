@@ -39,6 +39,7 @@ def _db():
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from turn_stream import DETAIL_MAX, _detail_for, _invocation_text, _todo_items  # noqa: E402
 from hermes_agent import PROCESS_WAKEUP_SOURCE  # noqa: E402
+from history_paging import history_page  # noqa: E402
 
 # The LIVE path does not derive the command -- hermes hands it one, built by
 # `build_tool_preview`. Deriving a second version here produced a different
@@ -400,10 +401,14 @@ def history(sid: str, limit: int) -> list[dict]:
         msgs.extend(db.get_messages(link) or [])
     if limit and len(msgs) > limit:
         msgs = msgs[-limit:]
+    return _history_events(msgs)
+
+
+def _history_events(msgs: list[dict], invocations: dict | None = None) -> list[dict]:
     out: list[dict] = []
     # call id -> what it was invoked with, so the result row can show the
     # command above its output the same way a live row does.
-    invocations: dict[str, str] = {}
+    invocations = invocations if invocations is not None else {}
     for m in msgs:
         role = m.get("role")
         text = m.get("content") or ""

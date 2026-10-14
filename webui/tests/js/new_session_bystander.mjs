@@ -48,6 +48,8 @@ class Node_ {
   set textContent(t) { this.children.forEach((c) => { c.parent = null; }); this.children = []; this._text = t == null ? "" : String(t); }
   get innerHTML() { return this.textContent; }
   set innerHTML(h) { this.textContent = h; }
+  getBoundingClientRect() { return { top: 0, bottom: 10 }; }
+  insertBefore(n, before) { if (!before) return this.appendChild(n); if (n.parent) n.remove(); n.parent = this; this.children.splice(this.children.indexOf(before), 0, n); return n; }
   get firstChild() { return this.children[0] || null; }
   get nextElementSibling() {
     if (!this.parent) return null;
@@ -186,8 +188,16 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
         const id = u.searchParams.get("stream_id");
         return reply({ known: true, running: Object.values(server.streaming).includes(id) });
       }
-      case "/api/session/history": return (server.historyGate || Promise.resolve())
-        .then(() => reply({ events: server.history[u.searchParams.get("id")] || [] }));
+      case "/api/session/messages": return (server.historyGate || Promise.resolve())
+        .then(() => {
+          const events = server.history[u.searchParams.get("id")] || [];
+          const limit = Number(u.searchParams.get("limit") || 40);
+          const before = u.searchParams.get("before"), after = u.searchParams.get("after");
+          const end = before ? Number(before) - 1 : after ? Math.min(events.length, Number(after) + limit) : events.length;
+          const start = after ? Number(after) : Math.max(0, end - limit);
+          return reply({ messages: events.slice(start, end).map((e, i) => ({ cursor: String(start + i + 1), events: [e] })),
+            hasMoreBefore: start > 0, hasMoreAfter: end < events.length });
+        });
       case "/api/approval/pending": return reply({ pending: [] });
       default: return reply({});
     }
@@ -210,7 +220,7 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
   }
   const location = new URL(url);
   const ctx = vm.createContext({
-    document, fetch, EventSource, console, URL, JSON, Math, Date, Promise, Map, Set, Object, Array, String, Number,
+    document, fetch, EventSource, console, URL, URLSearchParams, AbortController, JSON, Math, Date, Promise, Map, Set, Object, Array, String, Number,
     localStorage: {
       getItem: (k) => (store.has(k) ? store.get(k) : null),
       setItem: (k, v) => store.set(k, String(v)),
@@ -278,11 +288,11 @@ const posts = (h, p) => h.calls.filter((c) => c.path === p);
   });
   await Promise.resolve();
   assert.strictEqual(posts(h, "/api/sessions").length, 1);
-  assert.strictEqual(posts(h, "/api/session/history").length, 1,
+  assert.strictEqual(posts(h, "/api/session/messages").length, 1,
     "boot waited for the sidebar before starting the saved transcript request");
   releaseSessions();
   await settle(); await settle();
-  assert.strictEqual(posts(h, "/api/session/history").length, 1,
+  assert.strictEqual(posts(h, "/api/session/messages").length, 1,
     "openSession fetched history again instead of reusing the boot prefetch");
   assert.ok(h.$("#messages").textContent.includes("old answer"),
     "the prefetched transcript was not painted after sessions validated it");
@@ -787,3 +797,45 @@ console.log("ok - a new session leaves the running one alone");
   assert.equal(reloaded.S().sessionId, "b");
   assert.ok(reloaded.$("#messages").textContent.includes("question-b"));
 }
+
+// A long conversation retains only the visible window, and pages can be
+// evicted/reloaded in either direction without duplicates or retained caches.
+{
+  const events = Array.from({length: 260}, (_, i) => ({ kind: 'history_user', text: `message-${i}` }));
+  const h = harness({sessions: [{id:'long',messageCount:260}], history:{long:events}});
+  await settle();
+  await h.run('openSession("long")');
+  assert.equal(h.run('messageWindow.items.length'),40);
+  assert.ok(!h.$('#messages').textContent.includes('message-100'));
+  for (let i=0;i<4;i++) await h.run('loadMessagePage("before")');
+  assert.equal(h.run('messageWindow.items.length'),120);
+  assert.equal(h.run('messageWindow.items[0].events[0].text'),'message-60');
+  assert.equal(h.run('messageWindow.hasMoreAfter'),true);
+  assert.equal(h.run('new Set(messageWindow.items.map(m=>m.cursor)).size'),120);
+  await h.run('loadMessagePage("after")');
+  assert.equal(h.run('messageWindow.items[0].events[0].text'),'message-100');
+  let release;
+  h.server.historyGate=new Promise(resolve=>{release=resolve});
+  const stale=h.run('loadMessagePage("before")');
+  await h.run('newSession()');
+  release(); await stale;
+  assert.equal(h.run('messageWindow'),null);
+  assert.ok(!h.$('#messages').textContent.includes('message-'));
+  assert.ok(h.calls.filter(c=>c.path==='/api/session/messages').every(c=>c.query.limit==='40'));
+}
+
+// Paging while a token stream is active must preserve that stream's segment
+// references and its pending render, rather than merge them into old history.
+{
+  const h=harness({streaming:{long:'live'}, sessions:[{id:'long',messageCount:150}],
+    history:{long:Array.from({length:150},(_,i)=>({kind:'history_user',text:`old-${i}`}))}});
+  await settle(); await h.run('openSession("long")'); await settle();
+  h.push('live',{kind:'delta',session:'long',seq:1,text:'live-first',thought:false});
+  await h.run('loadMessagePage("before")');
+  h.push('live',{kind:'delta',session:'long',seq:2,text:'-last',thought:false});
+  await settle();
+  assert.equal(h.S().seg.text,'live-first-last');
+  assert.ok(h.$('#messages').textContent.includes('live-first-last'));
+  assert.equal(h.run('messageWindow.items.length'),80);
+}
+console.log('ok - bounded history paging, eviction, stale requests and live segment isolation');

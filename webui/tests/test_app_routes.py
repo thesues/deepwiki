@@ -52,6 +52,14 @@ class FakeSessions:
         self.history_limits.append(limit)
         return [{"kind": "history_user", "text": "before"}]
 
+    def history_page(self, sid, **kwargs):
+        self.page_request = (sid, kwargs)
+        if not 1 <= kwargs["limit"] <= 80:
+            raise ValueError("invalid limit")
+        return {"messages": [{"cursor": "c1", "events": self.history(sid, 1)}],
+                "before": "c1", "after": "c1", "hasMoreBefore": bool(kwargs["before"]),
+                "hasMoreAfter": bool(kwargs["before"])}
+
 
 @pytest.fixture
 def app_server(monkeypatch, tmp_path):
@@ -401,6 +409,22 @@ def test_history_is_not_silently_truncated(app_server):
     base, _, state = app_server
     _get(base, "/api/session/history?id=s-old")
     assert state["sessions"].history_limits[-1] == 0
+
+
+def test_message_page_arguments_and_tail_error(app_server, monkeypatch):
+    base, mgr, state = app_server
+    monkeypatch.setattr(mgr, "last_error", lambda sid: {"text": "failed turn"})
+    monkeypatch.setattr(mgr, "live_for", lambda sid: None)
+    tail = _get(base, "/api/session/messages?id=s-old")
+    assert tail["messages"][0]["events"][0]["text"] == "before"
+    assert tail["errorEvent"]["text"] == "failed turn"
+    page = _get(base, "/api/session/messages?id=s-old&before=c1&limit=20")
+    assert "errorEvent" not in page
+    assert state["sessions"].page_request == ("s-old", {"before": "c1", "after": "", "limit": 20})
+    for value in ("0", "81", "invalid"):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _get(base, "/api/session/messages?id=s-old&limit=" + value)
+        assert exc.value.code == 400
 
 
 def test_the_sidebar_marks_which_conversations_are_replying(app_server):

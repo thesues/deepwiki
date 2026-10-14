@@ -207,7 +207,7 @@ def test_opening_a_session_is_not_gated_on_a_running_turn():
     # RETURN that refused to open the session at all.
     guard = re.search(r"if\s*\(\s*S\.busy\s*\)\s*\{[^}]*\breturn\b", body)
     assert guard is None, f"openSession still refuses while busy:\n{guard.group(0)}"
-    assert "/history" in body, "openSession is not reading the read-only transcript"
+    assert "fetchHistory(id)" in body, "openSession is not reading the read-only transcript"
 
 def test_a_new_conversation_is_listed_as_soon_as_it_is_asked():
     """Ablation: move `loadSessions()` back to `endTurn` alone and this is red.
@@ -442,36 +442,6 @@ def test_the_client_only_calls_api_paths_the_server_registers():
     missing = sorted(a for a in asked if "${" not in a and a not in registered)
     assert not missing, f"client calls paths the server does not register: {missing}"
 
-
-def test_the_client_reads_the_key_the_history_route_actually_returns():
-    """Same class as the path mismatches, one layer down: the URL is right and
-    the KEY is wrong.
-
-    `/api/session/history` answers `{"events": [...]}`. `app.js` read
-    `j.history`, got undefined, and painted an empty transcript — which nobody
-    saw while the old URL still 404'd before reaching that line. Fixing the path
-    is what exposed it.
-
-    Ablation: change `j.events` back to `j.history` in `openSession` and this
-    goes red.
-    """
-    root = Path(__file__).resolve().parents[1]
-    routes = (root / "app_routes.py").read_text()
-    js = (root / "static" / "app.js").read_text()
-
-    # What the route puts in the body.
-    hist = routes[routes.index('@app.route("GET", "/api/session/history")'):]
-    hist = hist[:hist.index("@app.route", 10)]
-    assert '"events"' in hist, "the history route no longer answers an `events` key"
-
-    # What the client pulls out of it.
-    call = js[js.index("/api/session/history"):]
-    call = call[:call.index("HISTORY_CACHE.set") + 200]
-    assert "j.events" in call, (
-        "app.js does not read `events` from the history response; the route "
-        "returns no other key, so the transcript would paint empty"
-    )
-    assert "j.history" not in call, "app.js still reads the key the route never sends"
 
 
 def test_a_failed_tool_shows_its_reason_without_a_click():
