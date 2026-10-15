@@ -3,7 +3,7 @@
 # Note what is NOT here, compared to every other workload in this repo: no
 # privileged container, no `autumn-fuse`, no `/dev/fuse`, no autumn credential,
 # no mountPropagation. It talks to `lance-mcp` over HTTP MCP, to `freetoken-l3`
-# over the OpenAI-compatible API, and to `autumn-s3` for browser media uploads;
+# over the OpenAI-compatible API, and to `autumn-s3` for input/generated media;
 # all are plain ClusterIP services.
 #
 # `IMAGE_WEBUI` below is a PLACEHOLDER, not an image. Substitute it before
@@ -193,9 +193,9 @@ spec:
               done
 
               # Frontend assets stay in /app/static, which is part of the image
-              # and never shares a PVC path. All runtime output — diagrams,
-              # generated images, videos and 3D files — goes to the persistent
-              # /opt/data/artifacts tree and is served at /artifacts/.
+              # and never shares a PVC path. Documents live in artifacts;
+              # generated media is staged here, uploaded to Autumn S3, then
+              # removed locally. Both keep their authenticated /artifacts/ URL.
               mkdir -p "$H/artifacts"
 
               # hermes' AIAgent refuses any model whose context window is under
@@ -260,6 +260,7 @@ spec:
             # Browser uploads terminate at the WebUI.  Only the object key is
             # put in chat history; this ClusterIP endpoint never reaches JS.
             - { name: AUTUMN_S3_ENDPOINT, value: "http://autumn-s3.autumn.svc:9100" }
+            - { name: ARTIFACT_S3_PREFIX, value: "output/webui" }
             - { name: VLLM_OMNI_URL, value: "http://vllm-omni-h3.autumn.svc:8000" }
             # Admission is PER ENDPOINT, read from DEEPWIKI_ENDPOINTS below
             # (each entry's maxConcurrent, checked against that endpoint's own

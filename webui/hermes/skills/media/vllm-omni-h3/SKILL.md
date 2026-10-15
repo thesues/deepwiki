@@ -32,7 +32,9 @@ metadata:
 2. 只把 object key 写进元数据和会话，不把凭证、内部 endpoint 或图片 base64 写入历史；
 3. 推理前从 Autumn S3 GET 图片 bytes，再作为 `input_reference` multipart 上传给
    vLLM。不要把 `s3://` 字符串直接传给模型——Video API 不承诺支持 S3 URI；
-4. 将 MP4 与旁路 JSON 元数据写进当前会话 artifact 目录。
+4. 将 MP4 与旁路 JSON 元数据写进当前会话 artifact 目录。MP4 在本轮结束时由 WebUI
+   上传至 Autumn S3 的 `output/webui/<session-id>/...`，上传成功后删除本地副本，JSON 仍留在本地。
+   视频的 `/artifacts/...` 链接不变，WebUI 鉴权后从 S3 流式读取。
 
 每次调用都必须选择当前会话目录中一个从未使用过的输出路径，例如
 `/opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3.mp4`。WebUI 启动 terminal 时的工作目录
@@ -81,6 +83,9 @@ shift 3。只有用户明确要求时才改。与 ComfyUI 做 A/B 时必须同�
   前缀。未来会话删除工作流可以按该前缀显式清理；当前不要做隐式过期。
 - 每次输出放新的 `/opt/data/artifacts/<当前会话 id>/media-<run-uuid>/`，回复使用对应的
   `/artifacts/<当前会话 id>/media-<run-uuid>/...` 相对链接；任何旧输出路径都不能被后续生成复用。
+- 脚本使用 `.part` 文件写入完成后再原子发布 MP4。完成本轮的检查、拼接等本地操作后，
+  可执行 `python /app/artifact_store.py '<当前会话 id>'` 提前上传并清理媒体；否则由本轮结束时自动处理。
+  上传失败会保留本地媒体并报告错误；不能把仅有本地文件描述为已持久化到 S3。
 
 ## 失败处理
 

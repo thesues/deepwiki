@@ -31,16 +31,14 @@ import json
 import logging
 import mimetypes
 import os
-import secrets
 import socketserver
-import subprocess
 import threading
 from datetime import timezone
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import brotli
 from auth import AuthenticationError, AuthenticationUnavailable
@@ -279,11 +277,12 @@ class Streaming(Response):
     before the last one exists, so nothing here may buffer to the end.
     """
 
-    __slots__ = ("pump",)
+    __slots__ = ("pump", "close")
 
-    def __init__(self, headers: list, pump: Callable[[Callable[[bytes], None]], None]) -> None:
+    def __init__(self, headers: list, pump: Callable[[Callable[[bytes], None]], None], *, close=None) -> None:
         super().__init__(200, headers, b"")
         self.pump = pump
+        self.close = close
 
 
 class App:
@@ -373,21 +372,38 @@ class App:
             return self._serve_revalidating_file(req, target, ctype)
 
         if req.path.startswith(ARTIFACTS_PREFIX):
+            artifact_path = unquote(req.path)
+            candidate = self._resolve_candidate(artifact_path, ARTIFACTS_PREFIX, self.artifacts_dir)
+            if candidate is None:
+                return None
             if req.user_id:
-                candidate = self._resolve_candidate(req.path, ARTIFACTS_PREFIX, self.artifacts_dir)
                 if candidate is None or self.artifact_authorizer is None:
                     return json_response({"error": "not found"}, status=404)
                 relative = candidate.relative_to(self.artifacts_dir.resolve())
                 if not relative.parts or not self.artifact_authorizer(req, relative.parts[0]):
                     return json_response({"error": "not found"}, status=404)
+            from artifact_store import media_path
+            relative = candidate.relative_to(self.artifacts_dir.resolve()).as_posix()
+            is_media = media_path(relative)
+            local_at_start = candidate.is_file()
+            if is_media:
+                from artifact_http import serve_media
+                remote = serve_media(req, relative)
+                if remote is not None:
+                    # A pending local upload remains readable during an S3
+                    # outage. A remote-only artifact fails with a retryable 503.
+                    if remote.status != 503 or not candidate.is_file():
+                        return remote
             target = self._resolve_location(
-                req.path, ARTIFACTS_PREFIX, self.artifacts_dir
+                artifact_path, ARTIFACTS_PREFIX, self.artifacts_dir
             )
             if target is None:
-                target = self._generate_artifact_poster(req.path)
+                target = self._generate_artifact_poster(artifact_path)
             if target is None:
+                if is_media and local_at_start:
+                    return serve_media(req, relative)
                 return None
-            return self._serve_immutable_artifact(
+            response = self._serve_immutable_artifact(
                 req,
                 target,
                 self._content_type(target),
@@ -396,16 +412,18 @@ class App:
                     ("X-Content-Type-Options", "nosniff"),
                 ],
             )
+            # Publication can remove staging between the initial S3 HEAD and
+            # the local open. Recheck S3 instead of returning a transient 404.
+            if response is None and is_media and local_at_start:
+                return serve_media(req, relative)
+            return response
 
         return None
 
     def _generate_artifact_poster(self, path: str) -> Path | None:
-        """Lazily create ``video.jpg`` beside ``video.mp4`` on first request.
+        """Use the shared poster generator for a legacy local video."""
+        from artifact_store import make_poster
 
-        The browser requests this only when the video approaches the viewport.
-        Publishing via a hard link keeps immutable artifact URLs honest even
-        if two requests arrive together or another process wins the race.
-        """
         poster = self._resolve_candidate(path, ARTIFACTS_PREFIX, self.artifacts_dir)
         if poster is None or poster.suffix.lower() != ".jpg":
             return None
@@ -419,38 +437,7 @@ class App:
             )
             if video is None:
                 return None
-            candidate = poster.with_name(
-                f".{poster.stem}.{secrets.token_hex(8)}.tmp.jpg"
-            )
-            try:
-                done = subprocess.run(
-                    [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                        "-ss", "0.1", "-i", str(video), "-frames:v", "1",
-                        "-vf", "scale=640:-2:force_original_aspect_ratio=decrease",
-                        "-q:v", "5", "-f", "image2", str(candidate),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    timeout=30,
-                    check=False,
-                )
-                if done.returncode != 0 or not candidate.is_file() or candidate.stat().st_size == 0:
-                    log.warning("poster generation failed for %s: %s", video, done.stderr[-1000:])
-                    return None
-                try:
-                    os.link(candidate, poster)
-                except FileExistsError:
-                    pass
-                return poster if poster.is_file() else None
-            except (OSError, subprocess.SubprocessError) as exc:
-                log.warning("poster generation failed for %s: %s", video, exc)
-                return None
-            finally:
-                try:
-                    candidate.unlink()
-                except FileNotFoundError:
-                    pass
+            return make_poster(video)
 
     @staticmethod
     def _resolve_location(path: str, prefix: str, root: Path | None) -> Path | None:
@@ -734,30 +721,32 @@ class _Handler(BaseHTTPRequestHandler):
             ))
 
         if isinstance(resp, Streaming):
-            self.send_response(resp.status)
-            for k, v in resp.headers:
-                self.send_header(k, v)
-            # Chunked, because the length is unknowable and HTTP/1.1 keep-alive
-            # would otherwise wait for a Content-Length that never comes.
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
+            chunked = not any(k.lower() == "content-length" for k, _ in resp.headers)
 
             def write(b: bytes) -> None:
                 if not b:
                     return
-                self.wfile.write(f"{len(b):x}\r\n".encode() + b + b"\r\n")
+                self.wfile.write(f"{len(b):x}\r\n".encode() + b + b"\r\n" if chunked else b)
                 self.wfile.flush()
 
             try:
+                self.send_response(resp.status)
+                for k, v in resp.headers:
+                    self.send_header(k, v)
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
                 resp.pump(write)
-            except (BrokenPipeError, ConnectionResetError):
-                # The reader went away. Normal; the turn is unaffected.
-                return
-            try:
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+                if chunked:
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+            except OSError:
+                # Client disconnect or upstream failure: do not advertise a
+                # complete body or reuse a connection with truncated framing.
+                self.close_connection = True
+            finally:
+                if resp.close is not None:
+                    resp.close()
             return
 
         resp = _maybe_compress(req, resp)

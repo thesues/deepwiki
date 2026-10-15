@@ -64,6 +64,12 @@ artifacts must live under `/artifacts/<session-id>/...`; files at the root of
 keys use `input/webui/<user-id>/<session-id-or-draft>/<random>.png`. Authenticated
 resources are private and not reusable from shared/browser caches after logout.
 
+Generated images/videos persist at `s3://output/webui/<session-id>/...` by
+default. `/artifacts/` verifies the same session ownership before any S3 request;
+it proxies media through the authenticated origin instead of exposing the
+passwordless internal S3 endpoint. Model image inspection applies ownership
+checks before downloading historical artifacts as well.
+
 Hermes built-in `session_search` and global `memory` are withheld in JWT mode,
 including tool refreshes, and global memory prompt injection is disabled: these
 features use the shared Hermes home and otherwise bypass HTTP ownership checks.

@@ -109,7 +109,8 @@ curl -s -o /tmp/out.png \
 
 ## 交付给用户（怎么引用生成的文件）
 
-生成的图片、视频和 3D 文件最终放到**当前会话**的 artifact 目录。WebUI 启动 terminal 时的工作目录
+生成的图片、视频先在**当前会话**的 artifact 目录暂存，完成编辑和检查后由 WebUI 上传到 Autumn S3；
+上传成功后删除本地媒体副本。3D 文件仍保存在该目录。WebUI 启动 terminal 时的工作目录
 就是 `/opt/data/artifacts/<当前会话 id>/`；先用 `pwd -P` 确认它，再在其中创建新的
 `media-<uuid>/`。完整路径应为
 `/opt/data/artifacts/<当前会话 id>/media-<uuid>/`，绝不能创建同级的
@@ -121,9 +122,14 @@ curl -s -o /tmp/out.png \
 Artifact URL 会进入聊天历史；一旦发出就把它当作不可变标识。服务端会把 `/artifacts/...` 缓存为
 `immutable`，所以覆盖同名文件不仅会破坏历史，也不会让已经打开的页面自动看到新内容。
 
-**为什么必须这样做**：`/opt/data/artifacts/` 是 PVC，pod 重建不丢；`/app/static` 是随镜像部署的
-前端代码，`/static/` 只服务镜像中的 HTML/JS/CSS。媒体绝不能再与前端共享路径，否则旧 PVC 文件会覆盖
-新版本脚本。
+图片、视频的持久存储是免密码 Autumn S3 的 `output/webui/<当前会话 id>/...`；
+WebUI 在每轮结束时自动上传，生成视频的 JPG 封面，并在成功后清理本地媒体。
+下载/生成中的文件必须用 `.part` 后缀，写入完成并关闭文件后再改成最终扩展名，避免发布半成品。
+本地编辑、拼接和逐张目检都要在本轮结束前完成。之后查看历史图片用
+`input_image_open(artifact_path="/artifacts/<当前会话 id>/...")`，它会按需从 S3 读取。
+如需在长任务中提前交付，完成所有本地处理后可执行
+`python /app/artifact_store.py '<当前会话 id>'`；命令失败时本地文件会保留，不能声称已经存入 S3。
+`/app/static` 仍只放随镜像部署的前端代码。
 
 **引用前先 `ls -l <文件名>` 确认文件确实在本轮新建的会话 artifact 目录且大小非 0**，再在回复里引用。
 

@@ -7,6 +7,7 @@ import io
 import mimetypes
 import os
 import re
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -263,9 +264,22 @@ def artifact_tool_result(
     path, session_id, public_url = _artifact_path(reference, artifacts_root)
     if not owns_session(session_id):
         raise ValueError("artifact image is not owned by the current user and session")
-    if not path.is_file():
-        raise ValueError("artifact image does not exist")
-    data_url, source_bytes, width, height = _artifact_preview(path)
+    if path.is_file():
+        data_url, source_bytes, width, height = _artifact_preview(path)
+    else:
+        # Authorization above precedes the S3 request. Download just the one
+        # requested image into an automatically removed temporary file.
+        from artifact_store import CHUNK, open_media
+        relative = path.relative_to(artifacts_root.resolve()).as_posix()
+        with open_media(relative) as source, tempfile.NamedTemporaryFile(suffix=path.suffix) as temporary:
+            size = 0
+            while block := source.read(CHUNK):
+                size += len(block)
+                if size > MAX_ARTIFACT_IMAGE_BYTES:
+                    raise ValueError("artifact image exceeds 64 MiB")
+                temporary.write(block)
+            temporary.flush()
+            data_url, source_bytes, width, height = _artifact_preview(Path(temporary.name))
     note = f"Loaded generated artifact image {public_url} at {width}x{height}."
     if question.strip():
         note += f"\nQuestion: {question.strip()}"

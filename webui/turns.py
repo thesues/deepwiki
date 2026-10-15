@@ -675,19 +675,41 @@ class TurnManager:
             # for a profile that declares none — run_turn then falls back to
             # CHAT_DIRECTIVE exactly as before.
             directive = profile.directive if profile is not None else None
-            if user_id:
-                from hermes_agent import CHAT_DIRECTIVE, _artifacts_root
-                directive = (CHAT_DIRECTIVE if directive is None else directive) + (
-                    f"\nStore generated artifacts under {_artifacts_root() / session_id}/. "
-                    f"Link to them as /artifacts/{session_id}/<filename>. "
-                    "Files outside this session directory are not published to the user."
-                )
+            from hermes_agent import CHAT_DIRECTIVE, _artifacts_root
+            directive = (CHAT_DIRECTIVE if directive is None else directive) + (
+                f"\nStore generated artifacts under {_artifacts_root() / session_id}/. "
+                f"Link to them as /artifacts/{session_id}/<filename>. "
+                "Files outside this session directory are not published to the user. "
+                "Write media to a .part filename, close it, then rename to a new unique final filename. "
+                "Images and videos are uploaded to S3 and removed from local staging at turn completion. "
+                "Finish all local editing and inspection before publishing; never reuse a previous artifact URL. "
+                "Use input_image_open with artifact_path to inspect a historical image from S3."
+            )
+            from artifact_store import existing_media, publish_session
+            artifact_root = _artifacts_root()
+            artifact_baselines = {
+                sid: existing_media(artifact_root, sid)
+                for sid in {session_id, getattr(agent, "session_id", None)} if sid
+            }
             self._run(
                 agent, session_id=session_id, user_message=model_message, history=history,
                 system_message=directive,
                 persist_user_message=text,
                 user_source=user_source,
             )
+            # Publishing is a turn lifecycle operation, independent of the
+            # profile/toolset and of whether anybody opened the media link.
+            # If S3 is unavailable, retain staging and report a failed turn;
+            # the next turn or artifact_store.py can retry without overwriting.
+            for artifact_session in dict.fromkeys((session_id, getattr(agent, "session_id", None))):
+                if artifact_session:
+                    try:
+                        publish_session(artifact_root, artifact_session,
+                                        exclude=artifact_baselines.get(artifact_session, ()))
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Media upload failed; unpublished local files are retained for retry: {exc}"
+                        ) from exc
             stream.finish()
         except Exception as e:  # noqa: BLE001
             # The reader must be told. A turn that dies silently leaves the

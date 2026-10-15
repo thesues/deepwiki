@@ -427,7 +427,7 @@ def test_artifact_poster_is_generated_lazily_from_same_name_video(tmp_path, monk
         Path(command[-1]).write_bytes(b"\xff\xd8poster\xff\xd9")
         return type("Done", (), {"returncode": 0, "stderr": b""})()
 
-    monkeypatch.setattr("http_shell.subprocess.run", fake_ffmpeg)
+    monkeypatch.setattr("artifact_store.subprocess.run", fake_ffmpeg)
     app = App(artifacts_dir=artifacts)
     req = type("R", (), {
         "user_id": "", "method": "GET", "path": "/artifacts/episode.jpg", "headers": {}, "query": {},

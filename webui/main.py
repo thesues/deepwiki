@@ -318,10 +318,8 @@ def main() -> None:
         endpoints=endpoints,
         profiles=profiles,
         static_dir=shipped,
-        # Where a drawn diagram lands. On the VOLUME, not in the image: the
-        # agent writes here at runtime (skills/diagram/archify), and an
-        # artifact has to outlive the pod that drew it — a link in a
-        # transcript that 404s after the next rollout is worse than no link.
+        # Persistent documents and media staging. Completed images/videos
+        # move to Autumn S3; their authenticated /artifacts URLs stay stable.
         artifacts_dir=artifacts,
         index_html=shipped / "index.html",
         auth_user=auth_user,

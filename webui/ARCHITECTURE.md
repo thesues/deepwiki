@@ -125,6 +125,47 @@ per-profile SKILLS have no hermes injection point yet (hermes reads one
 process-wide directory), so `AgentProfile.skills` is surfaced but not wired —
 see profiles.py.
 
+## Generated media storage
+
+`artifact_store.py` publishes completed images/videos to the existing,
+unauthenticated Autumn S3 service. `AUTUMN_S3_ENDPOINT` selects the endpoint;
+`ARTIFACT_S3_PREFIX` defaults to `output/webui` (bucket `output`, key prefix
+`webui`). The bucket must already exist; Autumn does not implement bucket
+creation via S3. There are no AK/SK or signed-URL settings.
+
+Agents work in `$HERMES_HOME/artifacts/<session-id>/`. Writers use `.part`
+names and rename only after closing a completed file. At turn completion,
+`TurnManager` publishes newly created media even if no browser viewed it.
+It snapshots existing media names before generation, so old local artifacts
+remain untouched even when a historical session is resumed. Small pending
+markers let a later turn retry failed new uploads without migrating old media.
+It creates and uploads a video's JPG poster before removing the video.
+Documents such as HTML/JSON and 3D files remain on the PVC. A failed upload
+fails the turn and retains unpublished files for retry on the next turn, or
+explicitly with `python /app/artifact_store.py <session-id>`. The same command
+can migrate a chosen historical session; there is no startup-wide migration.
+
+Uploads stream from disk with Content-MD5 and conditional `If-None-Match: *`.
+A repeated key is accepted only if a streamed SHA-256 comparison confirms the
+same bytes. Successful PUTs are checked with HEAD before local deletion; a
+changed local file or failed verification is retained. Published URLs must
+never be reused. Finish all local transformations before publishing. Historical
+images can be inspected through `input_image_open(artifact_path=...)`, which
+downloads only the requested image to an automatically removed temporary file.
+
+`/artifacts/<session-id>/<path>` remains the browser URL. Session authorization
+runs before storage access; S3 stays internal. `artifact_http.py` streams reads
+in 256 KiB chunks and implements browser Range/If-Range and ETag behavior without
+buffering or restoring full videos locally. Legacy local artifacts remain
+readable. Remote-only reads return a retryable, uncached 503 during an outage.
+
+For local development against the cluster's passwordless service:
+
+```sh
+kubectl -n autumn port-forward svc/autumn-s3 19100:9100
+export AUTUMN_S3_ENDPOINT=http://127.0.0.1:19100
+```
+
 ## Rendering: media, todos, commands
 
 Three surfaces where the transcript's shape is this app's choice, not hermes':
@@ -142,8 +183,9 @@ Three surfaces where the transcript's shape is this app's choice, not hermes':
   and an ASCII-only class is how a `图.png` silently stayed a link.
   Generated videos use `preload="none"`. When one approaches the viewport the
   client requests a same-stem JPG (`episode.mp4` -> `episode.jpg`); the Python
-  server lazily extracts that small poster once with ffmpeg and publishes it
-  beside the immutable video. Scrolling history therefore fetches pictures,
+  server extracts that small poster with ffmpeg before uploading the completed
+  video and poster to Autumn S3. Legacy local videos still generate it lazily.
+  Scrolling history therefore fetches pictures,
   not MP4 metadata ranges, until the reader presses play.
 * **The todo list is a card, not JSON.** hermes' `todo` tool answers every
   call with the FULL list. The sink (`turn_stream._todo_items`) lifts the
