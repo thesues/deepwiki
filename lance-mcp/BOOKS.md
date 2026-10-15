@@ -28,42 +28,50 @@ OCR 缓存按源文件 SHA256 分目录，中断后运行相同命令可复用�
 
 ## 导入 Autumn LanceDB
 
-分别保持两个端口转发进程运行：
+使用 `k8s/tao-ingest-job.yaml` 启动 Job。将其中 `IMAGE_LANCE_MCP` 替换为
+已验证的 Lance MCP 镜像，再应用 manifest。Pod 先等待上传完成标记。
 
 ```sh
-kubectl -n autumn port-forward svc/autumn-s3 19100:9100
-kubectl -n autumn port-forward svc/llama-embed 18080:8080
+kubectl apply -f /path/to/rendered-tao-ingest-job.yaml
+kubectl -n autumn wait --for=condition=Ready pod -l job-name=tao-ingest --timeout=120s
+TAO_INGEST_POD=$(kubectl -n autumn get pod -l job-name=tao-ingest -o jsonpath='{.items[0].metadata.name}')
+kubectl -n autumn cp /private/tmp/buda-tao-import/tao "${TAO_INGEST_POD}:/input/tao"
+# 核对复制后的文件 SHA256，再放行导入。
+kubectl -n autumn exec "$TAO_INGEST_POD" -- touch /input/ready
+kubectl -n autumn logs -f job/tao-ingest
+kubectl -n autumn wait --for=condition=complete job/tao-ingest --timeout=3600s
 ```
 
-在 `lance-mcp` 目录执行：
+Job 在集群内调用现有 `ingest_docs.py` 的 `build`、`embed_rows`、`write`：
+明确从 `/input/tao` 读取文档，调用
+`http://llama-embed:8080` 的 BGE-M3，并直接通过 `http://autumn-s3:9100`
+写入 `s3://lancedb/tao`。旧镜像的 CLI 会将 `--s3-endpoint` 同时用于输入，
+直接调用现有 API 可正确组合本地文档输入和 S3 数据库输出。
+不使用 port-forward 搬运 LanceDB 数据。
 
-```sh
-.venv/bin/python ingest_docs.py \
-  --fs-root /private/tmp/buda-tao-import --index tao \
-  --s3-endpoint http://127.0.0.1:19100 --db-path s3://lancedb/tao \
-  --embed-url http://127.0.0.1:18080 --embed-model bge-m3
-```
-
-这是完整替换指定库的导入命令，不要指向其他语料库。使用匿名 Autumn S3、
+这是完整替换指定库的导入流程，不要指向其他语料库。使用匿名 Autumn S3、
 BGE-M3 1024 维向量及中文 ngram 1–2 全文索引；搜索支持 lexical/vector/hybrid。
-首次导入额外按 32 个分块缓存了向量，执行的是相同的 `build`、
-`Embedder.embed_batch` 和 `write` 路径，避免网络中断后重算已完成的向量。
+重新导入时删除已完成的同名 Job，再启动新 Job 并重新复制文档；输入是 emptyDir。
 
 发布前检查 `files` 数量与 manifest 一致、`docs` 数量与分块一致、无空向量，
 并实际执行 `search_docs`、`document_outline`、`read_file` 检查引用位置。
-验证通过后才使用 boto3 匿名客户端写入 ready marker：
+验证通过后，从集群内有 boto3 的 Python 环境写入 ready marker：
 
 ```python
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 
-s3 = boto3.client("s3", endpoint_url="http://127.0.0.1:19100",
+s3 = boto3.client("s3", endpoint_url="http://autumn-s3:9100",
                   region_name="us-east-1",
                   config=Config(signature_version=UNSIGNED,
                                 s3={"addressing_style": "path"}))
 s3.put_object(Bucket="lancedb", Key=".tao-docs-v1-ready", Body=b"verified\n")
 ```
+
+首次导入曾通过本机 port-forward 尝试 S3 分片上传，转发流创建超时导致
+5 MiB 分片等待约 241 秒后失败；最终改为上述 Job 路径。
+集群内 1 KiB PUT 实测约 12–23 ms，不能把该次转发故障解释为存储吞吐低。
 
 ## 服务与 profile
 

@@ -1,0 +1,68 @@
+# 先 kubectl cp 转换文档到 /input/tao，再创建 /input/ready 开始导入。
+# 所有向量计算和 LanceDB 写入都走集群内服务，不使用 port-forward。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tao-ingest
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao-ingest }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao-ingest }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      volumes:
+        - name: input
+          emptyDir: {}
+      containers:
+        - name: ingest
+          image: IMAGE_LANCE_MCP
+          imagePullPolicy: Always
+          volumeMounts:
+            - { name: input, mountPath: /input }
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "Waiting for documents in /input/tao and /input/ready"
+              while [ ! -f /input/ready ]; do sleep 2; done
+              # The reusable image's CLI selects S3 input whenever --s3-endpoint
+              # is set. Use its existing APIs to read local input and write S3.
+              exec .venv/bin/python - <<'PY'
+              import json
+              from pathlib import Path
+              import socket
+              import time
+              from ingest_docs import build, embed_rows, write
+              from embed import Embedder
+              from store import connect, s3_storage_options
+
+              rows, files = build(Path('/input'), 'tao')
+              manifest = json.loads(Path('/input/tao/manifest.json').read_text())
+              assert rows and len(files) == len(manifest)
+              print(f'{len(files)} documents, {len(rows)} chunks', flush=True)
+              emb = Embedder('http://llama-embed:8080', 'bge-m3')
+              started = time.monotonic()
+              for offset in range(0, len(rows), 64):
+                  embed_rows(rows[offset:offset + 64], emb)
+                  print(f'embedded {min(offset + 64, len(rows))}/{len(rows)}', flush=True)
+              print(f'embedding seconds: {time.monotonic() - started:.2f}', flush=True)
+              endpoint = f'http://{socket.gethostbyname("autumn-s3")}:9100'
+              db = connect('s3://lancedb/tao', storage_options=s3_storage_options(endpoint))
+              started = time.monotonic()
+              write(db, rows, files)
+              assert db.open_table('docs').count_rows() == len(rows)
+              assert db.open_table('docs').count_rows('vector IS NULL') == 0
+              assert db.open_table('files').count_rows() == len(files)
+              print(f'write + FTS seconds: {time.monotonic() - started:.2f}', flush=True)
+              print('Import verified; run retrieval checks before publishing ready marker.', flush=True)
+              PY
+          resources:
+            requests: { cpu: "2", memory: 2Gi }
+            limits: { cpu: "4", memory: 8Gi }
