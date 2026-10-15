@@ -26,7 +26,7 @@ import os
 from pathlib import Path
 import re
 import secrets
-import urllib.error
+from botocore.exceptions import ClientError
 
 from http_shell import App, Request, Response, Streaming, json_response
 from hermes_agent import Endpoint, profile_of_source
@@ -171,8 +171,8 @@ def build_app(
         endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
         try:
             body, content_type = _get_media_object(endpoint, key)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
+        except ClientError as exc:
+            if exc.response["ResponseMetadata"]["HTTPStatusCode"] == 404:
                 return json_response({"error": "image not found"}, status=404)
             log.warning("media read from Autumn S3 failed: %s", exc)
             return json_response({"error": "media storage unavailable"}, status=503)

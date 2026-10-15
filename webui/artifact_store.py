@@ -16,11 +16,12 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tempfile
-import urllib.error
 import urllib.parse
-import urllib.request
+
+from botocore.exceptions import ClientError
 
 from media_input import endpoint
+from s3_client import client, object_args
 
 log = logging.getLogger("deepwiki.artifacts")
 CHUNK = 256 * 1024
@@ -45,25 +46,17 @@ def object_key(relative: str) -> str:
     return f"{prefix}/{relative}"
 
 
-def _request(key: str, method: str = "GET", *, headers=None, data=None):
-    url = endpoint().rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-    req = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
-    return urllib.request.urlopen(req, timeout=120)
-
-
 def head(relative: str):
     try:
-        with _request(object_key(relative), "HEAD") as response:
-            return response.headers
-    except urllib.error.HTTPError as exc:
-        exc.close()
-        if exc.code == 404:
+        return client(endpoint()).head_object(**object_args(object_key(relative)))
+    except ClientError as exc:
+        if exc.response["ResponseMetadata"]["HTTPStatusCode"] == 404:
             return None
         raise
 
 
-def open_media(relative: str, *, headers=None):
-    return _request(object_key(relative), headers=headers)
+def open_media(relative: str, **conditions):
+    return client(endpoint()).get_object(**object_args(object_key(relative)), **conditions)
 
 
 def _digest(source, checksum=None) -> str:
@@ -101,22 +94,19 @@ def publish_file(root: Path, path: Path) -> str:
             raise RuntimeError(f"media changed during publication: {relative}")
         source.seek(0)
         try:
-            with _request(key, "PUT", data=source, headers={
-                "Content-Length": str(before[2]),
-                "Content-Type": "application/octet-stream",
-                "If-None-Match": "*",
-                "Content-MD5": base64.b64encode(checksum.digest()).decode("ascii"),
-            }):
-                pass
-        except urllib.error.HTTPError as exc:
-            exc.close()
-            if exc.code != 412:
+            client(endpoint()).put_object(
+                **object_args(key), Body=source, ContentLength=before[2],
+                ContentType="application/octet-stream", IfNoneMatch="*",
+                ContentMD5=base64.b64encode(checksum.digest()).decode("ascii"),
+            )
+        except ClientError as exc:
+            if exc.response["ResponseMetadata"]["HTTPStatusCode"] != 412:
                 raise
-            with open_media(relative) as remote:
+            with open_media(relative)["Body"] as remote:
                 if _digest(remote) != digest:
                     raise ValueError(f"artifact URL already contains different media: {relative}") from exc
         saved = head(relative)
-        if saved is None or int(saved.get("Content-Length", -1)) != before[2]:
+        if saved is None or saved.get("ContentLength") != before[2]:
             raise RuntimeError(f"S3 verification failed: {relative}")
         if _signature(os.fstat(source.fileno())) != before or _signature(resolved.stat()) != before:
             raise RuntimeError(f"media changed during publication: {relative}")

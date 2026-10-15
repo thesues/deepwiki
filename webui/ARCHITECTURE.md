@@ -128,7 +128,9 @@ see profiles.py.
 ## Generated media storage
 
 `artifact_store.py` publishes completed images/videos to the existing,
-unauthenticated Autumn S3 service. `AUTUMN_S3_ENDPOINT` selects the endpoint;
+unauthenticated Autumn S3 service using boto3 with `signature_version=UNSIGNED`
+and path-style addressing. The shared `s3_client.py` also handles browser image
+uploads; SDK methods own S3 encoding, responses and retries. `AUTUMN_S3_ENDPOINT` selects the endpoint;
 `ARTIFACT_S3_PREFIX` defaults to `output/webui` (bucket `output`, key prefix
 `webui`). The bucket must already exist; Autumn does not implement bucket
 creation via S3. There are no AK/SK or signed-URL settings.
@@ -142,7 +144,7 @@ markers let a later turn retry failed new uploads without migrating old media.
 It creates and uploads a video's JPG poster before removing the video.
 Documents such as HTML/JSON and 3D files remain on the PVC. A failed upload
 fails the turn and retains unpublished files for retry on the next turn, or
-explicitly with `python /app/artifact_store.py <session-id>`. The same command
+explicitly with `/opt/hermes/.venv/bin/python /app/artifact_store.py <session-id>`. The same command
 can migrate a chosen historical session; there is no startup-wide migration.
 
 Uploads stream from disk with Content-MD5 and conditional `If-None-Match: *`.
@@ -273,6 +275,7 @@ leak. **None can regress here, because there is no terminal.**
 |---|---|---|
 | `hermes` | **library** — `run_agent.AIAgent` in this process, on threads | no subprocess to respawn or multiplex; an endpoint is a cache key, so one deployment serves several providers (see "Endpoints"). Import resolves only inside hermes' venv, which is why `main.py` runs under `/opt/hermes/.venv/bin/python` |
 | `lance-mcp` | **HTTP MCP** (`MCP_SERVERS`) | no spawned process, no autumn credential, **not under autumn's WIRE lockstep** |
+| `boto3` / `autumn-s3` | **Anonymous S3** (`AUTUMN_S3_ENDPOINT`) | uploaded inputs and generated media; `UNSIGNED`, no AK/SK or Authorization header |
 | providers | OpenAI-compatible HTTP, from `DEEPWIKI_ENDPOINTS` | `hermes config set model.*` still runs at pod start as the fallback single-model path, but a turn's model comes from the `Endpoint` the picker named |
 
 The MCP transport is the load-bearing choice. A stdio MCP server must be spawned

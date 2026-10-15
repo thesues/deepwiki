@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-import urllib.error
+from email.utils import format_datetime
+from datetime import timezone
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 import artifact_store
 from http_shell import (
@@ -20,7 +23,7 @@ def serve_media(req, relative: str):
         metadata = artifact_store.head(relative)
         if metadata is None:
             return None  # historical or not-yet-published local file
-        size = int(metadata["Content-Length"])
+        size = metadata["ContentLength"]
         etag = metadata.get("ETag", "")
         headers = [
             ("Content-Type", App._content_type(Path(relative))),
@@ -33,7 +36,8 @@ def serve_media(req, relative: str):
             headers.append(("Vary", "Cookie"))
         if etag:
             headers.append(("ETag", etag))
-        modified = metadata.get("Last-Modified")
+        modified_at = metadata.get("LastModified")
+        modified = format_datetime(modified_at.astimezone(timezone.utc), usegmt=True) if modified_at else None
         if modified:
             headers.append(("Last-Modified", modified))
         if _if_none_match_matches(req.headers.get("If-None-Match"), etag):
@@ -49,36 +53,38 @@ def serve_media(req, relative: str):
                            and _parse_http_timestamp(if_range) == _parse_http_timestamp(modified))
             if not matches:
                 raw_range = None
-        upstream_headers = {"If-Match": etag} if etag else {}
+        conditions = {"IfMatch": etag} if etag else {}
         status, length = 200, size
         if raw_range:
             try:
                 start, end = _parse_byte_range(raw_range, size)
             except ValueError:
                 return Response(416, headers + [("Content-Range", f"bytes */{size}")])
-            upstream_headers["Range"] = f"bytes={start}-{end}"
+            conditions["Range"] = f"bytes={start}-{end}"
             status, length = 206, end - start + 1
             headers.append(("Content-Range", f"bytes {start}-{end}/{size}"))
-        upstream = artifact_store.open_media(relative, headers=upstream_headers)
-        if upstream.status != status or int(upstream.headers.get("Content-Length", -1)) != length:
+        result = artifact_store.open_media(relative, **conditions)
+        upstream = result["Body"]
+        if result["ResponseMetadata"]["HTTPStatusCode"] != status or result.get("ContentLength") != length:
             upstream.close()
             raise RuntimeError("unexpected S3 media response")
 
         def pump(write):
             remaining = length
-            while remaining:
-                block = upstream.read(min(artifact_store.CHUNK, remaining))
-                if not block:
-                    raise OSError("truncated S3 media response")
-                write(block)
-                remaining -= len(block)
+            try:
+                while remaining:
+                    block = upstream.read(min(artifact_store.CHUNK, remaining))
+                    if not block:
+                        raise OSError("truncated S3 media response")
+                    write(block)
+                    remaining -= len(block)
+            except BotoCoreError as exc:
+                raise OSError("S3 media stream failed") from exc
 
         response = Streaming(headers + [("Content-Length", str(length))], pump, close=upstream.close)
         response.status = status
         return response
-    except (OSError, ValueError, RuntimeError) as exc:
-        if isinstance(exc, urllib.error.HTTPError):
-            exc.close()
+    except (BotoCoreError, ClientError, OSError, ValueError, RuntimeError) as exc:
         log.warning("S3 media read failed for %s: %s", relative, exc)
         response = json_response({"error": "media storage unavailable"}, status=503)
         response.headers.append(("Cache-Control", "no-store"))

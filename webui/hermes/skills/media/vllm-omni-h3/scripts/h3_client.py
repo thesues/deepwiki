@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import mimetypes
@@ -12,9 +13,12 @@ from pathlib import Path
 import re
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
+
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
 
 
 DEFAULT_S3 = "http://autumn-s3.autumn.svc:9100"
@@ -30,17 +34,12 @@ def safe_session(value: str) -> str:
     return value[:128]
 
 
-def object_url(endpoint: str, key: str) -> str:
-    return endpoint.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-
-
-def request_bytes(req: urllib.request.Request, timeout: int) -> bytes:
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read(4096).decode("utf-8", "replace")
-        raise RuntimeError(f"HTTP {exc.code} from {req.full_url}: {detail}") from exc
+def s3_client(endpoint: str):
+    # This script also runs independently of the WebUI package.
+    return boto3.client("s3", endpoint_url=endpoint, region_name="us-east-1", config=Config(
+        signature_version=UNSIGNED, s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required", response_checksum_validation="when_required",
+    ))
 
 
 def persist_input(path: Path, session_id: str, s3_endpoint: str) -> tuple[str, bytes, str]:
@@ -52,18 +51,20 @@ def persist_input(path: Path, session_id: str, s3_endpoint: str) -> tuple[str, b
         raise ValueError(f"unsupported image type: {mime}")
     suffix = (path.suffix or ".bin").lower()
     key = f"input/webui/{safe_session(session_id)}/{uuid.uuid4().hex}{suffix}"
-    req = urllib.request.Request(
-        object_url(s3_endpoint, key), data=data, method="PUT", headers={"Content-Type": mime}
-    )
-    request_bytes(req, 120)
+    bucket, object_path = key.split("/", 1)
+    with closing(s3_client(s3_endpoint)) as s3:
+        s3.put_object(Bucket=bucket, Key=object_path, Body=data, ContentType=mime, IfNoneMatch="*")
     return key, data, mime
 
 
 def load_input(key: str, s3_endpoint: str) -> tuple[bytes, str]:
     if not key.startswith("input/webui/") or ".." in key.split("/"):
         raise ValueError("input object key must be under input/webui/")
-    req = urllib.request.Request(object_url(s3_endpoint, key), method="GET")
-    data = request_bytes(req, 120)
+    bucket, object_path = key.split("/", 1)
+    with closing(s3_client(s3_endpoint)) as s3:
+        response = s3.get_object(Bucket=bucket, Key=object_path)
+        with response["Body"] as source:
+            data = source.read(MAX_INPUT_BYTES + 1)
     if not data or len(data) > MAX_INPUT_BYTES:
         raise ValueError(f"stored input must be 1..{MAX_INPUT_BYTES} bytes")
     mime = mimetypes.guess_type(key)[0] or "application/octet-stream"

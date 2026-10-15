@@ -15,6 +15,8 @@ import urllib.request
 
 import pytest
 from PIL import Image
+from botocore import UNSIGNED
+from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import artifact_store as store
@@ -42,12 +44,13 @@ def storage(monkeypatch):
                 self.wfile.write(body)
 
         def do_PUT(self):
+            assert self.headers.get("Authorization") is None
             state.requests.append(("PUT", self.path))
             body = self.rfile.read(int(self.headers["Content-Length"]))
             if state.fail_put:
                 return self.reply(503)
             expected = base64.b64encode(hashlib.md5(body).digest()).decode()
-            if self.headers.get("Content-MD5") != expected:
+            if self.headers.get("Content-MD5") not in (None, expected):
                 return self.reply(400)
             if self.headers.get("If-None-Match") == "*" and self.path in state.objects:
                 return self.reply(412)
@@ -55,6 +58,7 @@ def storage(monkeypatch):
             self.reply(200)
 
         def do_GET(self):
+            assert self.headers.get("Authorization") is None
             state.requests.append((self.command, self.path))
             if state.fail_read:
                 return self.reply(503)
@@ -89,7 +93,7 @@ def png(path):
 
 
 def get(url, **headers):
-    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=5)
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15)
 
 
 @pytest.fixture
@@ -133,14 +137,14 @@ def test_remote_video_ranges_validators_and_no_full_buffer(storage, browser, tmp
 
     def open_checked(*args, **kwargs):
         response = original(*args, **kwargs)
-        read = response.read
+        read = response["Body"].read
 
         def bounded(size=-1):
             assert 0 < size <= store.CHUNK
             reads.append(size)
             return read(size)
 
-        response.read = bounded
+        response["Body"].read = bounded
         return response
 
     monkeypatch.setattr(store, "open_media", open_checked)
@@ -185,7 +189,7 @@ def test_failed_put_and_idempotent_retry_keep_bytes_safe(storage, tmp_path):
     path = tmp_path / "session-a" / "pic.png"
     body = png(path)
     storage.fail_put = True
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(ClientError):
         store.publish_session(tmp_path, "session-a")
     assert path.read_bytes() == body
     storage.fail_put = False
@@ -210,7 +214,7 @@ def test_changed_source_and_bad_head_are_not_deleted(storage, tmp_path, monkeypa
         if changed_source:
             path.write_bytes(b"changed while uploading")
             return original(relative)
-        return {"Content-Length": "0"}
+        return {"ContentLength": 0}
 
     monkeypatch.setattr(store, "head", changed)
     with pytest.raises(RuntimeError, match="changed during|verification failed"):
@@ -270,7 +274,7 @@ def test_legacy_files_excluded_but_failed_new_batch_retries(storage, tmp_path):
     png(new)
     png(later)
     storage.fail_put = True
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(ClientError):
         store.publish_session(tmp_path, "session-a", exclude=baseline)
     storage.fail_put = False
     next_turn_baseline = store.existing_media(tmp_path, "session-a")
@@ -296,7 +300,7 @@ def test_turn_publishes_unviewed_media_before_end(storage, tmp_path, monkeypatch
     manager = TurnManager(ha.AgentPool(), history=lambda _: [], run=run)
     ep = ha.Endpoint(key="test", label="test", model="m", base_url="http://unused")
     stream = manager.start(session_id="session-a", text="draw", endpoint=ep)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while stream.running and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not stream.running
@@ -305,3 +309,29 @@ def test_turn_publishes_unviewed_media_before_end(storage, tmp_path, monkeypatch
     assert old.exists()
     assert bool(stream.error) == fail
     assert bool(stream.after(0)[-1].get("error")) == fail
+
+
+def test_browser_input_uses_unsigned_boto3_even_with_ambient_credentials(storage, tmp_path, monkeypatch):
+    from media_input import endpoint, put_object, get_object
+    from s3_client import client
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "unused-test-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unused-test-secret")
+    key = "input/webui/session-a/0123456789abcdef0123456789abcdef.png"
+    body = png(tmp_path / "input.png")
+    put_object(endpoint(), key, body, "image/png")
+    assert get_object(endpoint(), key) == (body, "image/png")
+    assert client(endpoint()).meta.config.signature_version == UNSIGNED
+    assert client(endpoint())._request_signer._credentials is None
+
+
+def test_standalone_h3_input_uses_boto3(storage, tmp_path):
+    import importlib.util
+    script = Path(__file__).resolve().parents[1] / "hermes/skills/media/vllm-omni-h3/scripts/h3_client.py"
+    spec = importlib.util.spec_from_file_location("h3_client", script)
+    h3 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(h3)
+    path = tmp_path / "input.png"
+    body = png(path)
+    key, uploaded, mime = h3.persist_input(path, "session-a", store.endpoint())
+    assert uploaded == body and mime == "image/png"
+    assert h3.load_input(key, store.endpoint()) == (body, mime)

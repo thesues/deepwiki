@@ -45,7 +45,7 @@ JWT 模式不会发布无会话归属的文件。同一提示词重跑也要换�
 文生视频：
 
 ```bash
-python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
+/opt/hermes/.venv/bin/python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '镜头和音频描述' \
   --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3.mp4 \
   --session-id '<当前会话 id>'
@@ -54,7 +54,7 @@ python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
 新本地图生视频（会先持久化图片）：
 
 ```bash
-python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
+/opt/hermes/.venv/bin/python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '让主体自然运动，描述环境声' \
   --input ./first-frame.png \
   --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3-i2v.mp4 \
@@ -64,7 +64,7 @@ python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
 重放 WebUI 已上传的图片：
 
 ```bash
-python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
+/opt/hermes/.venv/bin/python /opt/data/skills/media/vllm-omni-h3/scripts/h3_client.py \
   --prompt '让主体自然运动，描述环境声' \
   --input-object-key 'input/webui/<session-id>/<uuid>.png' \
   --output /opt/data/artifacts/<当前会话 id>/media-<run-uuid>/h3-i2v.mp4 \
@@ -84,7 +84,7 @@ shift 3。只有用户明确要求时才改。与 ComfyUI 做 A/B 时必须同�
 - 每次输出放新的 `/opt/data/artifacts/<当前会话 id>/media-<run-uuid>/`，回复使用对应的
   `/artifacts/<当前会话 id>/media-<run-uuid>/...` 相对链接；任何旧输出路径都不能被后续生成复用。
 - 脚本使用 `.part` 文件写入完成后再原子发布 MP4。完成本轮的检查、拼接等本地操作后，
-  可执行 `python /app/artifact_store.py '<当前会话 id>'` 提前上传并清理媒体；否则由本轮结束时自动处理。
+  可执行 `/opt/hermes/.venv/bin/python /app/artifact_store.py '<当前会话 id>'` 提前上传并清理媒体；否则由本轮结束时自动处理。
   上传失败会保留本地媒体并报告错误；不能把仅有本地文件描述为已持久化到 S3。
 
 ## 失败处理

@@ -128,7 +128,7 @@ WebUI 在每轮结束时自动上传，生成视频的 JPG 封面，并在成功
 本地编辑、拼接和逐张目检都要在本轮结束前完成。之后查看历史图片用
 `input_image_open(artifact_path="/artifacts/<当前会话 id>/...")`，它会按需从 S3 读取。
 如需在长任务中提前交付，完成所有本地处理后可执行
-`python /app/artifact_store.py '<当前会话 id>'`；命令失败时本地文件会保留，不能声称已经存入 S3。
+`/opt/hermes/.venv/bin/python /app/artifact_store.py '<当前会话 id>'`；命令失败时本地文件会保留，不能声称已经存入 S3。
 `/app/static` 仍只放随镜像部署的前端代码。
 
 **引用前先 `ls -l <文件名>` 确认文件确实在本轮新建的会话 artifact 目录且大小非 0**，再在回复里引用。

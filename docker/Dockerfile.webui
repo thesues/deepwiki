@@ -5,8 +5,8 @@
 # wanted and quietly break the other. `hermes_session_api.py` is executed by
 # HERMES' interpreter for exactly the same reason.
 #
-# Retrieval goes through `memory-mcp` over HTTP MCP. Browser media uploads use
-# autumn-s3 over plain HTTP; the app has no PyO3 client or filesystem mount.
+# Retrieval goes through `memory-mcp` over HTTP MCP. Media uses anonymous
+# boto3 against autumn-s3; the app has no PyO3 client or filesystem mount.
 # That old client WAS the wire format, so it pinned this image to autumn's WIRE
 # lockstep — a commit mismatch decoded garbage rather than failing a handshake.
 # HTTP keeps this image independent of the cluster's autumn version and avoids
@@ -92,6 +92,7 @@ RUN set -eux; \
         $( [ -n "${HERMES_EXTRA_INDEX}" ] && echo "--extra-index-url ${HERMES_EXTRA_INDEX} --index-strategy unsafe-best-match" ) \
         "hermes-agent[mcp]==${HERMES_VERSION}" \
         "Brotli==1.1.0" \
+        "boto3==1.40.76" \
         "Pillow==12.2.0" \
         "PyJWT[crypto]==2.13.0"; \
     ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes; \
@@ -99,7 +100,7 @@ RUN set -eux; \
 
 # --- the app ---------------------------------------------------------------- #
 # Brotli is installed into the interpreter above because `http_shell.py` uses
-# it for HTTP content encoding. The app otherwise remains stdlib-only.
+# it for HTTP content encoding; boto3 serves the anonymous Autumn S3 client.
 WORKDIR /app
 COPY webui/ /app/
 RUN /opt/hermes/.venv/bin/python -c 'import hermes_agent, hermes_config, hermes_session_api, turns; print("WebUI Hermes integration imports OK")'

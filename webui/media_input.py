@@ -9,9 +9,10 @@ import os
 import re
 import tempfile
 import urllib.parse
-import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Callable
+
+from s3_client import client, object_args
 
 
 MAX_IMAGE_BYTES = 8 << 20
@@ -50,28 +51,21 @@ def owned_key(key: str, user_id: str) -> bool:
 
 def put_object(endpoint_url: str, key: str, body: bytes, content_type: str) -> None:
     """Write one immutable browser image to Autumn S3."""
-    url = endpoint_url.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-    upstream = urllib.request.Request(
-        url, data=body, method="PUT", headers={"Content-Type": content_type}
+    client(endpoint_url).put_object(
+        **object_args(key), Body=body, ContentType=content_type, IfNoneMatch="*",
     )
-    with urllib.request.urlopen(upstream, timeout=120) as response:
-        if response.status // 100 != 2:
-            raise RuntimeError(f"unexpected S3 status {response.status}")
 
 
 def get_object(endpoint_url: str, key: str) -> tuple[bytes, str]:
     """Read one immutable browser image from Autumn S3."""
     if not valid_key(key):
         raise ValueError("invalid image key")
-    url = endpoint_url.rstrip("/") + "/" + urllib.parse.quote(key, safe="/")
-    upstream = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(upstream, timeout=120) as response:
-        if response.status // 100 != 2:
-            raise RuntimeError(f"unexpected S3 status {response.status}")
-        body = response.read(MAX_IMAGE_BYTES + 1)
+    response = client(endpoint_url).get_object(**object_args(key))
+    with response["Body"] as source:
+        body = source.read(MAX_IMAGE_BYTES + 1)
         if len(body) > MAX_IMAGE_BYTES:
             raise RuntimeError("stored image exceeds 8 MiB")
-        content_type = response.headers.get_content_type()
+        content_type = response.get("ContentType", "application/octet-stream")
         if content_type not in IMAGE_TYPES:
             content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
     return body, content_type
@@ -271,7 +265,7 @@ def artifact_tool_result(
         # requested image into an automatically removed temporary file.
         from artifact_store import CHUNK, open_media
         relative = path.relative_to(artifacts_root.resolve()).as_posix()
-        with open_media(relative) as source, tempfile.NamedTemporaryFile(suffix=path.suffix) as temporary:
+        with open_media(relative)["Body"] as source, tempfile.NamedTemporaryFile(suffix=path.suffix) as temporary:
             size = 0
             while block := source.read(CHUNK):
                 size += len(block)
