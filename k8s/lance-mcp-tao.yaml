@@ -1,0 +1,72 @@
+# 老子通释：独立 tao 文档库，复用 LanceDB MCP 镜像。
+# 导入完成后才发布 ready marker；服务启动不重复导入。
+# 参见 lance-mcp/BOOKS.md。
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lance-mcp-tao
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao }
+  ports:
+    - { name: http, port: 5105, targetPort: 5105 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lance-mcp-tao
+  namespace: autumn
+  labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: autumn, app.kubernetes.io/component: lance-mcp-tao }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { autumn-node: "true" }
+      containers:
+        - name: lance-mcp
+          image: IMAGE_LANCE_MCP
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              S3="http://$(getent hosts autumn-s3 | awk '{print $1}'):9100"
+              DB="s3://lancedb/tao"
+
+              for i in $(seq 1 120); do
+                if .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.exists('lancedb', '.tao-docs-v1-ready') else 1)" 2>/dev/null; then break; fi
+                sleep 1
+              done
+              .venv/bin/python -c "from s3 import Gateway; import sys; g=Gateway('$S3'); sys.exit(0 if g.exists('lancedb', '.tao-docs-v1-ready') else 1)" \
+                || { echo "marker .tao-docs-v1-ready not found: prepare books and ingest_docs.py first"; exit 1; }
+
+              exec .venv/bin/python server.py \
+                --db-path "$DB" --s3-endpoint "$S3" \
+                --embed-url http://llama-embed:8080 --embed-model bge-m3 \
+                --host 0.0.0.0 --port 5105
+          ports:
+            - { name: http, containerPort: 5105 }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          startupProbe:
+            httpGet: { path: /healthz, port: 5105 }
+            periodSeconds: 15
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: { path: /healthz, port: 5105 }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 5105 }
+            periodSeconds: 30
+            failureThreshold: 3

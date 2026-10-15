@@ -407,7 +407,7 @@ spec:
             # One lance-mcp image serves ONE corpus; extra corpora are
             # additional Deployments (k8s/lance-mcp-*.yaml) on their own port.
             - name: MCP_SERVERS
-              value: "memory=http://lance-mcp:5102/mcp,code-index=http://lance-mcp-code:5104/mcp,mayi=http://lance-mcp-mayi:5103/mcp"
+              value: "memory=http://lance-mcp:5102/mcp,code-index=http://lance-mcp-code:5104/mcp,mayi=http://lance-mcp-mayi:5103/mcp,tao=http://lance-mcp-tao:5105/mcp"
             - { name: LLM_BASE_URL, value: "http://freetoken-l3:1919/v1" }
             - { name: LLM_MODEL, value: "dsv4-flash" }
             # FreeToken's max_seq_len is 62080 (prompt + generation, derived
@@ -461,6 +461,9 @@ spec:
                 [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
                   "skills":["buddhist-canon-retrieval"],
                   "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
+                 {"key":"tao","label":"老子通释","toolsets":["mcp-tao"],"mcp_servers":["tao"],"skills":[],
+                  "mcp_tools":["search_docs","list_documents","document_outline","read_file"],
+                  "directive":"你是老子通释阅读与检索助手，只使用 tao 文档库回答书籍内容问题。先检索再回答；讨论《道德经》时优先查《老子通释》，明确区分老子原文、余秋雨的解释、其他作者的观点和你的概括，不把现代哲学丛书的观点称为道教经典。search_docs 返回定位和短预览，引用前必须用 read_file 按返回的 file/start/end 读取正文，不能只凭预览作答。用 list_documents 查看馆藏、document_outline 查看章节。引用书名、章节和行号；PDF 转换文档的标题保留 PDF 物理页码，也要标出该页码，不把 read_file 的行号当页码。扫描书经过 OCR，发现疑似错字时说明，不伪造原文。语料没有的直说没有，额外背景知识需明确标注。用中文简洁回答。"},
                  {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
                   "skills":["autumn-codebase","archify"],
                   "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
