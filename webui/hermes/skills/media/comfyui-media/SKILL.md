@@ -3,17 +3,7 @@ name: comfyui-media
 description: 用集群里的 ComfyUI 生成图片（Z-Image）、视频（MiniMax H3）、3D 模型（TRELLIS 2 / Pixal3D）。只用本 skill assets 里预展开的现成 workflow，改参数提交，从不自己新做 workflow、从不新建节点连线。
 metadata:
   hermes:
-    # What this skill cannot work without, and hermes' own gate: a profile
-    # lacking these never sees the skill — not in the prompt's skill index,
-    # not in skills_list. `terminal` is how ComfyUI is reached (curl to the
-    # cluster address; there is no MCP for it) and `file` is how the workflow
-    # JSON in assets/ is read and the rendered output is written.
-    #
-    # Which is also how this skill is scoped to the general assistant: the
-    # scripture profile carries `skills` alone and the code profile
-    # `skills` + `terminal`, so neither qualifies, and neither has any use
-    # for image generation. Declaring what it needs is the whole mechanism —
-    # nothing here names a profile.
+    # terminal reaches ComfyUI; file reads workflows and writes outputs.
     requires_toolsets:
       - terminal
       - file

@@ -16,8 +16,6 @@ import pytest  # noqa: E402
 
 import hermes_agent as ha  # noqa: E402
 import app_routes as routes  # noqa: E402
-import profiles as pr
-import session_profiles as sp  # noqa: E402
 from app_routes import build_app  # noqa: E402
 from http_shell import serve  # noqa: E402
 from turns import TurnManager  # noqa: E402
@@ -63,16 +61,11 @@ class FakeSessions:
 
 @pytest.fixture
 def app_server(monkeypatch, tmp_path):
-    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep, profile=None: FakeAgent())
+    monkeypatch.setattr(ha, "build_agent", lambda session_id, ep: FakeAgent())
     (tmp_path / "index.html").write_text(
         '<html><link rel="stylesheet" href="/static/style.css">'
         '<script src="/static/app.js"></script></html>'
     )
-    (tmp_path / "home.html").write_text(
-        '<html><link rel="stylesheet" href="/static/style.css">'
-        '<script src="/static/home.js"></script></html>'
-    )
-    (tmp_path / "home.js").write_text("console.log(1)")
     (tmp_path / "app.js").write_text("console.log(1)")   # the versioned URL must serve
     gate = threading.Event()
     gate.set()
@@ -91,21 +84,13 @@ def app_server(monkeypatch, tmp_path):
             max_concurrent=1, supports_vision=True,
         ),
     ]
-    pfs = pr.build_profiles([
-        {"key": "buda", "label": "佛典检索"},
-        {"key": "video", "label": "解说视频", "endpoints": ["vision"]},
-    ])
     app = build_app(
         manager=mgr,
         endpoints=eps,
-        profiles=pfs,
         static_dir=tmp_path,
         index_html=tmp_path / "index.html",
         sessions=state["sessions"],
         mcp={"name": "memory", "url": "http://mcp"},
-        # Pinned into tmp_path: the default lands in HERMES_HOME, so without
-        # this the suite writes its pins into the developer's real ~/.hermes.
-        session_profiles=sp.SessionProfiles(tmp_path / "session_profiles.json"),
     )
     srv = serve(app, "127.0.0.1", 0)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
@@ -235,66 +220,30 @@ def test_an_unknown_endpoint_falls_back_rather_than_failing(app_server):
     _drain(mgr.stream(body["streamId"]))
 
 
-# ── profiles ─────────────────────────────────────────────────────────────────
+# ── one agent, including conversations from retired profiles ───────────────
 
 
-def test_status_advertises_the_project_cards(app_server):
-    """The homepage renders FROM this list. A deploy that declares none gets
-    the built-in default — one card, no behaviour change."""
+def test_status_has_no_profile_selection(app_server):
     base, _, _ = app_server
-    j = _get(base, "/api/status")
-    assert [p["key"] for p in j["profiles"]] == ["buda", "video"]
-    assert j["defaultProfile"] == "buda"
+    for endpoint in ("/api/status", "/api/sessions"):
+        body = _get(base, endpoint)
+        assert "profiles" not in body and "defaultProfile" not in body
 
 
-def test_the_profile_named_by_the_client_is_the_one_echoed(app_server):
-    base, mgr, _ = app_server
-    _, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "video"})
-    assert body["profile"] == "video"
-    _drain(mgr.stream(body["streamId"]))
-
-
-def test_an_unknown_profile_is_rejected_before_starting_a_turn(app_server):
-    base, mgr, _ = app_server
-    status, body = _post(base, "/api/chat/start", {"text": "hi", "profile": "gone"})
-    assert status == 400
-    assert "error" in body
-    assert not mgr.running()
-
-
-@pytest.mark.parametrize("request_profile", [None, "buda"])
-def test_resume_reads_the_persisted_mark_without_a_side_table_pin(app_server, monkeypatch, request_profile):
-    base, mgr, state = app_server
-    state["sessions"].rows = [{"id": "compressed-tip", "source": "deepwiki:video"}]
+@pytest.mark.parametrize("source", ["deepwiki:buda", "deepwiki:tao", "deepwiki:mayi", "deepwiki:removed", "deepwiki", "buda"])
+def test_old_sessions_resume_with_the_shared_agent(app_server, monkeypatch, source):
+    base, manager, state = app_server
+    state["sessions"].rows = [{"id": "old-session", "source": source}]
     seen = []
-    monkeypatch.setattr(ha, "build_agent", lambda sid, ep, profile=None:
-                        seen.append(profile.key) or FakeAgent())
-    status, body = _post(base, "/api/chat/start", {
-        "text": "继续", "sessionId": "compressed-tip", "profile": request_profile,
+    monkeypatch.setattr(ha, "build_agent", lambda sid, ep: seen.append((sid, ep.key)) or FakeAgent())
+    code, result = _post(base, "/api/chat/start", {
+        "text": "继续", "sessionId": "old-session", "endpoint": "dsv4", "profile": "removed",
     })
-    assert status == 200
-    _drain(mgr.stream(body["streamId"]))
-    assert body["profile"] == "video"
-    assert seen == ["video"]
-
-
-def test_removed_persisted_profile_cannot_fall_back_to_buda(app_server):
-    base, mgr, state = app_server
-    state["sessions"].rows = [{"id": "retired", "source": "deepwiki:gone"}]
-    status, _ = _post(base, "/api/chat/start", {"text": "继续", "sessionId": "retired"})
-    assert status == 400
-    assert not mgr.running()
-
-
-def test_a_pinned_profile_redirects_a_foreign_endpoint(app_server):
-    """The video profile may only use the multimodal model. The redirect is
-    echoed, so the client's picker follows what will actually answer."""
-    base, mgr, _ = app_server
-    _, body = _post(base, "/api/chat/start", {
-        "text": "hi", "profile": "video", "endpoint": "dsv4",
-    })
-    assert body["endpoint"] == "vision"
-    _drain(mgr.stream(body["streamId"]))
+    assert code == 200 and "profile" not in result
+    _wait_idle(manager)
+    assert seen == [("old-session", "dsv4")]
+    rows = _get(base, "/api/sessions")["sessions"]
+    assert rows[0]["id"] == "old-session" and "profile" not in rows[0]
 
 
 # ── the two refusals are different ──────────────────────────────────────────
@@ -641,22 +590,21 @@ def test_index_versioned_the_static_urls(app_server):
     the no-cache fix itself never reached that browser. A URL that changes
     with every build is the only bust that works by construction."""
     base, _, _ = app_server
-    # The home page is served at / (deepwiki: cards first); the chat page at
-    # /<profile>/. Both are versioned the same way.
+    # The root serves chat; old entry URLs redirect to it.
     home_response = urllib.request.urlopen(base + "/")
     home_etag = home_response.headers.get("ETag")
     assert home_response.headers.get("Cache-Control") == "no-cache"
     assert home_etag, "the fixed HTML URL needs a validator"
     home = home_response.read().decode()
-    assert "home.js?v=" in home and "style.css?v=" in home, "statics must be versioned"
+    assert "app.js?v=" in home and "style.css?v=" in home, "statics must be versioned"
     assert "@@BUILD@@" not in home and 'id="build"' not in home
     chat = urllib.request.urlopen(base + "/buda/").read().decode()
     assert "app.js?v=" in chat and "style.css?v=" in chat, "statics must be versioned"
     assert "@@BUILD@@" not in chat and 'id="build"' not in chat
     # and the versioned URL still serves
     import re
-    v = re.search(r"home\.js\?v=([0-9a-f]+)", home).group(1)
-    asset = urllib.request.urlopen(f"{base}/static/home.js?v={v}")
+    v = re.search(r"app\.js\?v=([0-9a-f]+)", home).group(1)
+    asset = urllib.request.urlopen(f"{base}/static/app.js?v={v}")
     assert asset.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
     assert asset.headers.get("ETag") is None
 
@@ -671,10 +619,10 @@ def test_the_bundle_version_is_a_startup_snapshot(app_server, tmp_path):
     import re
     base, _, _ = app_server
     get_v = lambda: re.search(
-        r"home\.js\?v=([0-9a-f]+)", urllib.request.urlopen(base + "/").read().decode()
+        r"app\.js\?v=([0-9a-f]+)", urllib.request.urlopen(base + "/").read().decode()
     ).group(1)
     before = get_v()
-    (tmp_path / "home.js").write_text("console.log(2)")
+    (tmp_path / "app.js").write_text("console.log(2)")
     assert get_v() == before, "a request unexpectedly re-read and rehashed the bundle"
 
 
@@ -753,169 +701,6 @@ def test_session_bridge_forwards_user_id(monkeypatch):
     ]
 
 
-# ── the project a conversation belongs to ───────────────────────────────────
-
-
-def test_the_project_mark_is_read_only_in_its_two_part_form():
-    """`deepwiki:<key>`, never a bare source.
-
-    The mark rides on `agent.platform`, which hermes writes into
-    `sessions.source`. That column already held values from before the mark
-    existed — and one of them is "buda", this app's platform name before the
-    deepwiki repositioning, which is ALSO a profile key today. Reading a bare
-    source as a project would hand every pre-mark session to that project by
-    coincidence, and the coincidence would look like the feature working.
-    """
-    buda = pr.build_profiles([{"key": "buda"}])[0]
-    assert ha.session_mark(buda) == "deepwiki:buda"
-    assert ha.session_mark(None) == "deepwiki"
-    assert ha.profile_of_source("deepwiki:buda") == "buda"
-    assert ha.profile_of_source("deepwiki:code-autumn-rs") == "code-autumn-rs"
-    for bare in ("deepwiki", "buda", "cli", "tool", "", None, "deepwiki:"):
-        assert ha.profile_of_source(bare) is None, f"{bare!r} must not read as a project"
-
-
-def test_a_compressed_conversation_keeps_its_project(app_server):
-    """The bug this moved the mark down for, in the shape it shipped.
-
-    Context compression ROTATES the session id: the old row ends with
-    end_reason='compression' and the conversation continues under a new one.
-    The sidebar lists each chain under its TIP. A pin recorded in the side
-    table at chat/start is keyed by the id the conversation STARTED with, so
-    after a compression it points at a dead row — and the tip, having no pin,
-    filed under the DEFAULT project. In production a buda conversation had
-    already lost its project this way; it only looked right because buda also
-    happened to be the default.
-
-    hermes stamps `agent.platform` onto the compression child too
-    (`agent/conversation_compression.py`), so the mark is on the tip without
-    anyone carrying it there. Here the tip carries the mark and NO pin.
-
-    Ablation: read `profile` from the side table first and this goes red.
-    """
-    base, _, state = app_server
-    state["sessions"].rows = [
-        {"id": "tip-after-compression", "title": "六道", "source": "deepwiki:video",
-         "messageCount": 9, "lastActive": 0},
-    ]
-    j = _get(base, "/api/sessions")
-    row = next(r for r in j["sessions"] if r["id"] == "tip-after-compression")
-    assert row["profile"] == "video", (
-        "the tip of a compression chain must file under the project its own "
-        "row is marked with, not under the default"
-    )
-
-
-def test_an_unmarked_row_still_falls_back_to_the_pin(app_server):
-    """Rows written before the mark keep working.
-
-    The mark only appears on sessions whose next turn has run under the new
-    code. Everything already in the store carries a bare source and a pin in
-    the side table, and must keep filing where it always did.
-    """
-    base, _, state = app_server
-    state["sessions"].rows = [
-        {"id": "old-one", "title": "旧会话", "source": "deepwiki",
-         "messageCount": 3, "lastActive": 0},
-    ]
-    # As chat/start recorded it, before the mark existed.
-    _, started = _post(base, "/api/chat/start",
-                       {"text": "hi", "sessionId": "old-one", "profile": "video"})
-    assert started["profile"] == "video"
-    j = _get(base, "/api/sessions")
-    row = next(r for r in j["sessions"] if r["id"] == "old-one")
-    assert row["profile"] == "video", "an unmarked row still reads its pin"
-
-
-def test_a_send_from_another_projects_page_cannot_move_the_conversation(app_server):
-    """The corruption path, closed.
-
-    The page carries its project in its URL and the composer sends it. A page
-    can legitimately be SHOWING a conversation that belongs elsewhere — the
-    view was restored per browser, so opening /video/ could reopen the buda
-    conversation last read. Pressing 发送 there did two things, both silent:
-    answered the turn with the wrong project's agent (its MCP servers, not the
-    corpus this conversation had been talking to), and re-pinned the
-    conversation to the sending page's project on the way through, because
-    `record()` overwrites.
-
-    Which project answers is the CONVERSATION's property. Asserted where it
-    matters — the profile handed to the agent, not just the echo.
-
-    Ablation: resolve the profile from the request body and this goes red.
-    """
-    base, mgr, state = app_server
-    seen = []
-    real = ha.AgentPool.acquire
-    ha.AgentPool.acquire = lambda self, sid, ep, profile=None: (
-        seen.append((sid, profile.key if profile else None)) or real(self, sid, ep, profile))
-    try:
-        # Born under buda, from buda's page.
-        _, first = _post(base, "/api/chat/start", {"text": "六道是什么", "profile": "buda"})
-        sid = first["sessionId"]
-        assert first["profile"] == "buda"
-        _wait_idle(mgr)
-        # The same conversation, now sent from the video project's page.
-        _, second = _post(base, "/api/chat/start",
-                          {"text": "继续", "sessionId": sid, "profile": "video"})
-        assert second["profile"] == "buda", (
-            "the echo must name the conversation's own project, so the page "
-            "that sent it does not go on believing it moved"
-        )
-        _wait_idle(mgr)
-        assert seen[-1] == (sid, "buda"), (
-            "the AGENT must be built for the conversation's project; answering "
-            "with video's tool surface is the real damage, not the label"
-        )
-    finally:
-        ha.AgentPool.acquire = real
-
-
-def test_a_new_conversation_still_takes_the_page_it_was_started_from(app_server):
-    """The other half: `profile` in the request decides a NEW conversation.
-
-    Without this the rule above would collapse into "everything is the default
-    project" — the resolver returns None for an id the store has never seen,
-    and a new conversation is exactly that.
-    """
-    base, mgr, _ = app_server
-    _, j = _post(base, "/api/chat/start", {"text": "hi", "profile": "video", "new": True})
-    assert j["profile"] == "video"
-    _wait_idle(mgr)
-
-
-def test_a_pin_stranded_by_compression_is_walked_forward(app_server, monkeypatch):
-    """The production casualty, repaired at read time.
-
-    A buda conversation was compressed before the mark existed:
-    `session_profiles.json` holds `<root> -> buda`, the store lists the chain
-    under a different id, and nothing connects them — so it filed under the
-    default project. It only LOOKED right because buda was also the default;
-    reorder DEEPWIKI_PROFILES and every such conversation moves at once.
-
-    No migration: the pin is walked forward through the store's own resume
-    resolver, and the mark takes over for good on the conversation's next turn.
-    """
-    base, mgr, state = app_server
-    fake = state["sessions"]
-    fake.tips = {"root-id": "tip-id"}
-    fake.resolve_tip = lambda sid: fake.tips.get(sid, sid)
-    # The chain, as the sidebar sees it: the tip, unmarked, under a new id.
-    fake.rows = [{"id": "tip-id", "title": "六道", "source": "deepwiki",
-                  "messageCount": 12, "lastActive": 0}]
-    # The pin, as chat/start wrote it under the id the conversation started with.
-    _, j = _post(base, "/api/chat/start",
-                 {"text": "hi", "sessionId": "root-id", "profile": "video"})
-    assert j["profile"] == "video"
-    _wait_idle(mgr)
-
-    rows = _get(base, "/api/sessions")["sessions"]
-    row = next(r for r in rows if r["id"] == "tip-id")
-    assert row["profile"] == "video", (
-        "the pin belongs to the chain, not to the id it was written under"
-    )
-
-
 def test_a_failed_turn_is_still_there_after_a_reload(app_server):
     """A turn that dies must not read as a reply this app lost.
 
@@ -978,88 +763,9 @@ def test_a_retry_clears_the_previous_failure(app_server):
     )
 
 
-def test_a_compression_mid_turn_keeps_the_conversation_in_its_own_project(app_server):
-    """The bug in the screenshot: 通用助手's conversation, listed under 佛典检索.
-
-    Compression rotates the session id UNDER A LIVE TURN. `running()` follows
-    it (`_rotated` re-keys `_live`), so the sidebar starts listing the turn
-    under the new id — and that id has nothing that says which project it
-    belongs to: no store row (hermes persists when the turn ENDS, so no mark)
-    and no pin (chat/start wrote the pin under the id it was given). Both
-    persisted answers being "unknown", the row filed under the DEFAULT
-    project, which is the first entry in DEEPWIKI_PROFILES — buda. A video
-    conversation appeared in 佛典检索's sidebar, mid-reply, and a send from
-    that sidebar would have been answered by buda's agent and re-pinned there
-    for good.
-
-    The live turn knows: it was admitted with a profile and still holds it.
-
-    Ablation: drop `manager.profile_of` from `_profile_of_session` and this
-    goes red — the row comes back with `profile: None`, i.e. the default.
-    """
-    base, mgr, state = app_server
-    state["gate"].clear()          # hold the turn open, mid-compression
-
-    def run(agent, **kw):
-        agent.session_id = "child-after-compression"   # hermes moved the conversation
-        agent.stream_delta_callback("…")               # the frame that reports the move
-        state["gate"].wait(3)
-        return {}
-
-    mgr._run = run
-    try:
-        code, body = _post(base, "/api/chat/start",
-                           {"text": "给布偶猫做个视频", "profile": "video",
-                            "endpoint": "vision", "new": True})
-        assert code == 200, body
-        end = time.monotonic() + 3
-        while time.monotonic() < end and "child-after-compression" not in mgr.running():
-            time.sleep(0.01)
-        assert "child-after-compression" in mgr.running(), "the turn never rotated"
-
-        rows = _get(base, "/api/sessions")["sessions"]
-        row = next((r for r in rows if r["id"] == "child-after-compression"), None)
-        assert row is not None and row["profile"] == "video", (
-            "a conversation compressed mid-turn must stay in its own project's "
-            f"sidebar, not fall to the default one; got {row}"
-        )
-    finally:
-        state["gate"].set()
-        _wait_idle(mgr)
-
-
-def test_a_send_into_a_compressed_conversation_keeps_its_agent(app_server):
-    """The damage the sidebar row leads to, closed at the same point.
-
-    The reader clicks that row from the wrong project's page and types. The
-    request carries THAT page's profile, and the conversation — rotated onto
-    an id with no row and no pin — had no answer of its own to override it.
-    So buda's agent, with buda's MCP servers, would have answered a video
-    conversation, and `record()` would have moved it there permanently.
-    """
-    base, mgr, state = app_server
-    state["gate"].clear()
-
-    def run(agent, **kw):
-        agent.session_id = "child-id"
-        agent.stream_delta_callback("…")
-        state["gate"].wait(3)
-        return {}
-
-    mgr._run = run
-    _post(base, "/api/chat/start",
-          {"text": "给布偶猫做个视频", "profile": "video", "endpoint": "vision", "new": True})
-    end = time.monotonic() + 3
-    while time.monotonic() < end and "child-id" not in mgr.running():
-        time.sleep(0.01)
-    state["gate"].set()
-    _wait_idle(mgr)
-
-    # The same conversation, sent from buda's page under its rotated id.
-    _, second = _post(base, "/api/chat/start",
-                      {"text": "再来一个", "sessionId": "child-id", "profile": "buda"})
-    assert second["profile"] == "video", (
-        "the conversation's own project answers, even under the id compression "
-        "moved it to"
-    )
-    _wait_idle(mgr)
+@pytest.mark.parametrize("path", ["/buda/", "/tao/", "/code-autumn-rs/", "/renamed-entry/"])
+def test_old_entry_links_keep_the_requested_session(app_server, path):
+    base, _, _ = app_server
+    response = urllib.request.urlopen(base + path + "?session=old-id")
+    assert response.url == base + "/?session=old-id"
+    assert "app.js?v=" in response.read().decode()

@@ -474,10 +474,8 @@ video.artifact-media { width:100%; max-height:none; background:var(--bg); }
 .btn.ghost { background:transparent; border-color:var(--border); color:var(--text-dim); }
 .btn.ghost:hover { color:var(--accent); border-color:var(--accent-dim); background:transparent; }
 
-/* The project this page serves, in the header: the page's own name, in the
-   serif, quiet — it identifies, it does not invite a click (the door back is
-   the 首页 button beside it). */
-.proj-name { font-family:var(--serif); font-size:1.05rem; color:var(--text); }
+/* The shared assistant name in the header. */
+.agent-name { font-family:var(--serif); font-size:1.05rem; color:var(--text); }
 
 /* ---------- the theme toggle, deepwiki.com's shape ---------- */
 /* Not a button with a border and a glyph in it — an ICON, alone, at the far
@@ -573,9 +571,7 @@ html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-ligh
   to   { clip-path:polygon(171% 50%, 50% 171%, -50% 71%, 50% -71%); opacity:1; }
 }
 
-/* The home page's header is a title, not a toolbar: logo left, toggle hard
-   right, nothing between them. */
-.home-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+
 #about[hidden] { display:none; }
 #about { position:fixed; inset:0; z-index:50; display:flex; align-items:center;
          justify-content:center; padding:2rem 1rem;
@@ -622,40 +618,6 @@ html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-ligh
                letter-spacing:0.02em; }
 .fresh-sub { font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem;
              letter-spacing:0.02em; }
-
-/* ---------- the homepage: project cards ---------- */
-/* deepwiki.com's opening move — several projects, one card each — rendered in
-   this UI's own language: quiet bordered cards on the plain ground, the name
-   in the serif, the key underneath in small mono. A card is a LINK to
-   /<key>/: navigation is the whole mechanism, no SPA. */
-.project-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
-                gap:0.9rem; max-width:640px; margin:1.6rem auto 0; }
-.project-card { display:block; background:var(--surface); border:1px solid var(--border);
-                border-radius:var(--radius); padding:1.1rem 1rem 0.9rem;
-                text-decoration:none;
-                transition:border-color .15s var(--ease), background .15s var(--ease); }
-a.project-card:hover { border-color:var(--accent-dim); background:var(--surface-raised); }
-.project-card .pc-name { font-family:var(--serif); font-size:1.15rem; color:var(--text);
-                         letter-spacing:0.01em; }
-.project-card .pc-key { font-family:var(--mono); font-size:0.66rem; color:var(--text-muted);
-                        margin-top:0.35rem; letter-spacing:0.06em; }
-.project-card:hover .pc-key { color:var(--accent); }
-
-/* The HOME page proper: the logo, the ask, the cards, nothing else. The body
-   gets class="home" so these rules can never leak into the chat page's own
-   fresh view. */
-.home { height:100%; }
-.home-shell { min-height:100%; display:flex; flex-direction:column; }
-.home-head { padding:2.2rem 2rem 0; }
-.home-head h1 { font-family:var(--serif); font-weight:400; font-size:1.5rem;
-                color:var(--text); margin:0; }
-.home-head h1 em { font-style:italic; color:var(--accent); }
-.home-main { flex:1; display:flex; flex-direction:column; justify-content:center;
-             align-items:center; padding:0 2rem; }
-.home-ask { font-family:var(--serif); font-size:1.9rem; color:var(--text);
-            margin:0; letter-spacing:0.02em; }
-.home-grid { width:100%; }
-.home-error { color:var(--text-muted); font-size:0.85rem; margin-top:1.4rem; }
 
 /* One turn at a time — a single GPU, not a policy. The composer says so rather
    than accepting a click and dropping it.

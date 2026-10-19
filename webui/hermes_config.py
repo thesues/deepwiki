@@ -16,8 +16,8 @@ reading the `model:` block.
 
 Toolsets live in the SAME file, under `platform_toolsets.cli` — the key
 hermes' own CLI reads for itself (see `resolve_toolsets` below). One file owns
-what a session can do; the env vars that used to drive this directly are
-seeds, not sources.
+the persistent defaults. AGENT_TOOLSETS explicitly overrides the built-in
+toolset list on both fresh and existing deployments.
 """
 
 from __future__ import annotations
@@ -32,11 +32,9 @@ log = logging.getLogger("webui.config")
 # The toolsets a session runs with when the config file says nothing. Terminal
 # is in it on purpose: this UI exists so a skill can run something, and a
 # config that predates the key must not silently produce an agent that cannot.
-# (This is also the list the deployment had before the config file owned the
-# knob, carried over unchanged.)
 DEFAULT_TOOLSETS = [
     "file", "terminal", "todo", "memory", "skills",
-    "search", "web", "session_search", "clarify",
+    "search", "web", "session_search", "clarify", "input-image", "mayi-annotation",
 ]
 
 
@@ -226,6 +224,7 @@ def resolve_toolsets(cfg: dict | None) -> list[str]:
 
     Precedence — the first source that yields a non-empty list wins:
 
+    0. AGENT_TOOLSETS, an explicit deployment override (also on existing PVCs).
     1. hermes' own resolver, `hermes_cli.tools_config._get_platform_tools` —
        the same function the CLI uses on itself. It reads
        `platform_toolsets.cli` from the config, expands composite toolset
@@ -237,6 +236,9 @@ def resolve_toolsets(cfg: dict | None) -> list[str]:
        file is still worth more than a built-in guess.
     3. DEFAULT_TOOLSETS — for a config with no key at all.
     """
+    override = os.environ.get("AGENT_TOOLSETS", "").strip()
+    if override:
+        return list(dict.fromkeys(t.strip() for t in override.split(",") if t.strip()))
     cfg = cfg or {}
     try:
         from hermes_cli.tools_config import _get_platform_tools

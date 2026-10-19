@@ -363,19 +363,8 @@ spec:
             # tools, these keep the availability check from paying for them.
             - { name: HERMES_NO_DEP_INSTALL, value: "1" }
             - { name: HERMES_DISABLE_LAZY_INSTALLS, value: "1" }
-            # The name is ACP-era; the ACP path (and the image patch it needed)
-            # is gone, and main.py reads this as the first-boot seed below.
-            # `mcp-<server>` toolsets are appended after this list, so
-            # narrowing it cannot drop retrieval.
-            #
-            # Toolsets are owned by HERMES_HOME/config.yaml (`platform_toolsets.cli`)
-            # from the FIRST boot on: main.py seeds the file from THIS variable
-            # only when the key is absent, and never touches it again — edit
-            # the file on the PVC, or run `hermes tools`, to change what
-            # sessions carry. The built-in default (this env unset AND the file
-            # with no key) keeps terminal, so an agent can always run something.
-            # MCP toolsets need NOT be listed here: build_agent appends
-            # mcp-<name> for every enabled mcp_servers entry.
+            # AGENT_TOOLSETS overrides persistent platform_toolsets.cli.
+            # All enabled mcp-<name> toolsets are appended at agent build time.
             #
             # The list is deliberately NARROWER than hermes' own CLI default —
             # which is the full composite (browser, tts, vision, delegation,
@@ -389,12 +378,8 @@ spec:
             #                       dispatched to is retired;
             #   the platform integrations (slack/discord/feishu/…) cost tokens
             #   in every request's tool list and none of them are wired up.
-            - { name: HERMES_ACP_TOOLSETS, value: "skills" }
-            # FIRST-BOOT seed for platform_toolsets.cli. `skills` is the
-            # narrow seed: mcp-<name> toolsets are appended per enabled
-            # server, so skill→MCP stays reachable. Code/buda per-profile
-            # toolsets live in DEEPWIKI_PROFILES (`toolsets` field); the
-            # PVC's config.yaml owns the list after first boot.
+            # Explicit runtime override, including on existing PVCs.
+            - { name: AGENT_TOOLSETS, value: "file,terminal,todo,skills,input-image,mayi-annotation,search,web,clarify" }
             - { name: WORKDIR, value: /opt/data }
             # HTTP MCP servers as NAME=URL pairs, comma-separated. The list
             # is authoritative: a server not named here is pruned from the
@@ -415,66 +400,13 @@ spec:
             # leaves ~8k for the reply. Raise it only together with the KV
             # budget on the FreeToken side.
             - { name: LLM_CONTEXT_LENGTH, value: "54000" }
-            # Default system brief (buda profile inherits this; other
-            # profiles carry their own `directive`).
+            # Domain workflows live in skills; every configured MCP is available.
             - name: CHAT_DIRECTIVE
               value: |
-                You retrieve from an indexed corpus of Buddhist scripture and answer from what you find.
-                - Any question about what a text says: search the corpus first. Do not answer from memory.
-                - Cite the sutra and quote the passage, with its source (file › heading path › line numbers).
-                - If the corpus does not have it, say so. Background knowledge may be added, marked as not from the corpus.
-                - Answer in Chinese, briefly — a few paragraphs. No long essays or survey-style sprawl unless asked.
-            # Project cards. Each card is `{key, label, toolsets, mcp_servers,
-            # mcp_tools, skills?, endpoints?, directive?}`. skills accepts names
-            # or category/name glob patterns; omitted = all, [] = none.
-            #
-            #   buda         - 佛典检索（佛典语料）；skills only；文档四工具；
-            #                  inherits CHAT_DIRECTIVE（佛典 brief）。
-            #   code-autumn-rs - autumn-rs 代码理解（code-index MCP）；skills+terminal
-            #                  （archify CLI）；代码+文档工具；brief 见 directive。
-            #   mayi         - 麻衣神相/风水/手面相（lance-mcp-mayi，含插图）；
-            #                  skills only；pin doubao 多模态；文档+read_page+page_images。
-            #   general      - 通用助手；全 toolsets + 全 MCP；hermes 默认。
-            #
-            # `mcp_tools` 是白名单：server 发布的工具如果不在这里，hermes 不把
-            # 它交给 agent，避免无关工具浪费 token / 触发熔断器（连续 3 次报错
-            # 会熔断整个 server 60s）。架构长注放在各 MCP manifest 顶部。
-            #
-            #   buda         - 佛典检索（佛典语料）；skills only，无 terminal；
-            #                  4 个文档工具；inherits CHAT_DIRECTIVE（佛典 brief）。
-            #   code-autumn-rs - autumn-rs 代码理解（code-index MCP）；skills+terminal
-            #                  （archify Node CLI）；代码 + 文档工具；brief 放在该 profile。
-            #   mayi         - 麻衣神相/风水/手面相（lance-mcp-mayi，含插图）；
-            #                  skills only；pin doubao 多模态端点（看图必须用
-            #                  多模态模型）；文档工具 + read_page/page_images。
-            #   general      - 通用助手：全部 toolsets + 全部 MCP；hermes 默认。
-            #
-            # `mcp_tools` 是白名单：server 发布的工具如果不在这里，hermes 不把
-            # 它交给 agent，避免无关工具浪费 token / 触发熔断器；一个工具连续
-            # 报错三次会把整个 server 熔断 60s。
-            #
-            # 架构长注（为什么 no file/no terminal/为什么 location-only/为什么
-            # 不 pin 端点）放在各 MCP 自己的 manifest 顶部（k8s/lance-mcp*.yaml,
-            # k8s/lance-mcp-code.yaml），webui 这里只保留配置本身。
-            - name: DEEPWIKI_PROFILES
-              value: |
-                [{"key":"buda","label":"佛典检索","toolsets":["skills"],"mcp_servers":["memory"],
-                  "skills":["buddhist-canon-retrieval"],
-                  "mcp_tools":["search_docs","list_documents","document_outline","read_file"]},
-                 {"key":"tao","label":"老子通释","toolsets":["mcp-tao"],"mcp_servers":["tao"],"skills":[],
-                  "mcp_tools":["search_docs","list_documents","document_outline","read_file"],
-                  "directive":"你是老子通释阅读与检索助手，只使用 tao 文档库回答书籍内容问题。先检索再回答；讨论《道德经》时优先查《老子通释》，明确区分老子原文、余秋雨的解释、其他作者的观点和你的概括，不把现代哲学丛书的观点称为道教经典。search_docs 返回定位和短预览，引用前必须用 read_file 按返回的 file/start/end 读取正文，不能只凭预览作答。用 list_documents 查看馆藏、document_outline 查看章节。引用书名、章节和行号；PDF 转换文档的标题保留 PDF 物理页码，也要标出该页码，不把 read_file 的行号当页码。扫描书经过 OCR，发现疑似错字时说明，不伪造原文。语料没有的直说没有，额外背景知识需明确标注。用中文简洁回答。"},
-                 {"key":"code-autumn-rs","label":"代码理解 · autumn-rs","toolsets":["skills","terminal"],"mcp_servers":["code-index"],
-                  "skills":["autumn-codebase","archify"],
-                  "mcp_tools":["search_code","search_docs","read_file","get_symbol","find_callers","find_callees","trace_call_path","list_documents","document_outline"],
-                  "directive":"You read the autumn-rs codebase (Rust, distributed storage) and answer from the indexed code. Search hits are LOCATIONS (file + line span) with no body — read the lines you want with read_file(path,start,end); use the returned file field VERBATIM (for example autumn-rs/crates/...): never add a code/ prefix or invent a filesystem prefix. get_symbol returns a whole symbol; follow find_callers/find_callees for edges. Read bounded ranges only (read_file caps at 400 lines; ask further rather than pulling whole files). Stop searching once you have what you need. For architecture diagrams call skill_view('archify') and follow its steps. Cite file paths, symbol names and line numbers; if the index does not have it, say so. Answer in Chinese, briefly."},
-                 {"key":"mayi","label":"麻衣神相","toolsets":["skills","input-image","mayi-annotation","terminal"],"mcp_servers":["mayi"],"endpoints":["doubao"],
-                  "skills":["mayi/*"],
-                  "mcp_tools":["search_docs","list_documents","document_outline","read_file","read_page","page_images"],
-                  "directive":"你是一名中国传统相术与风水检索助手，语料是麻衣神相、手相、面相、阳宅风水、周易、八字等古籍与笔记。规则：\n- 所有结论从语料中检索得出。遇到书内图谱、例图、图鉴、图示、眉形/眼形/鼻相/掌纹/风水图时，先 skill_view('pdf-figure-reading')，再 search_docs 定位、read_page 读整页文本、page_images 拉插图给多模态模型看——面相/手相/风水图是答案核心，看图作答。\n- 用户上传面相或手相图片时，必须 skill_view('annotate-screenshot') 并调用 annotate_image：面部区域用框，掌纹/面纹逐条用独立编号折线和图例区分；最终回复同时展示标注图。只标当前图片中看得清的部位和纹线，不把推测画成已确认。\n- 命中坐标：PDF 是页码（read_page 参数），其它文档是行号（read_file）。回答时引用书名 + 页码/章节 + 原文片段。\n- 语料没有的直说没有，可以补充通用常识但必须标明『通用常识』。\n- 用中文回答，简洁，不要大段铺陈。"},
-                 {"key":"general","label":"通用助手","toolsets":["file","terminal","todo","memory","skills","input-image","search","web","session_search","clarify"],
-                  "skills":["media/*"],
-                  "directive":"A general assistant. Use tools when they help, say plainly where you are unsure, invent nothing. Answer in Chinese, briefly."}]
+                你是通用助手，可以使用所有已启用的 MCP 和 skills。
+                按当前任务选择并阅读相关 skill，再调用对应 MCP；不要把不同语料库的内容混为一谈。
+                涉及书籍或代码内容时先检索并读取原文，引用真实出处；找不到依据时明确说明。
+                需要工具时使用工具，不确定的地方如实说明。用中文简洁回答。
             # web_search / web_extract need a backend; the toolset alone is a
             # tool that errors on every call. `web.backend` in config.yaml is
             # empty, and an empty value does NOT mean "off" -- tools/web_tools

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autumn 代码理解"
+  short_description: "从代码索引读取源码、追踪调用关系，并以文件路径和行号支撑解释"
+  default_prompt: "使用 $autumn-codebase 解释 autumn-rs 的客户端写入流程。"

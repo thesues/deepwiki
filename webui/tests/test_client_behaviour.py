@@ -467,11 +467,6 @@ def test_the_theme_toggle_switches_on_the_attribute_and_leaves_the_icons_alone()
     `[data-theme]` picks one. The script's whole job is that one attribute,
     plus arming the palette cross-fade for the length of the switch.
 
-    Two things here are easy to break and invisible in review: a
-    `textContent = "☀"` (the old design) would delete the two <svg> children
-    it writes over, and the two pages carry the block twice — app.js and
-    home.js are separate bundles — so one can be fixed while the other is not.
-
     Skipped rather than failed without node: this pins client behaviour, and a
     missing runtime is not a broken client.
     """
@@ -485,19 +480,7 @@ def test_the_theme_toggle_switches_on_the_attribute_and_leaves_the_icons_alone()
 
 
 def test_the_pages_fetch_nothing_from_the_internet():
-    """Every byte the two pages need comes from the pod.
-
-    This was not a policy, it was a measured second: the Google Fonts
-    <link> in <head> cost ~0.9s on the network this UI is read from, and a
-    stylesheet in <head> blocks first paint AND the classic <script> at the
-    end of <body> — so `home.js` had not yet ASKED for /api/status when the
-    reader was already looking at an empty page. "选择一个项目 takes a second
-    to load" was two serial round trips to fonts.googleapis.com in front of
-    our own.
-
-    Ablation: put the <link> back and this goes red. The faces themselves are
-    in static/vendor/fonts and declared in style.css.
-    """
+    """Fonts and frontend assets come from the pod without CDN requests."""
     root = Path(__file__).resolve().parents[1]
     static = root / "static"
 
@@ -509,7 +492,7 @@ def test_the_pages_fetch_nothing_from_the_internet():
         src = re.sub(r"<!--.*?-->", " ", src, flags=re.S)
         return re.sub(r"^\s*//.*$", " ", src, flags=re.M)
 
-    for name in ("index.html", "home.html", "style.css", "app.js", "home.js"):
+    for name in ("index.html", "style.css", "app.js"):
         src = code_only((static / name).read_text())
         for host in ("fonts.googleapis.com", "fonts.gstatic.com", "cdn.jsdelivr.net",
                      "unpkg.com", "cdnjs.cloudflare.com"):
@@ -551,82 +534,37 @@ def test_there_is_exactly_one_new_conversation_button():
     assert 'id="new-session"' in html, "the header's 新会话 must stay — it is the only one"
 
 
-def test_a_project_page_does_not_reopen_another_projects_conversation():
-    """The screenshot from production: 代码理解·autumn-rs in the header, an
-    empty sidebar, and a 佛典 conversation in the transcript.
-
-    `hermes.view` was one key per browser, and boot() validated it against the
-    UNFILTERED session list while the sidebar filtered by project at render —
-    two definitions of "what this page may show". The view in the URL is checked with the sidebar's own predicate.
-
-    Skipped rather than failed without node: this pins client behaviour, and a
-    missing runtime is not a broken client.
-    """
+def test_shared_view_reopens_sessions_from_all_old_sources():
+    """Only sessions in the authenticated list can be restored."""
     import shutil, subprocess
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
-    script = Path(__file__).parent / "js" / "view_is_scoped_to_its_project.mjs"
+    script = Path(__file__).parent / "js" / "shared_session_view.mjs"
     r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr[-800:]
 
 
-# ── per-profile MCP tool allowlist ──────────────────────────────────────────
+# ── all MCPs remain available while shared-home tools stay user-scoped ──────
 
-def test_allowlist_names_every_pair_it_means():
-    """Match Hermes' registered names exactly, without admitting suffix lookalikes."""
-    from profiles import allowed_mcp_names, tool_allowed
-
-    allowed = allowed_mcp_names(["search_docs", "read_file"], ["memory", "code-index"])
-    assert allowed == {
-        "mcp__memory__search_docs", "mcp__memory__read_file",
-        "mcp__code_index__search_docs", "mcp__code_index__read_file",
-    }
-    # The hyphen in a server name is sanitized the way hermes sanitizes it.
-    assert tool_allowed("mcp__code_index__read_file", allowed)
-    # Withheld: same server, a tool the profile did not ask for.
-    assert not tool_allowed("mcp__memory__graph_delete_node", allowed)
-    assert not tool_allowed("mcp__memory__ingest_documents", allowed)
-    # Withheld: a tool that merely ENDS in an allowed name.
-    assert not tool_allowed("mcp__memory__unsafe_read_file", allowed)
-
-
-def test_mayi_profile_keeps_its_registered_search_tool():
-    """The server registered search_docs, but the old prefix filtered every MCP tool out."""
-    from hermes_agent import _scope_tools
-    from profiles import build_profiles
+def test_user_tool_guard_keeps_every_mcp_after_refresh():
+    from hermes_agent import _scope_user_tools
 
     class Agent:
-        def __init__(self):
-            names = {"mcp__mayi__search_docs", "mcp__mayi__read_page", "mcp__mayi__get_symbol"}
-            self.tools = [{"function": {"name": name}} for name in names]
-            self.valid_tool_names = names
-
-    profile = build_profiles([{
-        "key": "mayi", "mcp_servers": ["mayi"],
-        "mcp_tools": ["search_docs", "read_page"],
-    }])[0]
-    agent = _scope_tools(Agent(), profile, ["mayi"], user_id="reader")
-    expected = {"mcp__mayi__search_docs", "mcp__mayi__read_page"}
-    assert agent.valid_tool_names == expected
-    assert {tool["function"]["name"] for tool in agent.tools} == expected
-    agent.tools = [{"function": {"name": "mcp__mayi__search_docs"}}]
-    assert {tool["function"]["name"] for tool in agent.tools} == {"mcp__mayi__search_docs"}
-
-
-def test_allowlist_judges_only_mcp_tools():
-    """A profile that narrows its MCP tools must not lose its own toolsets."""
-    from profiles import allowed_mcp_names, tool_allowed
-
-    allowed = allowed_mcp_names(["search_docs"], ["memory"])
-    assert tool_allowed("skills_list", allowed)
-    assert tool_allowed("terminal", allowed)
-    # No allowlist at all means what profiles did before: everything the
-    # granted servers expose.
-    assert allowed_mcp_names(None, ["memory"]) is None
-    assert tool_allowed("mcp__memory__graph_delete_node", None)
-    assert allowed_mcp_names(None, []) == set()
-    assert not tool_allowed("mcp__mayi__search_docs", set())
+        pass
+    names = {"mcp__memory__search_docs", "mcp__code_index__get_symbol",
+             "mcp__tao__read_file", "mcp__mayi__page_images", "skills_list",
+             "terminal", "input_image_open", "annotate_image"}
+    all_names = names | {"session_search", "memory"}
+    agent = Agent()
+    agent.tools = [{"function": {"name": name}} for name in all_names]
+    agent.valid_tool_names = all_names
+    agent = _scope_user_tools(agent, user_id="reader")
+    for _ in range(2):
+        assert agent.valid_tool_names == names
+        assert {tool["function"]["name"] for tool in agent.tools} == names
+        agent.tools = [{"function": {"name": name}} for name in all_names]
+        agent.valid_tool_names = all_names
 
 
 # ── MCP server declaration ──────────────────────────────────────────────────

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>deepwiki</title>
+<title>通用助手 · deepwiki</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/vendor/katex-0.19.0/katex.min.css">
@@ -17,19 +17,13 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
 <body>
 <div class="shell">
   <header>
-    <!-- One way back (首页, where projects are picked) and ONE 新会话, which
-         opens a conversation inside the project this page already serves.
-         The sidebar used to carry a second ＋ 新会话 at the tail of the
-         session list: the same action, two inches away, wearing the shape of
-         a list row. The theme toggle sits last, at the far right, the way
-         deepwiki places it. -->
+    <!-- One conversation list, one new-conversation action. -->
     <button id="sessions-toggle" class="sessions-toggle" type="button" title="收起会话列表" aria-label="收起会话列表" aria-expanded="true">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM9 5.5v13M12.5 10l-2 2 2 2"/></svg>
     </button>
-    <a id="home-link" class="btn ghost" href="/" title="返回首页 — 重新选择项目或会话">← 首页</a>
-    <span class="proj-name" id="proj-name"></span>
+    <span class="agent-name">通用助手</span>
     <span class="spacer"></span>
-    <button id="new-session" class="btn" title="在这个项目里新建会话">＋ 新会话</button>
+    <button id="new-session" class="btn" title="新建会话">＋ 新会话</button>
     <button id="theme-toggle" class="theme-toggle" type="button" title="切换到亮色主题" aria-label="切换主题">
       <!-- Both icons are always in the DOM; [data-theme] picks which is up
            (style.css .theme-toggle), so the switch needs no script at all. -->
@@ -46,9 +40,6 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
   <div class="grid">
     <section class="card sessions">
       <div class="card-head"><span class="dot"></span>会话<span class="count" id="sess-count"></span></div>
-      <!-- This project's conversations only: the sidebar is scoped to the
-           profile the URL names, because a conversation belongs to the
-           project it was opened under and a project page shows its own. -->
       <ul id="sessions"></ul>
     </section>
 

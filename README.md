@@ -30,11 +30,9 @@ keep them in autumn and read them through a FUSE mount.
 **Retrieval** — `lance-mcp` runs unmodified community LanceDB against an Autumn
 FUSE path, indexes the document corpus, and exposes the result over MCP/HTTP.
 
-**Chat** — `webui` is a hermes front end, now positioned as **deepwiki**: a
-multi-project DeepWiki-style site. The homepage lists project cards; each
-project is an `AgentProfile` (its own brief, toolsets, MCP subset and
-workspace folder), declared in hermes' config.yaml (`profiles:`) or the
-`DEEPWIKI_PROFILES` env. Session management and a chat box otherwise. It
+**Chat** — `webui` is a Hermes front end with one general agent and a shared
+chat page. All configured, enabled MCP servers are available in every session;
+code, Buddhist texts, Taoist texts and physiognomy workflows live in skills. It
 reaches retrieval through `lance-mcp`'s **HTTP** MCP transport and stores input
 images through the HTTP S3 gateway, so it holds no autumn credential and is not
 bound by the WIRE lockstep below. See `webui/ARCHITECTURE.md`.

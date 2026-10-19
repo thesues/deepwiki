@@ -15,6 +15,8 @@ metadata:
 
 麻衣语料里的相术图、手相图和风水图是答案证据的一部分。不要只读 OCR 文本就下结论；只要问题涉及形状、图鉴、例图、图示或用户让你对比图片，就必须调用 `page_images` 取得 PDF 里的图片。
 
+本文的 `search_docs`、`read_page`、`page_images`、`read_file` 均指 `mcp__mayi__*` 工具；其他语料库的同名工具不能读取麻衣文献。
+
 ## 工作流
 
 1. 先用 `search_docs` 定位相关页面。使用 search hit 返回的 `file` 原样传给后续工具，不要改路径、补前缀或截短文件名。

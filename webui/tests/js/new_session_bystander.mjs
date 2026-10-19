@@ -127,8 +127,6 @@ function page() {
   // the composer so the narration cannot scroll it away.
   mk("div", "approval-dock", "", chat);
   const form = mk("form", "composer", "", chat);
-  mk("span", "profile-badge", "", form).hidden = true;
-  mk("select", "profile", "", form).hidden = true;
   mk("span", "model-badge", "", form).hidden = true;
   mk("select", "endpoint", "", form).hidden = true;
   mk("textarea", "input", "", form).placeholder = "发消息…";
@@ -173,9 +171,9 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
     calls.push({ path: u.pathname, query: Object.fromEntries(u.searchParams), body });
     switch (u.pathname) {
       case "/api/sessions":
-        return (server.sessionsGate || Promise.resolve()).then(() => reply({ identityScope: server.identityScope, defaultProfile: "default", sessions: server.sessions, streaming: server.streaming, endpoints: server.endpoints }));
+        return (server.sessionsGate || Promise.resolve()).then(() => reply({ identityScope: server.identityScope, sessions: server.sessions, streaming: server.streaming, endpoints: server.endpoints }));
       case "/api/status":
-        return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4", profiles: [{ key: "default", label: "默认" }], defaultProfile: "default" });
+        return reply({ endpoints: server.endpoints, defaultEndpoint: "dsv4" });
       case "/api/chat/start": return (server.startGate || Promise.resolve()).then(() => {
         const sid = body.new || !body.sessionId ? `new-${server.nextStream}` : body.sessionId;
         const stream = `s${server.nextStream++}`;
@@ -233,7 +231,7 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
     marked: { parse: (s) => s },
     DOMPurify: { sanitize: (s) => s, addHook: () => {} },
     // app.js reads the project key off the URL (/buda/ → buda); the test page
-    // is served at /, so S.profile is "" — same as the home-page edge case.
+    // is served at the shared chat root.
     location,
     history: { replaceState: (_state, _title, next) => { location.href = String(next); } },
   });

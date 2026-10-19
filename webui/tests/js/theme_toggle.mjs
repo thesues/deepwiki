@@ -1,25 +1,3 @@
-// The theme toggle, deepwiki's shape: an icon at the far right of the header,
-// and a switch that is CSS all the way down.
-//
-// Runs the REAL `static/home.js` in a vm over a DOM just large enough for it,
-// and CLICKS the button — the point of the rewrite was to move the icon choice
-// out of script and into `[data-theme]`, and only pressing the thing shows
-// whether the script still does the one job it kept. Pins:
-//
-//   1. THE CLICK FLIPS ONE ATTRIBUTE — dark is the ABSENCE of data-theme
-//      (the original look is the default), light sets it. Not a class, not a
-//      second source of truth: the inline pre-paint script in <head> reads
-//      exactly this, and the CSS selects on it.
-//   2. THE SCRIPT NEVER PICKS THE ICON — both sun and moon live in the
-//      markup. A `textContent = "☀"` anywhere here is the old design, and it
-//      would silently overwrite the two <svg> children.
-//   3. THE CROSS-FADE IS ARMED, THEN DISARMED — `.theming` is what makes the
-//      palette fade instead of snap, and leaving it on makes every hover in
-//      the app lag behind the pointer.
-//   4. THE CHOICE PERSISTS under the key the <head> script reads.
-//   5. BOTH PAGES RUN THE SAME TOGGLE — the block is duplicated in app.js and
-//      home.js (two bundles, no shared module), so the test compares them and
-//      fails if one is fixed without the other.
 import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.join(here, "..", "..", "static");
-const HOME = fs.readFileSync(path.join(STATIC, "home.js"), "utf8");
 const APP = fs.readFileSync(path.join(STATIC, "app.js"), "utf8");
 
 /* ---------- a DOM just large enough for home.js ---------- */
@@ -51,7 +28,7 @@ class Set_ {
   contains(c) { return this.s.has(c); }
 }
 
-function run({ saved = null, profiles = [{ key: "code", label: "代码索引" }], sessions = [] } = {}) {
+function run({ saved = null } = {}) {
   const byId = new Map();
   ["cards", "home-error", "build", "theme-toggle"].forEach((id) => {
     const n = new Node_(id === "theme-toggle" ? "button" : "div"); n.id = id; byId.set(id, n);
@@ -69,16 +46,10 @@ function run({ saved = null, profiles = [{ key: "code", label: "代码索引" }]
   const ctx = vm.createContext({
     document: {
       documentElement: html,
+      querySelector: (selector) => byId.get(selector.slice(1)) || null,
       getElementById: (id) => byId.get(id) || null,
       createElement: (t) => new Node_(t),
     },
-    // The two lists the page draws its cards from. Resolved, so boot() gets
-    // all the way to the toggle it wires at the end.
-    fetch: (url) => Promise.resolve({
-      json: async () => (String(url).includes("status")
-        ? { profiles, defaultProfile: profiles[0]?.key }
-        : { sessions }),
-    }),
     localStorage: {
       getItem: (k) => (store.has(k) ? store.get(k) : null),
       setItem: (k, v) => store.set(k, String(v)),
@@ -87,28 +58,15 @@ function run({ saved = null, profiles = [{ key: "code", label: "代码索引" }]
     clearTimeout: (h) => { if (timers[h - 1]) timers[h - 1].cancelled = true; },
     console, JSON, Promise, Map, Set, Object, Array, String, Number, encodeURIComponent,
   });
-  vm.runInContext(HOME, ctx, { filename: "home.js" });
+  const start = APP.indexOf('  const themeBtn = $("#theme-toggle");');
+  const end = APP.indexOf('  $("#send").onclick', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext('const LS_THEME = "hermes.theme"; const $ = s => document.querySelector(s);\n' + APP.slice(start, end), ctx, { filename: "app-theme.js" });
   return { html, store, timers, btn: byId.get("theme-toggle"), cards: byId.get("cards") };
 }
 
 // boot() is async (it awaits the two lists); let its microtasks drain.
 const settled = () => new Promise((r) => setTimeout(r, 0));
-
-/* ── a project with history opens its newest conversation ───────────────── */
-{
-  const { cards } = run({
-    profiles: [{ key: "general", label: "通用助手" }, { key: "empty", label: "空项目" }],
-    sessions: [
-      { id: "newest/id", profile: "general" },
-      { id: "older", profile: "general" },
-    ],
-  });
-  await settled();
-  assert.strictEqual(cards.children[0].href, "/general/?session=newest%2Fid",
-    "a card advertising saved conversations must open the newest one");
-  assert.strictEqual(cards.children[1].href, "/empty/",
-    "a project with no history still opens a fresh conversation");
-}
 
 /* ── 1+2+4. dark → light → dark, on the attribute alone ──────────────────── */
 {
@@ -164,23 +122,6 @@ const settled = () => new Promise((r) => setTimeout(r, 0));
   btn.onclick(); btn.onclick();
   assert.strictEqual(timers.filter((t) => !t.cancelled).length, 1,
     "a rapid double switch keeps ONE pending disarm, not a queue of them");
-}
-
-/* ── 5. the two pages cannot drift ───────────────────────────────────────── */
-{
-  const grab = (src, name) => {
-    const i = src.indexOf('themeBtn.onclick = () => {');
-    assert.ok(i > 0, `${name} must wire the toggle`);
-    const end = src.indexOf("\n    };", i);
-    return src.slice(i, end).replace(/LS_THEME/g, '"hermes.theme"');
-  };
-  assert.strictEqual(grab(APP, "app.js"), grab(HOME, "home.js"),
-    "the chat page and the home page must switch the theme the same way; "
-    + "they are two bundles, so the block is duplicated and has to be kept equal");
-  for (const [name, src] of [["app.js", APP], ["home.js", HOME]]) {
-    assert.ok(!/themeBtn\.textContent/.test(src),
-      `${name} must not write the toggle's text: the icons are markup + CSS now`);
-  }
 }
 
 console.log("theme toggle ok");

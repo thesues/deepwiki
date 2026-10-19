@@ -370,7 +370,7 @@ const renderInto = (target, src, activateMedia = true) => {
 };
 
 /* ---------- mermaid ---------- */
-// The code-understanding profile asks the model for diagrams in so many words
+// Architecture skills ask the model for diagrams
 // ("被要求画流程图/架构图时，直接用 mermaid 给出")， so they arrive on this app's
 // hot path — and until now they were shown as their own source, which is the
 // one thing a diagram must not be.
@@ -490,10 +490,8 @@ async function renderMermaid(root) {
 // mermaid bakes its colours into the SVG at render time, so a theme switch has
 // to redraw rather than restyle. Only diagrams already on screen, and only if
 // the bundle was ever loaded — this must not pull 3.4 MB for a theme click.
-// Hung off the attribute, not off the toggle's click. That click handler is
-// duplicated verbatim in home.js and a test holds the two byte-identical
-// (tests/js/theme_toggle.mjs) — the homepage has no diagrams and should not
-// carry a call to this. Watching `data-theme` also covers anything else that
+// Watching `data-theme` keeps the toggle independent of the diagram renderer
+// and covers anything else that
 // ever changes it, including the pre-paint script in <head>.
 if (typeof MutationObserver === "function") {
   new MutationObserver(() => restyleMermaid()).observe(
@@ -557,12 +555,6 @@ const S = {
   sessionEp: loadSessionEp(),  //   sessionEp[sessionId]; sessions WITHOUT a choice (new, other
                         //   tab) start on the last-used default. A turn already running
                         //   keeps its own endpoint; switching decides the next turn only.
-  // The PROJECT this page serves. Two pages, deepwiki style: the home (/) is
-  // the card grid and a project lives at /<key>/ — this chat page reads its
-  // key off the URL and never changes it. Switching project = going back to
-  // the home page and opening another card, a navigation, not a widget state.
-  profile: (location.pathname.replace(/\/+$/, "").split("/").pop() || "").trim(),
-  defaultProfile: null,  // the server's first profile; sessions without a pin file under it,
   // (maxConcurrent/running were flat scalars from the single-endpoint days;
   // per-endpoint numbers live inside S.endpoints now.)
   // "a turn this view does not own is running, and the pool is full" — decided
@@ -627,15 +619,9 @@ function rememberView(sid) {
 function recallView() {
   return new URL(location.href).searchParams.get("session");
 }
-// Does this conversation belong on THIS page? The sidebar's filter, as a
-// predicate, so "what this page may show" has one definition instead of two —
-// the drift between them is what put another project's transcript on screen:
-// the recall checked the UNFILTERED row list, the sidebar filtered at render.
+// Only reopen sessions returned for the current authenticated user.
 function belongsHere(id) {
-  if (!S.profile) return true;                 // no project: the page shows everything
-  const row = (S.sessionRows || []).find((r) => r.id === id);
-  if (!row) return false;                      // unknown here is not ours to open
-  return (row.profile || S.defaultProfile) === S.profile;
+  return (S.sessionRows || []).some((row) => row.id === id);
 }
 
 /* ---------- chrome ---------- */
@@ -1618,15 +1604,7 @@ function renderSessions() {
   // The reference webui does the same thing for the same reason
   // (`renderSessionListFromCache`).
   const ul = $("#sessions");
-  // A project page lists ITS conversations only: each session belongs to the
-  // project it was opened under (recorded at chat/start), and a page that
-  // names /buda/ in its URL shows buda's. Sessions from before profiles —
-  // no recorded key — file under the default profile, which is what they
-  // served as. An EMPTY profile (the page opened at /) filters nothing —
-  // there is no project to be scoped to, so the list is everything.
-  const rows = S.profile
-    ? (S.sessionRows || []).filter((s) => (s.profile || S.defaultProfile) === S.profile)
-    : (S.sessionRows || []);
+  const rows = S.sessionRows || [];
   ul.textContent = "";
   $("#sess-count").textContent = rows.length ? String(rows.length) : "";
   rows.forEach((s) => {
@@ -1780,9 +1758,6 @@ async function loadSessions() {
   }
   watchWhileOthersRun();
   S.sessionRows = j.sessions || [];
-  // The default profile rides every sessions poll, so the sidebar's filter
-  // is correct even before /api/status answers (a reload races them).
-  if (j.defaultProfile) S.defaultProfile = j.defaultProfile;
   if (j.endpoints) setEndpoints(j.endpoints, null);
   setBusy(S.busy);          // capacity changed under it; re-render the composer
   renderSessions();
@@ -2194,11 +2169,6 @@ async function send() {
         // between turns — the agent cache keys on (model, base_url, provider),
         // so the switch is a rebuild against the new one, history intact.
         endpoint: S.endpoint || undefined,
-        // Which project this page serves — read off the URL (/buda/ → buda),
-        // not chosen by a widget. The server echoes the resolved key; a stale
-        // bookmark that outlived a rename falls back server-side, and the
-        // echo below is adopted only to keep the title honest.
-        profile: S.profile || undefined,
       }),
     })).json();
   } catch (_) {
@@ -2281,19 +2251,6 @@ async function send() {
 /* ---------- boot ---------- */
 async function boot() {
   authFetch("/api/status").then((r) => r.json()).then((j) => {
-    // The profile this page serves comes off the URL (/buda/ → buda). The
-    // server's list is the truth: an unknown key (renamed profile, stale
-    // bookmark) sends the reader back to the home page's cards. The API
-    // also rejects unknown keys so they cannot select a different agent.
-    const keys = new Set((j.profiles || []).map((p) => p.key));
-    if (!keys.has(S.profile)) { location.replace("/"); return; }
-    S.defaultProfile = j.defaultProfile || (j.profiles || [])[0]?.key || null;
-    // The header says WHICH project this is — the page's own name, from the
-    // same list that validated the URL.
-    const p = (j.profiles || []).find((x) => x.key === S.profile);
-    const name = $("#proj-name");
-    if (name && p) name.textContent = p.label || p.key;
-    document.title = `${p ? p.label || p.key : S.profile} · deepwiki`;
     // The list of endpoints and the default are the server's to declare.
     setEndpoints(j.endpoints || [], j.defaultEndpoint || null);
   }).catch(() => {
@@ -2330,10 +2287,7 @@ async function boot() {
     // The reader already chose — the sidebar rendered during the await and
     // they clicked a row or 新会话. Reopening the saved view would override it.
   } else if (view && belongsHere(view)) {
-    // `belongsHere` covers a LIVE turn too: /api/sessions synthesizes a row
-    // for a conversation whose first turn has not persisted yet, carrying the
-    // project it was started under — so a running turn in another project no
-    // longer drags its transcript onto this page either.
+    // Live and persisted sessions share the same user-scoped list.
     openSession(view, prefetchedHistory);
   } else {
     // Nothing to reopen: this IS a fresh conversation, so say so rather than
@@ -2353,11 +2307,7 @@ async function boot() {
     if (e.key === "Escape" && !$("#about").hidden) $("#about").hidden = true;
   });
 
-  // 新会话 is a per-project action: it creates a fresh conversation INSIDE
-  // the project this page serves (the send carries S.profile, so the pin is
-  // right). ONE control, in the header — the sidebar used to carry a second
-  // ＋ 新会话 at the tail of the session list, two inches from this one and
-  // doing exactly the same thing. The key still works (Cmd/Ctrl+K).
+  // One new-conversation control, also available with Cmd/Ctrl+K.
   const nsBtn = $("#new-session");
   if (nsBtn) nsBtn.onclick = () => { newSession(); };
   const sessionsBtn = $("#sessions-toggle");

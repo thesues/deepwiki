@@ -48,7 +48,6 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
-from profiles import AgentProfile, scope_agent_tools
 
 log = logging.getLogger("deepwiki.agent")
 
@@ -297,36 +296,23 @@ def load_endpoints(raw: str | None, default_home_model: str = "") -> list[Endpoi
 
 
 PLATFORM = "deepwiki"          # this app's name in hermes' `source` column
-MARK_SEP = ":"                 # PLATFORM + MARK_SEP + profile.key
 
 
-def session_mark(profile: AgentProfile | None) -> str:
-    """The value hermes stores in `sessions.source` for this project's agent.
+def register_workspace_cwd(session_id: str, workspace: str) -> bool:
+    """Register the session scratch directory with Hermes terminal tools."""
+    if not workspace:
+        return False
+    if not Path(workspace).is_dir():
+        log.warning("session workspace %s does not exist (yet); terminal stays on the default cwd", workspace)
+        return False
+    try:
+        from tools.terminal_tool import register_task_env_overrides
 
-    `deepwiki:<key>` with a profile, bare `deepwiki` without one. The bare
-    form is also what every row written before this change carries, which is
-    why `profile_of_source` reads only the two-part form.
-    """
-    key = (profile.key if profile is not None else "").strip()
-    return f"{PLATFORM}{MARK_SEP}{key}" if key else PLATFORM
-
-
-def profile_of_source(source: str | None) -> str | None:
-    """The project a session row belongs to, or None if it carries no mark.
-
-    None is not "no project" — it is "this row predates the mark", and the
-    caller decides the fallback (the retired side table, then the default
-    project). A bare "deepwiki", or the older "buda" this app used as its
-    platform name before the repositioning, both answer None: "buda" is now
-    also a profile key, and reading it as one would hand every pre-mark
-    session to that project by coincidence.
-    """
-    s = (source or "").strip()
-    head, sep, key = s.partition(MARK_SEP)
-    if not sep or head != PLATFORM:
-        return None
-    key = key.strip()
-    return key or None
+        register_task_env_overrides(session_id, {"cwd": workspace})
+        return True
+    except Exception:  # noqa: BLE001 -- a missing terminal module must not fail the build
+        log.debug("could not register workspace cwd for %s", session_id, exc_info=True)
+        return False
 
 
 def _artifacts_root() -> Path:
@@ -451,7 +437,7 @@ def _register_input_image_tool() -> None:
 
 
 def _register_annotation_tool() -> None:
-    """Expose Pillow annotation only through the mayi profile's toolset."""
+    """Expose Pillow annotation through its dedicated toolset."""
     from annotation_tool import register_annotation_tool
 
     register_annotation_tool()
@@ -541,27 +527,10 @@ def _install_multimodal_persistence_guard(agent: Any) -> None:
 def build_agent(
     session_id: str,
     ep: Endpoint,
-    profile: AgentProfile | None = None,
     user_id: str = "",
 ) -> Any:
-    """Construct one `AIAgent` wired to `ep`, carrying `profile`'s identity.
-
-    The kwargs mirror what hermes' own ACP adapter passes, minus the parts that
-    are about stdio being a JSON-RPC transport. `session_db` is handed in so the
-    agent persists into the same store the sidebar reads.
-
-    Toolsets and MCP servers both come from hermes' config.yaml — the one file
-    hermes' own CLI reads. `resolve_toolsets` runs hermes' own platform
-    resolver over it, which also appends `mcp-<name>` for every enabled
-    server; the loop below is a belt-and-braces for the fallback paths. With a
-    profile, both lists are then trimmed to the profile's subset (and the
-    profile's workspace folder becomes the terminal cwd, registered against
-    the session id the same way ACP's session/load registers a project root).
-    """
+    """Build the shared agent with every enabled MCP server and user-scoped state."""
     from run_agent import AIAgent
-    from profile_skills import install as install_profile_skill_scope
-
-    install_profile_skill_scope()
 
     mcp_servers = []
     cfg: dict = {}
@@ -585,11 +554,6 @@ def build_agent(
         if t not in toolsets:
             toolsets.append(t)
 
-    # The profile's slice of the identity. Kept here — at build time, not per
-    # turn — because the tool surface is a property of the built agent: a
-    # per-turn trim would leave a cached agent (built for the old identity)
-    # carrying tools its replacement dropped.
-    toolsets, mcp_servers = scope_agent_tools(profile, toolsets, mcp_servers)
     if user_id:
         # Hermes built-in recall and memory read the shared home, bypassing
         # the HTTP resource checks. Leave them disabled until they are scoped.
@@ -613,50 +577,15 @@ def build_agent(
     if user_id:
         (_artifacts_root() / session_id).mkdir(parents=True, exist_ok=True)
 
-    # A profile that declares a workspace keeps it — that one is a corpus root
-    # and belongs to the project, not to the conversation.
-    if profile is not None and profile.workspace:
-        from profiles import register_workspace_cwd
-
-        register_workspace_cwd(session_id, profile.workspace)
-    else:
-        from profiles import register_workspace_cwd
-
-        session_dir = _artifacts_root() / session_id
-        try:
-            session_dir.mkdir(parents=True, exist_ok=True)
-            register_workspace_cwd(session_id, str(session_dir))
-        except OSError as e:  # noqa: BLE001 -- a turn without a scratch dir still runs
-            log.error("could not create %s: %s", session_dir, e)
+    session_dir = _artifacts_root() / session_id
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        register_workspace_cwd(session_id, str(session_dir))
+    except OSError as e:
+        log.error("could not create %s: %s", session_dir, e)
 
     candidate = {
-        # The PROJECT MARK, and the reason it rides on `platform` rather than
-        # in a table of our own.
-        #
-        # hermes writes `agent.platform` into `sessions.source` in two places:
-        # when the agent first persists a conversation (`run_agent.py`) and
-        # when CONTEXT COMPRESSION forks a child session
-        # (`agent/conversation_compression.py`). Compression ROTATES the
-        # session id — the old row ends with end_reason='compression' and the
-        # conversation continues under a new id — and that is exactly what a
-        # side table keyed by the starting id cannot survive: the pin stays on
-        # the dead root while the sidebar lists the chain under its tip, and
-        # the conversation silently files under the DEFAULT project. That had
-        # already happened in production to a buda conversation.
-        #
-        # Put the mark on the agent and the chain carries it: every row the
-        # conversation's own agent creates, including every compression child,
-        # is stamped by the same value. One writer, at the bottom, and
-        # everything above just reads it.
-        #
-        # The prefix is kept so the value is still recognisably this app's
-        # (hermes filters on `source`, e.g. exclude_sources=["tool"]), and so
-        # the marked form is UNAMBIGUOUS: rows written before this carry a
-        # bare "deepwiki" — or "buda", which was this app's platform name
-        # before the repositioning and is now also a profile KEY. Only the
-        # two-part form is read as a project; a bare source means "unmarked"
-        # and falls back. See session_mark().
-        "platform": session_mark(profile),
+        "platform": PLATFORM,
         "model": ep.model,
         "provider": ep.provider,
         "base_url": ep.base_url,
@@ -699,7 +628,7 @@ def build_agent(
         agent,
     )
     _set_context_window(agent, ep)
-    return _scope_tools(agent, profile, mcp_servers, user_id=user_id)
+    return _scope_user_tools(agent, user_id=user_id)
 
 
 def _set_context_window(agent: Any, ep: Endpoint) -> None:
@@ -748,47 +677,26 @@ def _set_context_window(agent: Any, ep: Endpoint) -> None:
         log.exception("could not set the context window for %s", ep.key)
 
 
-def _scope_tools(agent: Any, profile: AgentProfile | None, servers: list[str], user_id: str = "") -> Any:
-    """Hold the agent's tool list to the profile's `mcp_tools` allowlist.
-
-    Filtering the list ONCE after construction does not hold: hermes rebuilds
-    `agent.tools` from the live registry between turns
-    (`refresh_agent_mcp_tools`, for MCP servers that connect after the
-    snapshot), and that rebuild honours `enabled_toolsets` — which has no
-    per-tool granularity — so anything dropped here would come back on the
-    next turn.
-
-    So the filter lives on the ASSIGNMENT instead. The agent gets a subclass
-    whose `tools` and `valid_tool_names` are properties that filter whatever
-    is stored into them, which means every writer — construction, the
-    between-turns refresh, a /reload-mcp — passes through it, including
-    writers that do not exist yet.
-    """
-    allow = getattr(profile, "mcp_tools", None)
-    if allow is None and not user_id:
+def _scope_user_tools(agent: Any, user_id: str = "") -> Any:
+    """Keep shared-home memory tools unavailable across users, including refreshes."""
+    if not user_id:
         return agent
-
-    from profiles import allowed_mcp_names, tool_allowed
-
-    allowed = allowed_mcp_names(allow, servers)
-    denied = {"session_search", "memory"} if user_id else set()
+    denied = {"session_search", "memory"}
 
     def _tools_get(self):
         return self.__dict__.get("_scoped_tools", [])
 
     def _tools_set(self, value):
-        kept = [t for t in (value or []) if tool_allowed(t.get("function", {}).get("name", ""), allowed) and t.get("function", {}).get("name", "") not in denied]
-        dropped = len(value or []) - len(kept)
-        if dropped:
-            log.info("profile %s: %d MCP tool(s) withheld, %d kept",
-                     getattr(profile, "key", "default"), dropped, len(kept))
-        self.__dict__["_scoped_tools"] = kept
+        self.__dict__["_scoped_tools"] = [
+            t for t in (value or [])
+            if t.get("function", {}).get("name", "") not in denied
+        ]
 
     def _names_get(self):
         return self.__dict__.get("_scoped_names", set())
 
     def _names_set(self, value):
-        self.__dict__["_scoped_names"] = {n for n in (value or set()) if tool_allowed(n, allowed) and n not in denied}
+        self.__dict__["_scoped_names"] = {n for n in (value or set()) if n not in denied}
 
     cls = type(agent)
     scoped = type(
@@ -826,21 +734,15 @@ class AgentPool:
         self._max = max(1, max_size)
 
     def acquire(self, session_id: str, ep: Endpoint,
-                profile: AgentProfile | None = None, user_id: str = "") -> Any:
-        """The agent for this (session, endpoint, profile), built on a miss.
-
-        The profile key is part of the cache signature, reusing the endpoint
-        mechanism: switching a conversation between projects changes the
-        signature, the cached agent misses, and one carrying the right
-        identity is built. No separate 'switch profile' path to keep correct.
-        """
-        sig = (*ep.signature(), profile.key if profile is not None else "", user_id)
+                user_id: str = "") -> Any:
+        """Reuse a session's agent while its endpoint and owner are unchanged."""
+        sig = (*ep.signature(), user_id)
         with self._lock:
             hit = self._cache.get(session_id)
             if hit is not None and hit[1] == sig:
                 self._cache.move_to_end(session_id)
                 return hit[0]
-            # A signature change means the endpoint or the profile moved under
+            # A signature change means the endpoint or owner changed for
             # this session. Drop the old agent rather than mutating it through
             # `switch_model`: the object also carries the previous turn's
             # callbacks, tool surface and reasoning config, and rebuilding is
@@ -848,9 +750,9 @@ class AgentPool:
             # cost.
             self._cache.pop(session_id, None)
         if user_id:
-            agent = build_agent(session_id, ep, profile, user_id=user_id)
+            agent = build_agent(session_id, ep, user_id=user_id)
         else:
-            agent = build_agent(session_id, ep, profile)
+            agent = build_agent(session_id, ep)
         with self._lock:
             self._cache[session_id] = (agent, sig)
             self._cache.move_to_end(session_id)
@@ -956,11 +858,10 @@ def bind_callbacks(agent: Any, sink: Any) -> None:
 # missing from any session whose first turn predates it.
 CHAT_DIRECTIVE = os.environ.get(
     "CHAT_DIRECTIVE",
-    "你是佛教典籍的检索助手，工作是从已索引的语料库中找出依据来回答问题。\n"
-    "- 凡涉及经文内容的问题，先用语料库工具检索，不要凭记忆作答。\n"
-    "- 回答时给出经名与原文引文，并标出出处（文件 › 标题路径 › 行号）。\n"
-    "- 语料库里没有的，直说没有；可以补充常识背景，但要注明那不是来自语料库。\n"
-    "- 简明作答，通常几段以内。除非明确要求，不要写长文、不要综述式铺陈。",
+    "你是通用助手，可以使用所有已启用的 MCP 和 skills。\n"
+    "按当前任务选择并阅读相关 skill，再调用对应 MCP；不要把不同语料库的内容混为一谈。\n"
+    "涉及书籍或代码内容时先检索并读取原文，引用真实出处；找不到依据时明确说明。\n"
+    "需要工具时使用工具，不确定的地方如实说明。用中文简洁回答。"
 )
 
 

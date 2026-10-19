@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import re
 import logging
 import mimetypes
 import os
@@ -38,7 +39,7 @@ from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import brotli
 from auth import AuthenticationError, AuthenticationUnavailable
@@ -346,6 +347,13 @@ class App:
             served = self.serve_static(req)
             if served is not None:
                 return served
+            # Retired single-segment chat URLs keep bookmarked session IDs.
+            if (re.fullmatch(r"/[A-Za-z0-9_-]+/", req.path)
+                    and req.path.strip("/") not in {"api", "static", "artifacts", "auth"}
+                    and ("GET", "/") in self.routes):
+                query = urlencode(req.query)
+                return Response(302, [("Location", "/" + ("?" + query if query else "")),
+                                      ("Cache-Control", "no-store")])
         return json_response({"error": "not found"}, status=404)
 
     def serve_static(self, req: Request) -> Response | None:

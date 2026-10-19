@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-for (const name of ['app.js', 'home.js']) {
+for (const name of ['app.js']) {
   const source = fs.readFileSync(new URL('../../static/' + name, import.meta.url), 'utf8');
   const start = source.indexOf('async function authFetch(');
   const helper = source.slice(start, source.indexOf('\n}', start) + 2);
@@ -20,4 +20,4 @@ for (const name of ['app.js', 'home.js']) {
   await assert.rejects(context.authFetch('/api/status'));
   assert.equal(redirects[0], '/auth/login?return=%2Fbuda%2F%3Fx%3D1%26y%3D2');
 }
-console.log('auth login handling passed for both pages');
+console.log('auth login handling passed for chat');

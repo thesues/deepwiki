@@ -84,7 +84,7 @@ Same 41 queries, k=10, real BGE-M3 vectors (llama-embed, 1024-d) over the same
 7433 chunks. `hybrid` fuses lexical + vector by autumn-memory's own rule:
 each leg to depth `max(k,10)*2`, reciprocal-rank sum `1/(60+rank)`, ties
 broken by id — `server.py`'s `Retriever.search` and `eval_docs.py` both go
-through it, so this is what a hermes profile actually gets from `mode=auto`.
+through it, so this is what the agent actually gets from `mode=auto`.
 
 | mode    | hit@1 | hit@5 | hit@k | MRR@10 | P@10  | found |
 |---------|------:|------:|------:|-------:|------:|------:|
@@ -186,14 +186,13 @@ Python runtime is 0.25 only because that grammar's wheel is ABI 15.
 
 ## Server
 
-`server.py` is a drop-in for the tools a hermes profile names — same names,
+`server.py` is a drop-in for the retrieval tools Hermes calls — same names,
 arguments, result shapes and defaults (`k=8`, `mode=auto` → `hybrid` when a
 table has vectors) as memory-mcp's, over the same JSON-RPC 2.0 wire shape at
 `POST /mcp` (batch or single, a notification gets 202 with no body, an
-unknown method -32601). A profile's `mcp_servers`/`mcp_tools` can point at
-this instead of memory-mcp with no other change. `graph_upsert_node` and the
-other generic graph_* tools are not carried over — nothing in buda's profiles
-calls them.
+unknown method -32601). Hermes' `mcp_servers` can point at this instead of memory-mcp with no other
+change. `graph_upsert_node` and the other generic graph_* tools are not
+carried over — nothing in buda calls them.
 
 What's different is where answers come from: searches are Lance queries
 (full-text and/or vector, fused by the rule above), `find_callers`/
@@ -223,13 +222,12 @@ order; `read_file` returns the exact cited lines; `search_code` finds
 `add_edge` by name; `search_code(mode=vector)` answers the "no embedder for
 this table" tool error rather than 500ing, since `code` currently holds no
 vectors (see below); `find_callers` matches `parity_code.py`'s own count.
-This is the same tool surface, arguments and server the `buda` profile in
-`k8s/webui.yaml` is scoped to (`mcp_tools: search_docs, list_documents,
-document_outline, read_file`) — checked by calling `POST /mcp` directly with
-those exact tool names and arguments, not by running the webui itself: no
-hermes venv exists on this machine to drive a real chat turn through
-FreeToken. `k8s/lance-mcp.yaml` supplies the Service and `k8s/webui.yaml`
-grants its four read-only tools to that profile.
+These document tools (`search_docs`, `list_documents`, `document_outline`,
+`read_file`) were checked by calling `POST /mcp` directly with their exact
+arguments. This measured tool responses, not a WebUI chat turn through
+FreeToken. `k8s/lance-mcp.yaml` supplies the Service; `k8s/webui.yaml`
+registers it alongside the other MCPs for the general agent.
+
 
 ## Timing
 

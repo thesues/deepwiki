@@ -8,11 +8,8 @@ metadata:
   based_on: Cocoon-AI/architecture-diagram-generator (MIT, v1.0)
   hermes:
     # archify is a Node CLI — validate and deliver are commands, not markup.
-    # Only the code profile has both a terminal and the code index. Keep this
-    # project skill out of the other profiles' prompt indexes.
     requires_toolsets:
       - terminal
-      - mcp-code-index
 ---
 
 # Archify

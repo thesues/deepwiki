@@ -69,7 +69,7 @@ metadata:
 
 ## 本地库用法
 
-只有具备文件与 Python 执行能力时才走本地 driver；麻衣 profile 通常直接调用 `annotate_image`。driver 放当前会话 scratchpad，并用 `/opt/hermes/.venv/bin/python` 执行：
+只有具备文件与 Python 执行能力时才走本地 driver；通常直接调用 `annotate_image`。driver 放当前会话 scratchpad，并用 `/opt/hermes/.venv/bin/python` 执行：
 
 ```python
 import sys

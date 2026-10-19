@@ -115,10 +115,9 @@ def test_endpoints_parse_in_order_with_the_first_as_default():
 
 
 class FakeAgent:
-    def __init__(self, session_id, ep, profile=None):
+    def __init__(self, session_id, ep):
         self.session_id = session_id
         self.ep = ep
-        self.profile = profile
         self.interrupted = 0
         self.stream_delta_callback = None
         self.tool_progress_callback = None
@@ -133,8 +132,8 @@ class FakeAgent:
 def _pool(monkeypatch, max_size=25):
     built = []
 
-    def fake_build(session_id, ep, profile=None):
-        a = FakeAgent(session_id, ep, profile)
+    def fake_build(session_id, ep):
+        a = FakeAgent(session_id, ep)
         built.append(a)
         return a
 
@@ -404,3 +403,41 @@ def test_an_older_hermes_without_system_message_still_runs_the_turn(monkeypatch)
 
     assert ha.run_turn(Older(), session_id="s", user_message="q",
                        history=[]) == {"ok": "q"}
+
+
+def test_shared_agent_includes_all_enabled_mcps_on_an_old_pvc(monkeypatch, tmp_path):
+    import types
+
+    cfg = {"platform_toolsets": {"cli": ["skills"]}, "mcp_servers": {
+        "memory": {}, "code-index": {}, "tao": {}, "mayi": {},
+        "future-corpus": {}, "retired": {"enabled": False},
+    }}
+    config_module = types.ModuleType("hermes_cli.config")
+    config_module.load_config = lambda: cfg
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", config_module)
+    runtime = types.ModuleType("run_agent")
+
+    class Agent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def _persist_session(self, messages, conversation_history):
+            pass
+
+    runtime.AIAgent = Agent
+    monkeypatch.setitem(sys.modules, "run_agent", runtime)
+    monkeypatch.setenv("AGENT_TOOLSETS", "file,terminal,skills,memory,session_search")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ha._Db, "get", lambda: object())
+    directories = []
+    monkeypatch.setattr(ha, "register_workspace_cwd", lambda sid, cwd: directories.append((sid, cwd)))
+    agent = ha.build_agent("shared-session", ha.Endpoint("test", "Test", "model", "http://test/v1"), user_id="reader")
+    expected = {"memory", "code-index", "tao", "mayi", "future-corpus"}
+    assert set(agent.kwargs["mcp_server_names"]) == expected
+    assert set(agent.kwargs["enabled_toolsets"]) == {"file", "terminal", "skills"} | {
+        "mcp-" + name for name in expected
+    }
+    assert agent.kwargs["platform"] == "deepwiki"
+    assert agent.kwargs["user_id"] == "reader" and agent.kwargs["skip_memory"]
+    assert directories == [("shared-session", str(tmp_path / "artifacts" / "shared-session"))]

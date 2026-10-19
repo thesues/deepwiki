@@ -29,13 +29,11 @@ import secrets
 from botocore.exceptions import ClientError
 
 from http_shell import App, Request, Response, Streaming, json_response
-from hermes_agent import Endpoint, profile_of_source
+from hermes_agent import Endpoint
 from media_input import get_object as _get_media_object
 from media_input import marker_keys as _media_marker_keys
 from media_input import owned_key as _owned_media_key
 from media_input import put_object as _put_media_object
-from profiles import AgentProfile, allowed_endpoint, build_profiles, resolve_profile
-from session_profiles import SessionProfiles
 from sse import SSE_HEADERS, write_session_stream, write_stream
 from turns import Refused, TurnManager
 
@@ -88,7 +86,6 @@ def build_app(
     *,
     manager: TurnManager,
     endpoints: list[Endpoint],
-    profiles: list[AgentProfile] | None = None,
     static_dir: Path,
     index_html: Path,
     artifacts_dir: Path | None = None,
@@ -97,7 +94,6 @@ def build_app(
     authenticator=None,
     sessions: object | None = None,
     mcp: dict | None = None,
-    session_profiles: "SessionProfiles | None" = None,
 ) -> App:
     app = App(
         static_dir=static_dir,
@@ -108,15 +104,6 @@ def build_app(
     )
     by_key = {e.key: e for e in endpoints}
     default_ep = endpoints[0]
-    # The project cards. A deploy that declares none gets the built-in default
-    # profile. Explicit unknown keys are rejected by profiles.resolve_profile.
-    profile_list = profiles if profiles is not None else build_profiles(None)
-    default_profile = profile_list[0]
-    # Which PROJECT each conversation belongs to. Recorded at chat/start (the
-    # one moment the profile is known for certain), read by the sidebar so a
-    # project page lists only its own conversations.
-    session_profiles = session_profiles or SessionProfiles()
-
     def _owns_session(req: Request, session_id: str) -> bool:
         """Authorize persisted and not-yet-persisted conversations alike."""
         if not req.user_id:
@@ -141,9 +128,6 @@ def build_app(
     def _endpoint(req: Request, session_hint: str = "") -> Endpoint:
         return by_key.get(req.json().get("endpoint") or req.query.get("endpoint", ""), default_ep)
 
-    def _profile_of(body: dict) -> AgentProfile:
-        return resolve_profile(profile_list, body.get("profile"))
-
     # ── health and status ──────────────────────────────────────────────────
 
     @app.route("GET", "/healthz")
@@ -158,8 +142,6 @@ def build_app(
             "turns": [{"session": sid, "streamId": st} for sid, st in running.items()],
             "endpoints": [e.as_json() for e in endpoints],
             "defaultEndpoint": default_ep.key,
-            "profiles": [p.as_json() for p in profile_list],
-            "defaultProfile": default_profile.key,
         })
 
     @app.route("GET", "/api/media/input")
@@ -241,57 +223,29 @@ def build_app(
             session_id = secrets.token_hex(8)
         elif not _owns_session(req, session_id):
             return _not_found()
-        # WHICH PROJECT ANSWERS is the CONVERSATION's property, not the
-        # sending page's. The page carries the project off its own URL, and a
-        # page can legitimately be showing a conversation that belongs to
-        # another one — the view is restored per browser, so landing on
-        # /code-autumn-rs/ could reopen the buda conversation last read. A
-        # send from there used to do two things, both wrong: answer the turn
-        # with code-autumn-rs' agent (its MCP servers, not the corpus this
-        # conversation has been talking to), and re-pin the conversation to
-        # code-autumn-rs on the way through, moving it out of its own project
-        # for good. `record()` overwrites, so the move was silent.
-        #
-        # An EXISTING conversation is therefore resolved from itself; the
-        # request's `profile` only decides a NEW one. The client scopes its
-        # view recall too, so the two disagree far less often now — but the
-        # rule belongs here, where the agent is actually chosen.
-        owner = "" if is_new else (_profile_of_session(session_id) or "")
-        try:
-            profile = resolve_profile(profile_list, owner) if owner else _profile_of(body)
-        except ValueError:
-            return json_response({"error": "会话所属项目已不可用，请返回首页选择项目"}, status=400)
-        # The profile may pin its endpoints (a video project needs the
-        # multimodal model). The pin redirects, never errors — see
-        # allowed_endpoint — and the echo below carries the endpoint actually
-        # used, so the client's picker follows the redirect.
-        wanted_ep = by_key.get(body.get("endpoint") or "", default_ep)
-        ep_key = allowed_endpoint(profile, wanted_ep.key, default_ep.key)
-        endpoint = by_key.get(ep_key, default_ep)
+        endpoint = by_key.get(body.get("endpoint") or "", default_ep)
         media_keys = _media_marker_keys(text)
         if req.user_id and any(not _owned_media_key(key, req.user_id) for key in media_keys):
             return _not_found()
         if media_keys and not endpoint.supports_vision:
-            allowed_keys = set(profile.endpoints) if profile.endpoints else None
             vision_endpoint = next(
                 (
                     candidate
                     for candidate in endpoints
                     if candidate.supports_vision
-                    and (allowed_keys is None or candidate.key in allowed_keys)
                 ),
                 None,
             )
             if vision_endpoint is None:
                 return json_response(
-                    {"error": "当前项目没有可用的视觉模型，无法发送图片"},
+                    {"error": "当前没有可用的视觉模型，无法发送图片"},
                     status=400,
                 )
             endpoint = vision_endpoint
         try:
             stream = manager.start(
                 session_id=session_id, text=text, endpoint=endpoint,
-                user_id=req.user_id, profile=profile,
+                user_id=req.user_id,
             )
         except Refused as r:
             # 409 for a conversation already replying, 429 for a full endpoint —
@@ -301,15 +255,10 @@ def build_app(
                 r.as_json(),
                 status=409 if r.reason in {"taken", "user_busy"} else 429,
             )
-        # The conversation is pinned to the project it was opened under — the
-        # card the reader clicked. Every later turn may omit `profile`; the
-        # pin is what the sidebar and the page title read.
-        session_profiles.record(session_id, profile.key)
         return json_response({
             "streamId": stream.stream_id,
             "sessionId": session_id,
             "endpoint": endpoint.key,
-            "profile": profile.key,
         })
 
     @app.route("GET", "/api/chat/stream")
@@ -378,77 +327,6 @@ def build_app(
             return _not_found()
         return json_response({"ok": manager.cancel(stream_id)})
 
-    def _pins_by_tip() -> dict[str, str]:
-        """{ id the sidebar lists : project }, for PRE-MARK conversations only.
-
-        The side table is keyed by the id a conversation STARTED with, and
-        compression rotates that id — so after a compression the pin points at
-        a dead row while the sidebar lists the chain under its tip. This walks
-        each pin FORWARD through the store (`resolve_resume_session_id`, which
-        is the direction hermes offers) and files it under the id it resolves
-        to today.
-
-        Built ONCE per request, not once per row: it is a fixed, shrinking set
-        — every conversation that takes a turn under the current code gets the
-        mark and stops needing this — but a per-row walk would still be one
-        store call per pin per row on every sidebar poll.
-        """
-        if sessions is None:
-            return {}
-        out: dict[str, str] = {}
-        for pinned_id in session_profiles.keys():
-            key = session_profiles.get(pinned_id)
-            if not key:
-                continue
-            out.setdefault(pinned_id, key)
-            try:
-                tip = sessions.resolve_tip(pinned_id)  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001 -- a store that cannot walk is not a 500
-                log.debug("could not resolve lineage for %s", pinned_id, exc_info=True)
-                break
-            if tip and tip != pinned_id:
-                out[tip] = key
-        return out
-
-    def _profile_of_session(session_id: str, source: str | None = None,
-                            pins: dict[str, str] | None = None) -> str | None:
-        """Which project a conversation belongs to. ONE definition.
-
-        Read in this order, most authoritative first:
-
-        1. THE ROW'S OWN MARK. hermes stores `agent.platform` in
-           `sessions.source`, and the agent stamps the project into it
-           (hermes_agent.session_mark). This is the answer that survives
-           CONTEXT COMPRESSION: compression forks a child session under a new
-           id, stamping it from the same agent, so the tip of a chain carries
-           the same mark as its root.
-        2. THE LIVE TURN, if one is writing into this id. The mark reaches the
-           store only when the turn ENDS, and compression rotates a live turn
-           onto an id that has neither a row nor a pin — so for the length of
-           that turn both persisted answers are "unknown", and unknown files
-           under the DEFAULT project. That is how a 通用助手 conversation
-           turned up in 佛典检索's sidebar mid-reply, and how a send from that
-           sidebar would have been answered by buda's agent.
-        3. THE RETIRED SIDE TABLE, resolved through the chain — see
-           `_pins_by_tip`. For rows written before the mark existed.
-
-        None means "no answer" — the caller files it under the default
-        project, which is what an unmarked session served as.
-        """
-        if source is None and sessions is not None and hasattr(sessions, "source"):
-            # chat/start has only an id, unlike the sidebar's preloaded rows.
-            # Do not let a missing side-table pin override the persisted mark.
-            source = sessions.source(session_id)
-        key = profile_of_source(source)
-        if key:
-            return key
-        live = manager.profile_of(session_id)
-        if live:
-            return live
-        if pins is None:
-            pins = _pins_by_tip()
-        return pins.get(session_id)
-
     # ── sessions (store reads; the agent is never moved) ───────────────────
 
     @app.route("GET", "/api/sessions")
@@ -467,10 +345,8 @@ def build_app(
         if req.user_id:
             rows = [r for r in rows if _owns_session(req, str(r.get("id") or ""))]
         running = (manager.running(req.user_id) if req.user_id else manager.running())
-        pins = _pins_by_tip()
         for r in rows:
             r["is_streaming"] = r.get("id") in running
-            r["profile"] = _profile_of_session(r.get("id") or "", r.get("source"), pins)
         # A live turn's session row does not exist in the store until hermes
         # persists its first message — which happens when the TURN ends
         # (`_persist_session` sits on the exit paths of the conversation loop).
@@ -496,14 +372,6 @@ def build_app(
                 "preview": "回复中…",
                 "messageCount": 0,
                 "is_streaming": True,
-                # No store row yet (hermes persists at the END of the turn),
-                # so the mark does not exist either — the pin recorded at
-                # chat/start, or the live turn's own profile once compression
-                # has moved the conversation off the pinned id, is all there
-                # is for the length of the first turn, and without it the
-                # conversation vanishes from its project's sidebar for
-                # exactly that long — or worse, surfaces in another's.
-                "profile": _profile_of_session(sid, None, pins),
             })
         return json_response({
             "sessions": rows,
@@ -517,8 +385,6 @@ def build_app(
             "identityScope": (
                 hashlib.sha256(req.user_id.encode()).hexdigest() if req.user_id else ""
             ),
-            "profiles": [p.as_json() for p in profile_list],
-            "defaultProfile": default_profile.key,
             # `running` per endpoint, not a global: the composer gates on the
             # picker's CHOICE, and one full endpoint must not grey out a send
             # aimed at another one. `running_on` reads the stream's endpoint_key,
@@ -645,8 +511,6 @@ def build_app(
         # Idempotent, like the CLI it replaced: `hermes sessions delete` on an
         # already-gone id printed "not found" and exited 0. A second tab's
         # delete racing the first's must read as success — the goal is achieved.
-        for i in ids:
-            session_profiles.forget(i)   # the conversation is gone; its pins go too
         return json_response(
             {"ok": True, "deleted": sid, "found": bool(deleted), "rows": len(ids)}
         )
@@ -744,15 +608,9 @@ def build_app(
     # changed URL cannot be served from any cache, by construction. The hash
     # covers the ASSETS too, not only the page.
     #
-    # deepwiki.com's two pages, as two pages — NOT one SPA: the home (/) is
-    # the card grid (home.html), and each project lives at /<key>/ serving the
-    # chat page (index.html). A card is a LINK; navigation is the mechanism.
-    # Both get the same cache/ETag/versioning treatment. The chat page reads
-    # its project off the URL and falls back client-side (redirect home) for
-    # an unknown key, which is what makes a renamed profile degrade to the
-    # homepage instead of a 404.
+    # One chat page, shared by all configured tools and skills.
     assets = (
-        b"app.js", b"home.js", b"style.css", b"favicon.svg",
+        b"app.js", b"style.css", b"favicon.svg",
         b"vendor/marked.min.js", b"vendor/purify.min.js",
         b"math.js", b"vendor/katex-0.19.0/katex.min.js",
         b"vendor/katex-0.19.0/katex.min.css",
@@ -778,9 +636,8 @@ def build_app(
         return body, f'"{version}"'
 
     # These files ship in the read-only image and cannot change during this
-    # process. Precompute both pages and their validators once instead of
+    # process. Precompute the page and its validator once instead of
     # rereading and rehashing the whole frontend bundle on every navigation.
-    home_page = _prepare_page(static_dir / "home.html")
     chat_page = _prepare_page(index_html)
 
     def _versioned_page(req: Request, page: tuple[bytes, str] | None) -> Response:
@@ -792,8 +649,6 @@ def build_app(
         return Response(200, [("Content-Type", "text/html; charset=utf-8"),
                               ("ETag", etag), ("Cache-Control", "no-cache")], body)
 
-    app.route("GET", "/")(lambda req: _versioned_page(req, home_page))
-    for p in profile_list:
-        app.route("GET", f"/{p.key}/")(lambda req, _page=chat_page: _versioned_page(req, _page))
+    app.route("GET", "/")(lambda req: _versioned_page(req, chat_page))
 
     return app

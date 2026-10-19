@@ -75,7 +75,7 @@ spec:
                 --db-path s3://lancedb/code --s3-endpoint "$S3" \
                 --embed-url http://llama-embed:8080 --embed-model bge-m3
               # Prose (.md/.txt) of the same tree into `docs`, so the code
-              # profile keeps search_docs/list_documents/document_outline —
+              # MCP keeps search_docs/list_documents/document_outline —
               # the old Rust code-index served those too. mode=overwrite:
               # idempotent on rerun, no marker needed.
               .venv/bin/python ingest_docs.py \

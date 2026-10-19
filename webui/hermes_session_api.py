@@ -219,11 +219,7 @@ def list_sessions(limit: int, include_empty: bool, user_id: str = "") -> list[di
         out.append({
             "id": r.get("id"),
             # The row's own project mark, carried up verbatim. `source` is
-            # where hermes stores `agent.platform`, and the webui writes the
-            # project into it (hermes_agent.session_mark) precisely so that
-            # the answer survives a compression id rotation: the projection
-            # above hands back the TIP of a chain, and the tip was written by
-            # the same agent as its root. The route turns it into `profile`.
+            # Preserve the stored provenance of older conversations.
             "source": r.get("source") or "",
             "title": title,
             "titleProvisional": not (r.get("title") or "").strip(),

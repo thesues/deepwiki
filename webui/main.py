@@ -32,7 +32,6 @@ from app_routes import build_app  # noqa: E402
 from hermes_agent import AgentPool, load_endpoints, load_endpoints_env, register_webui_tools  # noqa: E402
 from http_shell import serve  # noqa: E402
 from mcp_resilience import install_semantic_error_guard  # noqa: E402
-from profiles import load_profiles  # noqa: E402
 from turns import TurnManager  # noqa: E402
 
 log = logging.getLogger("deepwiki")
@@ -43,7 +42,7 @@ def mcp_servers_from_env() -> list[tuple[str, str]]:
 
     `MCP_SERVERS` is the one variable: comma-separated `NAME=URL`, and the
     FIRST entry is the one the UI names — the same "first wins" rule
-    `load_endpoints` and `build_profiles` follow, so the three ends agree
+    `load_endpoints` follows, so the three ends agree
     without talking.
 
     `MEMORY_MCP_URL` / `MEMORY_MCP_NAME` / `MEMORY_MCP_EXTRA` are the old
@@ -136,33 +135,6 @@ def main() -> None:
         ", ".join(f"{e.key}={e.model}@{e.base_url} (<={e.max_concurrent})" for e in endpoints),
     )
 
-    # The project cards. hermes' config.yaml is the standing source — a
-    # `profiles:` section in the SAME file that owns mcp_servers and
-    # platform_toolsets, so editing a profile is a config edit + restart,
-    # never a code change. DEEPWIKI_PROFILES (JSON list) is the override entry
-    # for a k8s ConfigMap. Neither present: one built-in default profile, the
-    # pre-profile behaviour exactly.
-    try:
-        from hermes_cli.config import load_config
-
-        cfg_profiles = (load_config() or {}).get("profiles")
-    except Exception:  # noqa: BLE001 -- no hermes config, the env still works
-        log.debug("could not read config.yaml for profiles", exc_info=True)
-        cfg_profiles = None
-    profiles = load_profiles(
-        os.environ.get("DEEPWIKI_PROFILES", ""),
-        cfg_profiles,
-        default_directive=None,   # the built-in default falls back to CHAT_DIRECTIVE
-    )
-    log.info(
-        "profiles: %s",
-        " | ".join(
-            f"{p.key} (mcp={','.join(p.mcp_servers or ['*'])}"
-            f", workspace={p.workspace or '-'})"
-            for p in profiles
-        ),
-    )
-
     # Before any agent is built: a tool result goes into the model's context
     # whole, and hermes caps nothing. One corpus search can spend a fifth of
     # the window on a single symbol's body — see tool_budget for the measured
@@ -172,7 +144,7 @@ def main() -> None:
     install_tool_ceiling()
 
     # Hermes' registry is process-global: define custom tools once, before
-    # any AIAgent snapshots it. Per-profile visibility is configuration, not
+    # any AIAgent snapshots it. Tool visibility is configuration, not
     # registration — `input-image` exposes input_image_open and
     # `mayi-annotation` exposes annotate_image through enabled_toolsets.
     register_webui_tools()
@@ -185,15 +157,7 @@ def main() -> None:
     hermes_cfg = Path(
         os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     ) / "config.yaml"
-    # One retrieval MCP instance serves ONE corpus, so a second project's index
-    # is a second instance on its own port. All of them are declared in ONE
-    # variable as NAME=URL pairs, in order — the first is the one the UI
-    # names, the same "first entry wins" rule `load_endpoints` and
-    # `build_profiles` use. A profile then narrows the agent to the server
-    # its corpus lives on (profiles.py scope_agent_tools rule 1).
-    # NOT `servers`: that name is taken further down for the config's own
-    # mcp_servers mapping, and the rebind is invisible here — the UI's server
-    # line then indexed a dict by 0 and the process died on startup.
+    # Register every configured corpus with the shared agent.
     declared_servers = mcp_servers_from_env()
     for name, url in declared_servers:
         try:
@@ -213,19 +177,14 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         log.error("could not prune retired mcp servers: %s", e)
 
-    # The toolsets live in the SAME config file, under `platform_toolsets.cli`
-    # — the key hermes' own CLI reads. Seed it only if the file does not have
-    # the key yet: HERMES_ACP_TOOLSETS (what the manifest used to drive
-    # directly) becomes a FIRST-BOOT seed instead of a per-build lookup, and
-    # from then on the file is authoritative — edit it, or run `hermes tools`.
-    # The built-in default includes terminal, so an empty env and an empty file
-    # still yield an agent that can run things.
+    # Seed new config files; AGENT_TOOLSETS also overrides existing files
+    # when each agent is built. Keep the old env as a first-boot fallback.
     try:
         from hermes_config import ensure_platform_toolsets
 
         seed = [
             t.strip()
-            for t in os.environ.get("HERMES_ACP_TOOLSETS", "").split(",")
+            for t in (os.environ.get("AGENT_TOOLSETS") or os.environ.get("HERMES_ACP_TOOLSETS", "")).split(",")
             if t.strip()
         ]
         ensure_platform_toolsets(hermes_cfg, seed or None)
@@ -316,7 +275,6 @@ def main() -> None:
     app = build_app(
         manager=manager,
         endpoints=endpoints,
-        profiles=profiles,
         static_dir=shipped,
         # Persistent documents and media staging. Completed images/videos
         # move to Autumn S3; their authenticated /artifacts URLs stay stable.

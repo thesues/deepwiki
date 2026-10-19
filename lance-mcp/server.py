@@ -4,9 +4,9 @@
     python server.py --db-path s3://lancedb/buda --s3-endpoint http://autumn-s3:9100 ...
     # MCP (JSON-RPC 2.0) at POST http://0.0.0.0:5102/mcp, health at GET /healthz
 
-A drop-in for the tools a hermes profile names: same tool names, arguments,
-result shapes and defaults (k=8, auto → hybrid when an embedder is set), so a
-profile can switch from `memory` to `lance` by changing its server and nothing
+A drop-in for the retrieval tools Hermes calls: same tool names, arguments,
+result shapes and defaults (k=8, auto → hybrid when an embedder is set), so an
+agent can switch from `memory` to `lance` by changing its server and nothing
 else. The graph_* tools are not carried over; nothing in buda calls them.
 
 What is different is where things come from. Searches are Lance queries
@@ -428,8 +428,7 @@ def tools_for(r: Retriever) -> list[dict]:
     file + line range (or file + page, read_page is the PDF variant).
     This conditional advertising is what lets ONE image serve the buda
     prose corpus, the mayi PDF+image corpus and the code-index corpus
-    without any profile seeing tools that would error on its corpus — and
-    without needing profile-awareness in the server at all.
+    while advertising only tools backed by the tables in each corpus.
     """
     names = table_names(r.db)
     tools: list[dict] = [*READ_TOOLS]

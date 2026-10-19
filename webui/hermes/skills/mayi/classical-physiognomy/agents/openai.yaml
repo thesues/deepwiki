@@ -1,0 +1,4 @@
+interface:
+  display_name: "麻衣与传统相术文献"
+  short_description: "检索麻衣、手面相与风水文献，结合原文和图谱给出有出处的解读"
+  default_prompt: "使用 $classical-physiognomy 检索《麻衣神相》中关于眉形的记载。"

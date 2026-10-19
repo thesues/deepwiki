@@ -1,0 +1,4 @@
+interface:
+  display_name: "老子与道教文献检索"
+  short_description: "检索老子通释与道教文献，读取原文并准确引用章节、页码和行号"
+  default_prompt: "使用 $tao-text-retrieval 解释《老子通释》中上善若水的含义。"

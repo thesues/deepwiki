@@ -1,4 +1,4 @@
-"""A profile-scoped tool that annotates user-owned images without a shell."""
+"""Annotate user-owned images without a shell."""
 
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ def create_annotation(
 
 
 def register_annotation_tool() -> None:
-    """Register only into the dedicated toolset granted to the mayi profile."""
+    """Register into the dedicated image annotation toolset."""
     from tools.registry import registry, tool_error
 
     if registry.get_entry("annotate_image") is not None:

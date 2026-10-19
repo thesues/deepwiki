@@ -17,7 +17,6 @@ from app_routes import build_app
 from http_shell import serve
 from turns import TurnManager, Refused
 from turn_stream import TurnStream
-from session_profiles import SessionProfiles
 import hermes_agent as ha
 import hermes_session_api as hs
 
@@ -49,10 +48,9 @@ def tenants(authority, tmp_path, monkeypatch):
         (directory / "file.txt").write_text(owner)
     (tmp_path / "artifacts" / "s-a" / "link.txt").symlink_to(tmp_path / "artifacts" / "s-b" / "file.txt")
     (tmp_path / "index.html").write_text("hello")
-    (tmp_path / "home.html").write_text("hello")
     app = build_app(manager=manager, endpoints=[ha.Endpoint("x", "X", "m", "http://model", max_concurrent=8)],
                     static_dir=tmp_path, index_html=tmp_path / "index.html", artifacts_dir=tmp_path / "artifacts",
-                    sessions=Sessions(), session_profiles=SessionProfiles(tmp_path / "profiles.json"),
+                    sessions=Sessions(),
                     authenticator=JWTAuthenticator(jwks_url, audience="deepwiki"))
     server = serve(app, "127.0.0.1", 0)
     base = f"http://127.0.0.1:{server.server_port}"

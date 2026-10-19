@@ -45,7 +45,6 @@ from hermes_agent import (
     history_for,
     run_turn,
 )
-from profiles import AgentProfile
 from turn_stream import EventSink, TurnStream
 
 log = logging.getLogger("deepwiki.turns")
@@ -86,7 +85,6 @@ class _SessionRoute:
     session_id: str
     endpoint: Endpoint
     user_id: str = ""
-    profile: AgentProfile | None = None
     aliases: set[str] = field(default_factory=set)
     pending: deque[dict] = field(default_factory=deque)
     pending_ids: set[str] = field(default_factory=set)
@@ -215,25 +213,6 @@ class TurnManager:
             s = self._live.get(session_id)
             return s if s is not None and s.running else None
 
-    def profile_of(self, session_id: str) -> str | None:
-        """The project whose agent is writing into `session_id`, or None.
-
-        The one answer about a conversation that needs no store and no side
-        table: the turn was admitted with a profile and still holds it. It
-        exists for the id compression rotates a live turn onto — that id has
-        no row yet and no pin under it, so every persisted answer about it is
-        "unknown", which the sidebar reads as the DEFAULT project. A general
-        conversation would appear in 佛典检索's sidebar for the rest of the
-        turn, and a send from there would be answered by buda's agent.
-
-        Not gated on `running`: a turn that just ended still answers for the
-        conversation it was writing until `forget_finished` drops it, and the
-        store row that replaces this appears in the same moment.
-        """
-        with self._lock:
-            stream = self._live.get(session_id)
-        return (getattr(stream, "profile_key", "") or None) if stream is not None else None
-
     def running(self, user_id: str = "") -> dict[str, str]:
         """session_id -> stream_id for every turn still going."""
         with self._lock:
@@ -341,7 +320,6 @@ class TurnManager:
         text: str,
         endpoint: Endpoint,
         user_id: str = "",
-        profile: AgentProfile | None = None,
         internal: bool = False,
         _completion_route: _SessionRoute | None = None,
     ) -> TurnStream:
@@ -381,12 +359,6 @@ class TurnManager:
             # Which endpoint this turn is on, so the per-endpoint count above can
             # be taken without reaching back into the agent.
             stream.endpoint_key = endpoint.key  # type: ignore[attr-defined]
-            # And which PROJECT is answering it. `_rotated` re-keys `_live`
-            # under the id compression moved the conversation to, and that id
-            # has neither a store row (hermes persists at the end of the turn)
-            # nor a pin (the pin was written under the id chat/start was given).
-            # Carried on the stream, the answer moves with the conversation.
-            stream.profile_key = profile.key if profile is not None else ""  # type: ignore[attr-defined]
             # `stream.finish()` precedes approval/session-context teardown.
             # Completion dispatch must wait for the latter too, otherwise it
             # can acquire and rebind the same cached agent while the old turn
@@ -396,11 +368,10 @@ class TurnManager:
             self._live[session_id] = stream
             route = _completion_route if internal else self._routes.get(session_id)
             if route is None:
-                route = _SessionRoute(session_id, endpoint, user_id, profile)
+                route = _SessionRoute(session_id, endpoint, user_id)
             route.session_id = session_id
             route.endpoint = endpoint
             route.user_id = user_id
-            route.profile = profile
             route.aliases.add(session_id)
             for alias in route.aliases:
                 self._routes[alias] = route
@@ -421,7 +392,7 @@ class TurnManager:
 
         self._turns.submit(
             f"turn-{stream.stream_id}", self._run_turn,
-            stream, session_id, text, endpoint, profile, user_id,
+            stream, session_id, text, endpoint, user_id,
             PROCESS_WAKEUP_SOURCE if internal else None,
         )
         return stream
@@ -618,13 +589,11 @@ class TurnManager:
 
     def _run_turn(
         self, stream: TurnStream, session_id: str, text: str,
-        endpoint: Endpoint, profile: AgentProfile | None = None, user_id: str = "",
+        endpoint: Endpoint, user_id: str = "",
         user_source: str | None = None,
     ) -> None:
         agent = None
         session_tokens = None
-        from profile_skills import enter, leave
-        skill_profile = enter(profile)
         try:
             # Advertise a real async-delivery route even in legacy/basic-auth
             # mode, where user_id is empty.  Hermes otherwise disables the
@@ -643,8 +612,8 @@ class TurnManager:
                 # module before this change, so preserve its fail-closed rule.
                 if user_id:
                     raise
-            agent = (self._pool.acquire(session_id, endpoint, profile, user_id=user_id)
-                     if user_id else self._pool.acquire(session_id, endpoint, profile))
+            agent = (self._pool.acquire(session_id, endpoint, user_id=user_id)
+                     if user_id else self._pool.acquire(session_id, endpoint))
             self._pool.note_running(stream.stream_id, agent)
             self._install_approval(stream)
             # After the approval key is pinned: it stays the id the hook was
@@ -667,16 +636,8 @@ class TurnManager:
                 raise ValueError("input image is not owned by this user")
 
             model_message = model_user_content(text)
-            # The profile's brief, on every turn, for the same reason
-            # CHAT_DIRECTIVE is: hermes replays the system prompt verbatim to
-            # keep the upstream prompt cache warm, so a constant string costs
-            # nothing, and a first-turn-only injection would be missing from
-            # any session whose first turn predates it. `directive` is None
-            # for a profile that declares none — run_turn then falls back to
-            # CHAT_DIRECTIVE exactly as before.
-            directive = profile.directive if profile is not None else None
             from hermes_agent import CHAT_DIRECTIVE, _artifacts_root
-            directive = (CHAT_DIRECTIVE if directive is None else directive) + (
+            directive = CHAT_DIRECTIVE + (
                 f"\nStore generated artifacts under {_artifacts_root() / session_id}/. "
                 f"Link to them as /artifacts/{session_id}/<filename>. "
                 "Files outside this session directory are not published to the user. "
@@ -698,7 +659,7 @@ class TurnManager:
                 user_source=user_source,
             )
             # Publishing is a turn lifecycle operation, independent of the
-            # profile/toolset and of whether anybody opened the media link.
+            # tool selection and of whether anybody opened the media link.
             # If S3 is unavailable, retain staging and report a failed turn;
             # the next turn or artifact_store.py can retry without overwriting.
             for artifact_session in dict.fromkeys((session_id, getattr(agent, "session_id", None))):
@@ -724,7 +685,6 @@ class TurnManager:
                 while len(self._last_error) > 200:
                     self._last_error.pop(next(iter(self._last_error)))
         finally:
-            leave(skill_profile)
             self._release_approval(stream)
             self._pool.clear_running(stream.stream_id)
             if session_tokens is not None:
@@ -840,7 +800,6 @@ class TurnManager:
                     text=text,
                     endpoint=route.endpoint,
                     user_id=route.user_id,
-                    profile=route.profile,
                     internal=True,
                     _completion_route=route,
                 )

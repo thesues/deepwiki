@@ -266,3 +266,9 @@ def test_resolution_never_returns_an_empty_list(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
     cfg = {"platform_toolsets": {"cli": []}}
     assert hc.resolve_toolsets(cfg) == hc.DEFAULT_TOOLSETS
+
+
+def test_explicit_toolsets_override_a_restricted_persistent_config(monkeypatch):
+    monkeypatch.setenv("AGENT_TOOLSETS", "file, terminal,skills,file,input-image")
+    cfg = {"platform_toolsets": {"cli": ["skills"]}}
+    assert hc.resolve_toolsets(cfg) == ["file", "terminal", "skills", "input-image"]

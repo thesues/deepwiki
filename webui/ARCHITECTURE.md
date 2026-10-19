@@ -84,46 +84,24 @@ with the session's history intact — hermes persists the transcript to the
 store, and each turn starts from what the store holds. A turn already running
 keeps the endpoint it started on.
 
-## Profiles: one project per agent
+## One general agent
 
-Where an endpoint says WHICH model answers, a profile says WHO the agent is —
-its brief (`directive`), its toolset list, its MCP subset, its workspace
-folder. deepwiki serves several projects from one process, deepwiki.com
-style: the homepage lists project cards and opening one starts a conversation
-whose agent carries that project's identity. Without profiles this is all
-global, and multi-project is contamination: the scripture agent sees the
-code-index tools and vice versa.
+The root page opens a shared chat interface. Every session uses `CHAT_DIRECTIVE`
+and all enabled MCP servers from Hermes config. Domain workflows are bundled
+skills: code, Buddhist texts, Taoist texts, physiognomy and media generation.
+`AGENT_TOOLSETS` overrides the built-in toolsets even on an existing PVC;
+MCP toolsets are appended from enabled server declarations.
 
-Declarations, in precedence order (`profiles.load_profiles`):
+Historical `sessions.source` values remain as provenance and do not select an
+agent. Retired single-segment trailing-slash entry URLs redirect to `/` while
+preserving query parameters, including the session ID. The API has no profile
+selector, and old clients' extra profile fields are ignored.
 
-1. `DEEPWIKI_PROFILES` (JSON list, same shape as the endpoints env) — the
-   override entry for a k8s ConfigMap;
-2. hermes' config.yaml, a `profiles:` section keyed by profile key — the same
-   file that owns the toolsets and MCP servers, so editing a project is a
-   config edit + restart;
-3. neither → one built-in default profile whose directive is `None`, which
-   makes run_turn fall back to `CHAT_DIRECTIVE` — the pre-profile behaviour,
-   byte for byte, so an un-migrated deploy boots unchanged.
-
-The scoping (`profiles.scope_agent_tools`) is two independent rules applied at
-`build_agent` time: a profile naming `mcp_servers` gets only those servers
-AND loses the excluded ones' `mcp-<name>` toolsets (a tool whose server was
-never connected reads as working and always fails); a profile naming
-`toolsets` replaces the platform list outright, with the MCP reconciliation
-re-run on top. The profile's `workspace` folder is registered as the
-session's terminal cwd via hermes' own per-task override — the same injection
-point its ACP adapter uses on `session/load` — so directory isolation is a
-mechanism, not a prompt request.
-
-The plumbing reuses the endpoint machinery everywhere: `/api/chat/start`
-takes a `profile` key and echoes the resolved one; a stale key falls back to
-the default profile; the agent cache signature carries the profile key, so
-switching projects rebuilds the agent exactly as switching endpoints does.
-`run_turn`'s system message is the profile's directive, every turn, for the
-same reason CHAT_DIRECTIVE was. One known gap, declared and inert:
-per-profile SKILLS have no hermes injection point yet (hermes reads one
-process-wide directory), so `AgentProfile.skills` is surfaced but not wired —
-see profiles.py.
+Agent instances are cached by session, endpoint and user. Tenant checks still
+control access to sessions and artifacts; shared-home `memory` and
+`session_search` tools remain unavailable for authenticated users, including
+after MCP refresh. Namespaced `mcp__memory__*` retrieval tools stay enabled.
+Terminals use each session's artifact directory as their working directory.
 
 ## Generated media storage
 
@@ -207,21 +185,19 @@ Three surfaces where the transcript's shape is this app's choice, not hermes':
 
 ## Toolsets and MCP
 
-Both are owned by ONE file: `HERMES_HOME/config.yaml` — the same file hermes'
-own CLI reads. (The approach is hermes-webui's: it resolves its sessions'
-toolsets from `platform_toolsets.cli` in that file via
-`hermes_cli.tools_config._get_platform_tools`, with a hardcoded fallback.
-buda does the same in `hermes_config.resolve_toolsets`.)
+MCP servers live in `HERMES_HOME/config.yaml`. Built-in toolsets are resolved
+by `hermes_config.resolve_toolsets` in this order:
 
-- `platform_toolsets.cli` — the toolset list. Resolution precedence: hermes'
-  own resolver (which honours `agent.disabled_toolsets` and expands composites)
-  → the raw list in the file → a built-in default that includes `terminal`,
-  because a session that cannot run anything is broken, not degraded. On first
-  boot only, `HERMES_ACP_TOOLSETS` seeds the key if the file lacks it; from
-  then on the file is authoritative — edit it, or run `hermes tools`. The seed
-  is load-bearing: without a `platform_toolsets.cli` entry, hermes' resolver
-  returns its FULL CLI composite (browser, tts, vision, delegation, …), which
-  is exactly the surface this UI narrows on purpose.
+- Explicit `AGENT_TOOLSETS` deployment override.
+- Hermes' `platform_toolsets.cli` resolver, including composite expansion and
+  disabled toolsets; if unavailable, the raw list in the config file.
+- Built-in defaults, including file, terminal, skills and image tools.
+
+On first boot, `AGENT_TOOLSETS` (or the legacy `HERMES_ACP_TOOLSETS` seed) supplies
+`platform_toolsets.cli` if absent. The explicit override also applies to older
+PVCs containing a restricted toolset list. All enabled MCP toolsets are added
+when building an agent regardless of the built-in list.
+
 - `mcp_servers.<name>.url` / `enabled` — the retrieval server. Written at
   startup from `MEMORY_MCP_URL` (`ensure_mcp_server`, tracks the env on every
   boot — deliberately unlike the toolset seed) and connected by

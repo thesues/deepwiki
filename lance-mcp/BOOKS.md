@@ -73,18 +73,16 @@ s3.put_object(Bucket="lancedb", Key=".tao-docs-v1-ready", Body=b"verified\n")
 5 MiB 分片等待约 241 秒后失败；最终改为上述 Job 路径。
 集群内 1 KiB PUT 实测约 12–23 ms，不能把该次转发故障解释为存储吞吐低。
 
-## 服务与 profile
+## 服务与 skill
 
 - `k8s/lance-mcp-tao.yaml`：独立 MCP 服务，端口 5105，数据库 `s3://lancedb/tao`。
   将 `IMAGE_LANCE_MCP` 替换为已验证的现有 Lance MCP 镜像即可部署。
   启动时检查 marker，不会重复导入。
-- `k8s/webui.yaml`：`MCP_SERVERS` 添加 `tao`，`DEEPWIKI_PROFILES` 配置
-  `key=tao`、`label=老子通释`。工具仅使用 `mcp-tao` 的文档检索与正文读取，
-  不加载其他 profile 的 skills。没有 Python 中的 profile 特例。
-- 更新现有集群时只合并新 MCP 地址与 profile，保留其他在线配置。
+- `k8s/webui.yaml`：`MCP_SERVERS` 配置 `tao`，通用 agent 可使用所有已启用的 MCP。
+- `tao-text-retrieval` skill 提供老子及道教文献的检索、正文核对和引用规则。
 
 初始目录实际为 `~/Downloads/tao`，包含《老子通释》《坐忘论》
 《〈太平经〉正读》和《当代哲学经典丛书（套装共7册）》四个文件。
-最后一项一并导入，但 profile 要求明确区分现代哲学观点和道教经典。
+最后一项一并导入，但 skill 要求明确区分现代哲学观点和道教经典。
 原文件另存于 `s3://docs/tao/source/`，转换正文与 manifest 存于
 `s3://docs/tao/text/`，均通过匿名 boto3 `put_object` 写入。
