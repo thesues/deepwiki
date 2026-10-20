@@ -18,7 +18,7 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
 <div class="shell">
   <header>
     <!-- One conversation list, one new-conversation action. -->
-    <button id="sessions-toggle" class="sessions-toggle" type="button" title="收起会话列表" aria-label="收起会话列表" aria-expanded="true">
+    <button id="sessions-toggle" class="sessions-toggle" type="button" title="收起会话列表" aria-label="收起会话列表" aria-controls="session-panel" aria-expanded="true">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM9 5.5v13M12.5 10l-2 2 2 2"/></svg>
     </button>
     <span class="agent-name">通用助手</span>
@@ -38,7 +38,7 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
   </header>
 
   <div class="grid">
-    <section class="card sessions">
+    <section id="session-panel" class="card sessions">
       <div class="card-head"><span class="dot"></span>会话<span class="count" id="sess-count"></span></div>
       <ul id="sessions"></ul>
     </section>

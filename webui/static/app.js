@@ -53,7 +53,15 @@ function saveIdentityScope(scope) {
 }
 
 function sessionsCollapsed() {
-  try { return localStorage.getItem(LS_SESSIONS_COLLAPSED) === "1"; } catch (_) { return false; }
+  try {
+    const saved = localStorage.getItem(LS_SESSIONS_COLLAPSED);
+    if (saved !== null) return saved === "1";
+  } catch (_) {}
+  return compactLayout();
+}
+
+function compactLayout() {
+  return !!globalThis.matchMedia?.("(max-width:820px)").matches;
 }
 
 function setSessionsCollapsed(collapsed) {
@@ -66,6 +74,13 @@ function setSessionsCollapsed(collapsed) {
     button.setAttribute("aria-label", button.title);
   }
   try { localStorage.setItem(LS_SESSIONS_COLLAPSED, collapsed ? "1" : "0"); } catch (_) {}
+}
+
+// Navigation must work while session requests are pending, and without storage.
+setSessionsCollapsed(sessionsCollapsed());
+const sessionsToggle = $("#sessions-toggle");
+if (sessionsToggle) {
+  sessionsToggle.onclick = () => setSessionsCollapsed(!$(".grid").classList.contains("sessions-collapsed"));
 }
 
 // Keyed by session + the group's index in the transcript, which is stable for a
@@ -1630,7 +1645,10 @@ function renderSessions() {
       : [fmtWhen(s.lastActive), s.messageCount != null ? `${s.messageCount} 条` : ""]
           .filter(Boolean).join(" · ") || "";
     li.append(el("div", "t", s.title || "(未命名)"), el("div", "p", sub));
-    li.onclick = () => openSession(s.id);
+    li.onclick = () => {
+      if (compactLayout()) setSessionsCollapsed(true);
+      openSession(s.id);
+    };
     const del = el("button", "del", "×");
     del.title = "删除会话";
     del.onclick = (e) => { e.stopPropagation(); removeSession(s); };
@@ -2091,6 +2109,7 @@ async function removeSession(s) {
 }
 
 async function newSession() {
+  if (compactLayout()) setSessionsCollapsed(true);
   // Purely local, and deliberately creates nothing. A session made on a click
   // is a session most readers never write into, and the store filled up with
   // titleless zero-message rows exactly that way. The intent is recorded and
@@ -2310,11 +2329,6 @@ async function boot() {
   // One new-conversation control, also available with Cmd/Ctrl+K.
   const nsBtn = $("#new-session");
   if (nsBtn) nsBtn.onclick = () => { newSession(); };
-  const sessionsBtn = $("#sessions-toggle");
-  if (sessionsBtn) {
-    setSessionsCollapsed(sessionsCollapsed());
-    sessionsBtn.onclick = () => setSessionsCollapsed(!sessionsCollapsed());
-  }
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();

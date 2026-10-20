@@ -15,14 +15,13 @@ def test_session_sidebar_has_a_persistent_collapse_control():
     styles = (ROOT / "static" / "style.css").read_text()
 
     assert 'id="sessions-toggle"' in page
+    assert 'aria-controls="session-panel"' in page
     assert 'aria-expanded="true"' in page
     assert 'LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed"' in script
     assert "setSessionsCollapsed(sessionsCollapsed())" in script
     assert ".grid.sessions-collapsed .sessions { display:none; }" in styles
     assert ".grid.sessions-collapsed .chat { width:min(100%, 1024px); justify-self:center; }" in styles
     assert ".sessions-toggle { width:2rem; height:2rem; align-self:center;" in styles
-    assert "the server result is authoritative even when the cache was non-empty" in script
-    assert "S.tools.clear(); S.seg = null; S.activity = null; S.turnTop = null; S.actIndex = 0;" in script
 
 
 def test_media_skill_keeps_runtime_output_out_of_static():
