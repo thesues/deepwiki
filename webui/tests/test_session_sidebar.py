@@ -20,7 +20,9 @@ def test_session_sidebar_has_a_persistent_collapse_control():
     assert 'LS_SESSIONS_COLLAPSED = "hermes.sessionsCollapsed"' in script
     assert "setSessionsCollapsed(sessionsCollapsed())" in script
     assert ".grid.sessions-collapsed .sessions { display:none; }" in styles
-    assert ".grid.sessions-collapsed .chat { width:min(100%, 1024px); justify-self:center; }" in styles
+    assert ".chat { min-width:0; width:100%; }" in styles
+    assert "grid-template-columns:260px minmax(0,1fr)" in styles
+    assert "--conversation-width:960px" in styles
     assert ".sessions-toggle { width:2rem; height:2rem; align-self:center;" in styles
 
 

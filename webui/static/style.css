@@ -67,6 +67,7 @@
   --accent:#c5a05e; --accent-dim:#8a7040;
   --success:#6fae7f; --danger:#cf8f8f;
   --radius:6px;
+  --conversation-width:960px;
   --mono:'DM Mono','SF Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
   --serif:'Instrument Serif',Georgia,'Songti SC','Source Han Serif SC',serif;
   /* Split typography, per upstream's design guide: assistant prose reads in a
@@ -123,7 +124,7 @@ html { font-size:16px; }
 body {
   background:var(--bg); color:var(--text);
   font-family:var(--sans); font-weight:400;
-  height:100vh; overflow:hidden;
+  height:100vh; height:100dvh; overflow:hidden;
 }
 body { position:relative; }
 /* The Yuan-dynasty mural background, its scrim and the grain layer were
@@ -132,12 +133,13 @@ body { position:relative; }
    one of them, and every layer that sat between the two cost contrast
    budget elsewhere. */
 
-.shell { max-width:1240px; margin:0 auto; padding:1.6rem 1.6rem 1.2rem;
-         height:100vh; display:flex; flex-direction:column; }
+/* The app uses the viewport; only prose/composer have a reading-width cap. */
+.shell { width:100%; margin:0; padding:0.75rem 1rem;
+         height:100vh; height:100dvh; display:flex; flex-direction:column; }
 
 /* ---------- header ---------- */
 header { display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap;
-         padding-bottom:1rem; border-bottom:1px solid var(--border); margin-bottom:1.1rem; }
+         padding-bottom:0.6rem; border-bottom:1px solid var(--border); margin-bottom:0.65rem; }
 header h1 { font-family:var(--serif); font-weight:400; font-size:2.1rem; letter-spacing:-0.02em; }
 header h1 em { color:var(--accent); font-style:italic; }
 .spacer { flex:1; }
@@ -147,7 +149,8 @@ header h1 em { color:var(--accent); font-style:italic; }
    on the left, the model on the right — sits underneath in small quiet mono,
    out of the way of the text. */
 #composer { display:flex; flex-direction:column; gap:0.35rem; flex:none;
-            padding:0.8rem 1rem 1rem; border-top:1px solid var(--border); }
+            width:min(100%, calc(var(--conversation-width) + 2rem)); align-self:center;
+            padding:0.65rem 1rem 0.75rem; border-top:1px solid var(--border); }
 .compose-box { display:flex; flex-direction:column; gap:0.45rem;
                background:var(--bg); border:1px solid var(--border);
                border-radius:12px; padding:0.65rem 0.7rem;
@@ -208,18 +211,20 @@ header h1 em { color:var(--accent); font-style:italic; }
 .btn.stop { background:color-mix(in srgb, var(--danger) 10%, transparent); border-color:var(--danger); color:var(--danger); }
 
 /* ---------- layout ---------- */
-.grid { display:grid; grid-template-columns:minmax(230px,1fr) minmax(420px,3fr);
-        gap:1.2rem; align-items:stretch; flex:1; min-height:0; }
+.grid { display:grid; grid-template-columns:260px minmax(0,1fr);
+        gap:0.75rem; align-items:stretch; flex:1; min-height:0; }
 .grid.sessions-collapsed { grid-template-columns:minmax(0,1fr); }
 .grid.sessions-collapsed .sessions { display:none; }
-/* Releasing the sidebar should make a transcript roomier, not turn a reading
-   column and composer into an edge-to-edge terminal. 1024px is deliberately
-   wider than the normal three-quarter chat pane, while keeping prose and the
-   input within one comfortable visual field on an ultrawide display. */
-.grid.sessions-collapsed .chat { width:min(100%, 1024px); justify-self:center; }
+/* Sidebar collapse releases the panel; shared content limits stay inside it. */
+.chat { min-width:0; width:100%; }
 @media (max-width:820px) {
+  .shell { padding:0.5rem; }
+  .shell > header { gap:0.5rem; padding-bottom:0.4rem; margin-bottom:0.5rem; }
+  .shell > header .btn { padding:0.4rem 0.65rem; }
   .grid { grid-template-columns:minmax(0,1fr); }
   .grid:not(.sessions-collapsed) .chat { display:none; }
+  .shell #messages { padding:0.75rem 0.65rem 0.4rem; }
+  .shell #composer { padding:0.5rem 0.65rem; }
 }
 
 /* The session list is a useful navigator, not a permanent claim on reading
@@ -298,12 +303,9 @@ header h1 em { color:var(--accent); font-style:italic; }
                         color:var(--text-dim); background:transparent; border:1px solid var(--border);
                         border-radius:var(--radius); cursor:pointer; }
 .history-page-control[hidden] { display:none; }
-/* 760px put 51 Chinese characters on a line (15px text, measured on a
-   sutra answer). Comfortable is 30-40: past that the eye loses its place on
-   the return sweep, which is exactly what long quoted passages felt like.
-   620px lands at ~40. Code keeps its own scroll rather than widening the
-   column — a monospace line still gets ~78 characters here. */
-.msg { max-width:620px; margin:0 auto 0.9rem; }
+/* One column for prose, code, formulas and the composer; wide screens no
+   longer spend most of the chat panel on a nested 620px strip. */
+.msg { max-width:var(--conversation-width); margin:0 auto 0.9rem; }
 .bubble { font-size:0.92rem; line-height:1.75; overflow-wrap:anywhere; }
 
 .msg.user .bubble { background:var(--surface-raised); border:1px solid var(--border);
@@ -430,8 +432,8 @@ header h1 em { color:var(--accent); font-style:italic; }
               margin:0.2rem 0 0.4rem; padding:0.4rem 0.55rem; background:var(--bg);
               border:1px solid var(--border); border-radius:4px; }
 
-/* Assistant prose in serif; user text and controls stay sans. */
-.msg.bot .bubble.md { font-family:var(--prose); font-size:0.94rem; line-height:1.9;
+/* System prose face, with enough leading for mixed Chinese and math. */
+.msg.bot .bubble.md { font-family:var(--prose); font-size:0.94rem; line-height:1.75;
                       font-weight:400; }
 .md code, .md pre { font-family:var(--mono); }
 .msg.user .bubble { font-family:var(--sans); }
@@ -610,7 +612,7 @@ html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-ligh
 .chat.fresh #messages { flex:0 0 auto; margin-top:auto; overflow:visible;
                         padding-bottom:0; }
 .chat.fresh #composer { margin-bottom:auto; border-top:0; padding:0 1rem 0;
-                        max-width:640px; width:100%; align-self:center; }
+                        max-width:calc(var(--conversation-width) + 2rem); width:100%; align-self:center; }
 .chat.fresh .compose-box { background:var(--surface-raised); border-radius:14px;
                            padding:0.75rem 0.85rem; }
 .chat.fresh #input { padding:0.2rem 0.25rem; font-size:0.9rem;
