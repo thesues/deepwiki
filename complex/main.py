@@ -39,7 +39,7 @@ def main():
     from app_routes import build_app
     from turns import TurnManager,Refused
     from hermes_cli import kanban_db as kb
-    from .swarm import ResearchSwarm
+    from .swarm import ResearchSwarm, MODES
     from . import coordinator
     raw=os.environ.get('COMPLEX_ENDPOINTS','').strip()
     if not raw:
@@ -111,12 +111,12 @@ def main():
     from hermes_agent import _artifacts_root
     artifacts=_artifacts_root();artifacts.mkdir(parents=True,exist_ok=True)
     def chat_context(req,body,session_id):
-        context=body.get('context') or {}
-        if not isinstance(context,dict):raise ValueError('invalid page context')
+        context=body.get('context')
+        if not isinstance(context,dict):raise ValueError('页面执行方式未加载，请刷新页面后重新发送')
         mode=context.get('researchMode')
-        if mode is not None:
-            if session_id in manager.running(req.user_id):raise ValueError('wait for the current reply before changing mode')
-            runtime.set_session_mode(req.user_id or ('local' if local else 'basic:'+auth_user),session_id,mode)
+        if not isinstance(mode,str) or mode not in MODES:raise ValueError('页面执行方式无效，请重新选择后发送')
+        if session_id in manager.running(req.user_id):raise ValueError('wait for the current reply before changing mode')
+        runtime.set_session_mode(req.user_id or ('local' if local else 'basic:'+auth_user),session_id,mode)
     introduction=HERE.parent/'general'/'skills-introduction.html'
     app=build_app(welcome_html=introduction,manager=manager,endpoints=models,static_dir=SHARED/'static',index_html=SHARED/'static'/'index.html',
                   artifacts_dir=artifacts,authenticator=authenticator,auth_user=auth_user,auth_pass=auth_pass,

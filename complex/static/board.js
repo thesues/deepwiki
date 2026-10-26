@@ -8,7 +8,7 @@
   const state=s=>states[s]||s;
   const modeLabels={single:'单体执行',kanban:'团队协作',swarm:'独立群研'};
   let selected=null,timer=null,generation=0,roots=[],renderKey='';
-  let chatSession='',identity=null,mode='single',modeLocked=false,modeGeneration=0,savingMode=false,loadingMode=false;
+  let chatSession='',identity=null,draftGeneration=null,mode='single',modeLocked=false,modeGeneration=0,savingMode=false,loadingMode=false;
   const targetSession=()=>chatSession;
   const modeSelect=n('research-mode-select');
 
@@ -45,7 +45,12 @@
       if(current===modeGeneration){const wasLoading=loadingMode;mode=value.mode;modeLocked=!!value.locked;loadingMode=false;paintMode();if(wasLoading&&!n('research-board').hidden)refresh();}
     }catch(error){if(current===modeGeneration)setStatus(error.message,'error');}
   }
-  window.webuiChatContext=()=>{if(loadingMode||savingMode)throw new Error('执行方式仍在加载或保存');return {researchMode:mode};};
+  window.webuiChatContext=()=>{
+    if(S.identityScope===null)throw new Error('正在确认登录身份，请稍候再发送');
+    if(loadingMode||savingMode)throw new Error('执行方式仍在加载或保存');
+    if(modeSelect.value!==mode)throw new Error('执行方式不同步，请重新选择后发送');
+    return {researchMode:mode};
+  };
   async function chooseMode(next){
     if(modeLocked||savingMode||loadingMode||S.owns||S.switching||next===mode){paintMode();return;}
     const before=mode,sid=chatSession,current=++modeGeneration;mode=next;savingMode=true;paintMode();
@@ -61,10 +66,13 @@
     n('board-session-title').title=title||'跟随当前聊天会话';
   }
   async function syncSession(){
-    const sid=S.pendingNew?'':S.sessionId||'',scope=S.identityScope||'';
-    if(sid===chatSession&&scope===identity){paintSession();paintMode();loadMode();return;}
+    const sid=S.pendingNew?'':S.sessionId||'',scope=S.identityScope;
+    if(sid===chatSession&&scope===identity&&(sid||draftGeneration===S.viewGen)){paintSession();paintMode();loadMode();return;}
+    // First identity resolution belongs to the same unsent draft, not a new user/view.
+    // A real identity change or explicit new-session click still resets the mode.
+    const keepDraft=identity===null&&scope!==null&&!sid&&!chatSession&&draftGeneration===S.viewGen;
     if(scope!==identity)roots=[];
-    chatSession=sid;identity=scope;selected=null;mode='single';modeLocked=false;savingMode=false;loadingMode=!!sid;
+    chatSession=sid;identity=scope;draftGeneration=S.viewGen;selected=null;mode=keepDraft?mode:'single';modeLocked=false;savingMode=false;loadingMode=!!sid;
     n('board-toggle').textContent='Agent 看板';n('board-updated').textContent='';setStatus('');
     ++modeGeneration;++generation;clearTimeout(timer);clearDetail();n('swarm-list').replaceChildren();paintSession();paintMode();
     refresh();loadMode();

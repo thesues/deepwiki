@@ -2144,6 +2144,7 @@ async function newSession() {
   setBusy(false);    // the new view owns nothing — same as openSession on an idle
                      // conversation. The other turn's feed stays in S.ess.
   status(S.blockedElsewhere ? "另一个会话仍在回复中" : "就绪");
+  renderSessions();   // Announce the new draft immediately, before the async list reply.
   loadSessions();
 }
 
@@ -2177,6 +2178,10 @@ async function send() {
   }
   if (S.owns) return;   // this conversation is already replying
   if (S.switching) { status("正在切换会话，稍候"); return; }
+  // Validate and capture page context before consuming the draft or drawing an echo.
+  let requestContext;
+  try { requestContext = globalThis.webuiChatContext?.(); }
+  catch (error) { status(error.message || "执行方式尚未就绪"); return; }
   input.value = ""; input.style.height = "auto";
   addMsg("user", text);
   S.seg = null;
@@ -2201,7 +2206,7 @@ async function send() {
         // so the switch is a rebuild against the new one, history intact.
         endpoint: S.endpoint || undefined,
         // Optional page-owned context; the shared UI knows no product modes.
-        context: globalThis.webuiChatContext?.(),
+        context: requestContext,
       }),
     })).json();
   } catch (_) {
@@ -2236,11 +2241,11 @@ async function send() {
     return;
   }
   if (j.error) {
-    // Two ways a send can be refused, and neither may eat what was typed:
-    // `busy` is the server at capacity (the composer should already have been
-    // blocked, so this is the race backstop), `taken` is someone else already
-    // replying in this conversation.
-    if (j.busy || j.taken || j.user_busy) { input.value = draftText; dropLastUser(); }
+    // Any refusal (including invalid/missing page context) must retain the draft
+    // and remove the optimistic echo of a message the backend never accepted.
+    if (!input.value) input.value = draftText;
+    dropLastUser();
+    S.skipUserEcho = false;
     status(j.error);
     if (j.taken) loadSessions();   // the sidebar did not know it was streaming
     return;

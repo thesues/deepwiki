@@ -19,6 +19,11 @@ The first direct reply locks single mode; creation of execution tasks locks
 Kanban/Swarm. The selector becomes a read-only “已固定” badge and the backend
 rejects changes. A different mode requires a new session; cancellation does not
 unlock it. Existing research sessions retain their original role and mode.
+An unsent draft's selection survives the first asynchronous identity/session-list
+response; an actual identity change or new-session click resets it. Sending waits
+for identity/mode readiness and captures that mode before consuming the draft.
+The unified chat API requires an explicit valid `context.researchMode`; missing
+or invalid context is rejected, never silently downgraded to single execution.
 
 - **Single / 单体执行**: the ordinary Hermes Agent directly answers, codes and
   uses configured tools/MCP/domain skills. No planning card, Worker or Kanban
