@@ -1,0 +1,29 @@
+<aside id="research-board" class="card research-board" hidden aria-labelledby="board-title">
+  <div class="board-header">
+    <div class="board-heading">
+      <h2 id="board-title">Agent 看板</h2>
+      <p id="board-session-title">当前会话的 Agent</p>
+    </div>
+    <div class="board-header-actions">
+      <button id="board-refresh" class="board-icon" type="button" title="刷新看板" aria-label="刷新看板">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.7-1L20 9M4 15l2.2 3A7 7 0 0 0 17.9 17"/></svg>
+      </button>
+      <button id="board-close" class="board-icon" type="button" title="关闭看板" aria-label="关闭看板">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="board-body">
+    <div id="board-status" class="board-status" role="status" hidden></div>
+    <section id="board-overview" class="board-overview" aria-label="当前视图的执行概览" hidden></section>
+    <nav id="swarm-list" class="board-group-nav" aria-label="筛选任务组"></nav>
+    <section id="swarm-detail"></section>
+  </div>
+  <div class="board-footer">
+    <details class="board-guide">
+      <summary>看板说明</summary>
+      <p>团队协作按任务依赖推进；独立群研同题探索，多次提交阶段成果并互相验证。这里仅展示原生执行记录和公开材料，不展示私有推理。切换会话不停止 Agent，同行报告也不等于形式验证。</p>
+    </details>
+    <span id="board-updated"></span>
+  </div>
+</aside>

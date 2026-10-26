@@ -1,4 +1,10 @@
 "use strict";
+// Welcome copy is supplied by the page, not a product-mode branch.
+const welcome = {
+  title: document.body.dataset.welcomeTitle || "新的对话",
+  subtitle: document.body.dataset.welcomeSubtitle || "说说你想了解什么，或想完成什么",
+  placeholder: document.body.dataset.welcomePlaceholder || "问点什么…",
+};
 // One authentication response policy for fetch and EventSource recovery probes.
 async function authFetch(...args) {
   const response = await fetch(...args);
@@ -809,9 +815,12 @@ function showFresh() {
   m.textContent = "";
   const hero = el("div", "fresh-hero");
   hero.append(
-    el("div", "fresh-title", "新的对话"),
-    el("div", "fresh-sub", "还没有任何上下文 — 问点什么开始吧"),
+    el("div", "fresh-title", welcome.title),
+    el("div", "fresh-sub", welcome.subtitle),
   );
+  const introduction = $("#welcome-introduction");
+  if (introduction?.content) hero.appendChild(introduction.content.cloneNode(true));
+  $(".chat").classList.toggle("has-capabilities", !!introduction?.content);
   m.appendChild(hero);
   $(".chat").classList.add("fresh");
   // The standing placeholder is a keyboard reference — right above a
@@ -819,7 +828,7 @@ function showFresh() {
   // it reads as instructions rather than an invitation.
   const inp = $("#input");
   if (!inp.dataset.placeholder) inp.dataset.placeholder = inp.placeholder;
-  inp.placeholder = "问点什么…";
+  inp.placeholder = welcome.placeholder;
 }
 
 function clearFresh() {
@@ -1655,6 +1664,9 @@ function renderSessions() {
     li.appendChild(del);
     ul.appendChild(li);
   });
+  document.dispatchEvent(new CustomEvent('webui:session-change', {
+    detail: { sessionId: S.pendingNew ? '' : (S.sessionId || ''), identityScope: S.identityScope },
+  }));
 }
 
 function fmtWhen(ts) {
@@ -2188,6 +2200,8 @@ async function send() {
         // between turns — the agent cache keys on (model, base_url, provider),
         // so the switch is a rebuild against the new one, history intact.
         endpoint: S.endpoint || undefined,
+        // Optional page-owned context; the shared UI knows no product modes.
+        context: globalThis.webuiChatContext?.(),
       }),
     })).json();
   } catch (_) {
@@ -2395,7 +2409,8 @@ async function boot() {
   const input = $("#input");
   const autosize = () => {
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+    const maxHeight = parseFloat(getComputedStyle(input).maxHeight);
+    input.style.height = `${Math.min(input.scrollHeight, maxHeight || Infinity)}px`;
   };
   input.addEventListener("input", autosize);
   const mediaInput = $("#media-input");

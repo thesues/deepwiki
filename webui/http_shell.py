@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import ipaddress
 import json
 import re
 import logging
@@ -303,6 +304,7 @@ class App:
         if authenticator is not None and (auth_user or auth_pass):
             raise ValueError("JWT and Basic Auth cannot be combined")
         self.authenticator = authenticator
+        self.local_identity = False  # explicit startup mode, validated by serve()
         self.artifact_authorizer = None
         # Poster creation is rare and ffmpeg is expensive. One process-wide
         # lock is simpler than a lock table that itself needs eviction; unique
@@ -691,7 +693,23 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if principal is not None and self.command not in ("GET", "HEAD", "OPTIONS"):
+        if self.app.local_identity:
+            # Local task ownership is not authentication. Accept only the actual
+            # loopback listener/client/Host, never a proxy identity header.
+            try:
+                peer_local = ipaddress.ip_address(self.client_address[0]).is_loopback
+                host_name = urlparse("//" + self.headers.get("Host", "")).hostname
+                host_local = host_name == "localhost" or ipaddress.ip_address(host_name or "").is_loopback
+            except ValueError:
+                peer_local = host_local = False
+            if not peer_local or not host_local:
+                self.close_connection = True
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        if (principal is not None or self.app.local_identity) and self.command not in ("GET", "HEAD", "OPTIONS"):
             origin = self.headers.get("Origin")
             foreign_origin = origin and (
                 urlparse(origin).netloc.lower() != self.headers.get("Host", "").lower()
@@ -778,6 +796,15 @@ class Server(ThreadingHTTPServer):
 
 
 def serve(app: App, host: str, port: int) -> Server:
+    if app.local_identity:
+        if app.authenticator is not None or app.auth_user or app.auth_pass:
+            raise ValueError("local identity cannot bypass configured auth")
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            raise ValueError("local identity requires an explicit loopback listener")
     handler = type("BoundHandler", (_Handler,), {"app": app})
     srv = Server((host, port), handler)
     threading.Thread(target=srv.serve_forever, name="http", daemon=True).start()

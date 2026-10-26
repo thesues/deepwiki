@@ -63,8 +63,12 @@ def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 
 
-# Endpoint env: DEEPWIKI_ENDPOINTS (the repo was renamed from buda; the old
-# BUDA_ENDPOINTS is still read so an un-rolled-out manifest keeps working).
+def data_home() -> Path:
+    """Shared WebUI persistence, independent of an Agent's configured home."""
+    return Path(os.environ.get("WEBUI_DATA_HOME") or hermes_home())
+
+
+# Endpoint env: WEBUI_ENDPOINTS, with the deployed DEEPWIKI spelling retained.
 def _env_first(*names: str) -> str:
     for n in names:
         v = os.environ.get(n, "")
@@ -75,7 +79,7 @@ def _env_first(*names: str) -> str:
 
 def load_endpoints_env() -> str:
     """The endpoint env, new name first."""
-    return _env_first("DEEPWIKI_ENDPOINTS", "BUDA_ENDPOINTS")
+    return _env_first("WEBUI_ENDPOINTS", "DEEPWIKI_ENDPOINTS")
 
 
 # How many built agents to keep. Each one pins a full transcript, so this is the
@@ -83,7 +87,7 @@ def load_endpoints_env() -> str:
 # with a note that fifty large sessions can hold more than a gigabyte. Sessions
 # are unbounded (they live in state.db); agents are not.
 AGENT_CACHE_MAX = max(1, int(
-    os.environ.get("DEEPWIKI_AGENT_CACHE_MAX", os.environ.get("BUDA_AGENT_CACHE_MAX", "25"))
+    os.environ.get("WEBUI_AGENT_CACHE_MAX", os.environ.get("DEEPWIKI_AGENT_CACHE_MAX", "25"))
 ))
 
 # How many tool-calling rounds one turn may take before hermes stops it. Its
@@ -115,7 +119,7 @@ class _Db:
                 if cls._db is None:
                     from hermes_state import SessionDB
 
-                    cls._db = SessionDB(db_path=hermes_home() / "state.db")
+                    cls._db = SessionDB(db_path=data_home() / "state.db")
         return cls._db
 
 
@@ -316,13 +320,15 @@ def register_workspace_cwd(session_id: str, workspace: str) -> bool:
 
 
 def _artifacts_root() -> Path:
-    """`HERMES_HOME/artifacts`, the one directory the web UI serves."""
-    return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
+    """The one shared directory served by all WebUI execution modes."""
+    return Path(os.environ.get("WEBUI_DATA_HOME") or os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
 
 
 def _image_cache_root() -> Path:
     """Hermes Gateway's shared cache for MCP MEDIA:image tool results."""
-    return Path(os.environ.get("HERMES_HOME", "/opt/data")) / "cache" / "images"
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "images"
 
 
 def _register_input_image_tool() -> None:
@@ -528,8 +534,10 @@ def build_agent(
     session_id: str,
     ep: Endpoint,
     user_id: str = "",
+    *,
+    toolsets_override: list[str] | None = None,
 ) -> Any:
-    """Build the shared agent with every enabled MCP server and user-scoped state."""
+    """Build Hermes with configured tools/MCP and user-scoped state."""
     from run_agent import AIAgent
 
     mcp_servers = []
@@ -548,7 +556,7 @@ def build_agent(
 
     from hermes_config import resolve_toolsets
 
-    toolsets = list(resolve_toolsets(cfg))
+    toolsets = list(resolve_toolsets(cfg) if toolsets_override is None else toolsets_override)
     for name in mcp_servers:
         t = f"mcp-{name}"
         if t not in toolsets:
@@ -727,7 +735,8 @@ class AgentPool:
       and removed when it ends; it holds no agent of its own.
     """
 
-    def __init__(self, max_size: int = AGENT_CACHE_MAX) -> None:
+    def __init__(self, max_size: int = AGENT_CACHE_MAX, *, builder: Callable | None = None) -> None:
+        self._build_agent = builder
         self._cache: OrderedDict[str, tuple[Any, tuple]] = OrderedDict()
         self._running: dict[str, Any] = {}
         self._lock = threading.Lock()
@@ -735,7 +744,7 @@ class AgentPool:
 
     def acquire(self, session_id: str, ep: Endpoint,
                 user_id: str = "") -> Any:
-        """Reuse a session's agent while its endpoint and owner are unchanged."""
+        """Reuse only while the configured endpoint and owner match."""
         sig = (*ep.signature(), user_id)
         with self._lock:
             hit = self._cache.get(session_id)
@@ -749,10 +758,8 @@ class AgentPool:
             # the same 1.3 s the cache exists to avoid paying twice, not a new
             # cost.
             self._cache.pop(session_id, None)
-        if user_id:
-            agent = build_agent(session_id, ep, user_id=user_id)
-        else:
-            agent = build_agent(session_id, ep)
+        kwargs = {"user_id": user_id} if user_id else {}
+        agent = (self._build_agent or build_agent)(session_id, ep, **kwargs)
         with self._lock:
             self._cache[session_id] = (agent, sig)
             self._cache.move_to_end(session_id)

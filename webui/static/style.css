@@ -2,7 +2,7 @@
    near-black ground, monospace body, serif display with a gold accent, and
    small-caps card headers. Keeping one look across the tools that talk to one
    cluster is the point. The mural background, its scrim and the grain layer
-   were removed with the buda→deepwiki repositioning: a plain ground reads
+   were removed with the plain chat layout: a plain ground reads
    cleaner under several projects' cards than a painting tied to one of them. */
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -67,7 +67,7 @@
   --accent:#c5a05e; --accent-dim:#8a7040;
   --success:#6fae7f; --danger:#cf8f8f;
   --radius:6px;
-  --conversation-width:960px;
+  --conversation-width:672px;
   --mono:'DM Mono','SF Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
   --serif:'Instrument Serif',Georgia,'Songti SC','Source Han Serif SC',serif;
   /* Split typography, per upstream's design guide: assistant prose reads in a
@@ -128,18 +128,18 @@ body {
 }
 body { position:relative; }
 /* The Yuan-dynasty mural background, its scrim and the grain layer were
-   removed with the buda→deepwiki repositioning (§4 of PLAN.md): a plain
+   removed with the plain chat layout (§4 of PLAN.md): a plain
    ground reads cleaner under several projects' cards than a painting tied to
    one of them, and every layer that sat between the two cost contrast
    budget elsewhere. */
 
-/* The app uses the viewport; only prose/composer have a reading-width cap. */
-.shell { width:100%; margin:0; padding:0.75rem 1rem;
+/* Give the desktop frame breathing room as well as limiting reading width. */
+.shell { width:100%; max-width:1440px; margin:0 auto; padding:0.4rem clamp(1rem, 3vw, 3rem);
          height:100vh; height:100dvh; display:flex; flex-direction:column; }
 
 /* ---------- header ---------- */
-header { display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap;
-         padding-bottom:0.6rem; border-bottom:1px solid var(--border); margin-bottom:0.65rem; }
+.shell > header { display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;
+                  padding-bottom:0.25rem; border-bottom:0; margin-bottom:0.25rem; }
 header h1 { font-family:var(--serif); font-weight:400; font-size:2.1rem; letter-spacing:-0.02em; }
 header h1 em { color:var(--accent); font-style:italic; }
 .spacer { flex:1; }
@@ -148,23 +148,22 @@ header h1 em { color:var(--accent); font-style:italic; }
 /* deepwiki/Devin style: the composer is the box; what steers it — the project
    on the left, the model on the right — sits underneath in small quiet mono,
    out of the way of the text. */
-#composer { display:flex; flex-direction:column; gap:0.35rem; flex:none;
+#composer { display:flex; flex-direction:column; gap:0.2rem; flex:none;
             width:min(100%, calc(var(--conversation-width) + 2rem)); align-self:center;
-            padding:0.65rem 1rem 0.75rem; border-top:1px solid var(--border); }
-.compose-box { display:flex; flex-direction:column; gap:0.45rem;
-               background:var(--bg); border:1px solid var(--border);
-               border-radius:12px; padding:0.65rem 0.7rem;
+            padding:0.35rem 1rem 0.45rem; }
+.compose-box { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0.2rem 0.4rem;
+               align-items:end; background:var(--bg); border:1px solid var(--border);
+               border-radius:16px; padding:0.35rem 0.55rem;
                transition:border-color .15s var(--ease); }
 .compose-box:focus-within { border-color:var(--border-active); }
-.compose-actions { display:flex; align-items:center; gap:0.55rem; }
-.compose-spacer { flex:1; }
+.compose-box #send { min-height:32px; align-self:end; }
 .compose-icon { width:2rem; height:2rem; display:grid; place-items:center;
                 border:0; border-radius:50%; background:transparent;
                 color:var(--text-dim); font-size:1.35rem; line-height:1;
                 cursor:pointer; transition:background .15s, color .15s; }
 .compose-icon:hover { background:var(--surface-raised); color:var(--text); }
 .compose-icon:disabled { cursor:default; opacity:.5; }
-#attachment-tray { display:flex; padding:0.1rem 0.05rem 0.15rem; }
+#attachment-tray { display:flex; grid-column:1 / -1; padding:0.1rem 0.05rem 0.15rem; }
 /* `#attachment-tray { display:flex }` has higher specificity than the
    browser's `[hidden]` rule in some engines. Without an explicit override the
    empty <img> is painted on every fresh conversation as a broken thumbnail. */
@@ -181,12 +180,8 @@ header h1 em { color:var(--accent); font-style:italic; }
                     padding:0.2rem 0.3rem; background:rgba(0,0,0,.66);
                     color:white; font-size:0.62rem; text-align:center; }
 #attachment-state:empty { display:none; }
-.picker-row { display:flex; align-items:center; gap:1rem; min-height:1.4rem; }
-/* The send/newline keys used to live in the placeholder, where they vanished
-   at the first keystroke — exactly when Shift+Enter starts to matter. The
-   left half of this row was empty anyway. */
-.key-hint { font-size:0.7rem; color:var(--text-muted); white-space:nowrap; }
-@media (max-width:560px){ .key-hint { display:none; } }
+.picker-row { display:flex; align-items:center; gap:0.65rem; min-height:1.4rem; }
+.picker-row .compose-icon { width:28px; height:28px; font-size:1.2rem; }
 .picker-row #endpoint { margin-left:auto; }   /* model on the right */
 #endpoint { background:transparent; border:none; color:var(--text-muted);
            font-family:var(--mono); font-size:0.75rem; cursor:pointer;
@@ -219,12 +214,12 @@ header h1 em { color:var(--accent); font-style:italic; }
 .chat { min-width:0; width:100%; }
 @media (max-width:820px) {
   .shell { padding:0.5rem; }
-  .shell > header { gap:0.5rem; padding-bottom:0.4rem; margin-bottom:0.5rem; }
+  .shell > header { gap:0.5rem; padding-bottom:0.15rem; margin-bottom:0.25rem; }
   .shell > header .btn { padding:0.4rem 0.65rem; }
   .grid { grid-template-columns:minmax(0,1fr); }
   .grid:not(.sessions-collapsed) .chat { display:none; }
   .shell #messages { padding:0.75rem 0.65rem 0.4rem; }
-  .shell #composer { padding:0.5rem 0.65rem; }
+  .shell #composer { padding:0.3rem 0.65rem; }
 }
 
 /* The session list is a useful navigator, not a permanent claim on reading
@@ -244,9 +239,10 @@ header h1 em { color:var(--accent); font-style:italic; }
 .card { background:var(--surface);
         border:1px solid var(--border); border-radius:var(--radius);
         display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-.card-head { padding:0.7rem 1rem; border-bottom:1px solid var(--border);
+.card-head { min-height:26px; padding:0.3rem 0.75rem; border-bottom:1px solid var(--border);
              font-size:0.62rem; text-transform:uppercase; letter-spacing:0.15em;
              color:var(--text-dim); display:flex; align-items:center; gap:0.5rem; flex:none; }
+.chat > .card-head { border-bottom:0; }
 .card-head .dot { width:5px; height:5px; border-radius:50%; background:var(--accent); opacity:0.7; flex:none; }
 #spin { color:var(--accent); font-size:0.75rem; width:0.8rem; display:inline-block; }
 .tool-since { color:var(--text-muted); font-size:0.68rem; }
@@ -303,8 +299,8 @@ header h1 em { color:var(--accent); font-style:italic; }
                         color:var(--text-dim); background:transparent; border:1px solid var(--border);
                         border-radius:var(--radius); cursor:pointer; }
 .history-page-control[hidden] { display:none; }
-/* One column for prose, code, formulas and the composer; wide screens no
-   longer spend most of the chat panel on a nested 620px strip. */
+/* Keep prose, code, formulas, approval cards and the composer on one
+   readable column, independently of the panel and sidebar width. */
 .msg { max-width:var(--conversation-width); margin:0 auto 0.9rem; }
 .bubble { font-size:0.92rem; line-height:1.75; overflow-wrap:anywhere; }
 
@@ -376,7 +372,8 @@ header h1 em { color:var(--accent); font-style:italic; }
    scrolled away by the narration that continues above it. It takes the
    accent border because it is the only thing on this page that stops until
    it is answered. */
-#approval-dock { flex:none; padding:0.6rem 1rem 0; }
+#approval-dock { flex:none; width:min(100%, calc(var(--conversation-width) + 2rem));
+                 align-self:center; padding:0.6rem 1rem 0; }
 #approval-dock[hidden] { display:none; }
 #approval-dock .perm { background:var(--surface-raised);
                        border:1px solid var(--accent-dim);
@@ -385,16 +382,20 @@ header h1 em { color:var(--accent); font-style:italic; }
 .bubble.perm { background:var(--surface-raised); border:1px solid var(--accent-dim);
                border-radius:var(--radius); padding:0.7rem 0.85rem; }
 .bubble.perm.done { border-color:var(--border); opacity:.6; }
-.perm-title { font-size:0.8rem; margin-bottom:0.6rem; line-height:1.6; }
+.perm-title { font-size:0.8rem; margin-bottom:0.6rem; line-height:1.6; overflow-wrap:anywhere; }
+@media (max-width:820px) {
+  .shell #approval-dock { padding-left:0.65rem; padding-right:0.65rem; }
+  .shell .chat.fresh #composer { padding-left:0.65rem; padding-right:0.65rem; }
+}
 .perm-opts { display:flex; gap:0.5rem; flex-wrap:wrap; }
 .opt { padding:0.3rem 0.9rem; font-size:0.74rem; }
 
 /* ---------- composer ---------- */
 /* (layout rules for #composer/.compose-box live with the picker styles above) */
-#input { width:100%; resize:none; background:transparent; border:0;
-         color:var(--text); font-family:var(--mono); outline:none;
-         font-size:0.84rem; font-weight:300; line-height:1.6; padding:0.2rem 0.25rem;
-         max-height:180px; overflow-y:auto; }
+#input { width:100%; min-width:0; min-height:32px; resize:none; background:transparent; border:0;
+         color:var(--text); font-family:var(--sans); outline:none;
+         font-size:1rem; font-weight:400; line-height:1.5; padding:0.25rem;
+         max-height:120px; overflow-y:auto; }
 #input::placeholder { color:var(--text-muted); }
 #send { flex:none; }
 
@@ -613,10 +614,8 @@ html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-ligh
                         padding-bottom:0; }
 .chat.fresh #composer { margin-bottom:auto; border-top:0; padding:0 1rem 0;
                         max-width:calc(var(--conversation-width) + 2rem); width:100%; align-self:center; }
-.chat.fresh .compose-box { background:var(--surface-raised); border-radius:14px;
-                           padding:0.75rem 0.85rem; }
-.chat.fresh #input { padding:0.2rem 0.25rem; font-size:0.9rem;
-                     font-family:inherit; }
+.chat.fresh .compose-box { background:var(--surface-raised); }
+.chat.fresh #input { font-family:inherit; }
 .chat.fresh #input::placeholder { font-family:inherit; }
 .chat.fresh .picker-row { padding:0 0.4rem; }
 
@@ -625,6 +624,22 @@ html[data-theme="light"]::view-transition-new(root) { animation-name:reveal-ligh
                letter-spacing:0.02em; }
 .fresh-sub { font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem;
              letter-spacing:0.02em; }
+
+/* Handwritten capabilities on general's fresh view, not a live skill catalogue. */
+.chat.fresh.has-capabilities #messages { flex:0 1 auto; overflow-y:auto; }
+.capability-intro { max-width:var(--conversation-width); margin:1rem auto 0;
+                    text-align:left; font-size:0.8rem; line-height:1.6; }
+.capability-lead { color:var(--text-dim); margin:0 0 0.75rem; }
+.capability-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+                   gap:0.75rem 1.5rem; margin:0; }
+.capability-list dt { color:var(--text); font-weight:600; }
+.capability-list dd { color:var(--text-muted); margin:0.15rem 0 0; }
+.capability-note { color:var(--text-muted); font-size:0.72rem; margin:0.8rem 0 0; }
+@media(max-width:560px) {
+  .capability-list { grid-template-columns:minmax(0,1fr); gap:0.5rem; }
+  .capability-intro { margin-top:0.75rem; }
+  .chat.has-capabilities .fresh-hero { padding-left:0; padding-right:0; padding-bottom:1rem; }
+}
 
 /* One turn at a time — a single GPU, not a policy. The composer says so rather
    than accepting a click and dropping it.

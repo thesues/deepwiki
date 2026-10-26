@@ -258,6 +258,23 @@ def resolve_toolsets(cfg: dict | None) -> list[str]:
     return list(DEFAULT_TOOLSETS)
 
 
+def ensure_skills_directory(config_path: Path, skills_dir: Path) -> bool:
+    """Discover this service's shipped skills without copying into shared state."""
+    import yaml
+
+    cfg = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+    cfg = cfg or {}
+    skills = cfg.setdefault("skills", {})
+    directories = skills.get("external_dirs", [])
+    directories = [directories] if isinstance(directories, str) else list(directories)
+    directory = str(skills_dir.resolve())
+    if directory in directories:
+        return False
+    skills["external_dirs"] = [*directories, directory]
+    _write(config_path, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False).splitlines())
+    return True
+
+
 # ── auxiliary compression model ─────────────────────────────────────────────
 
 def _compression_keys(model: str, base_url: str, context_length: int) -> list[str]:

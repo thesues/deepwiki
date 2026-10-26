@@ -21,6 +21,7 @@ import urllib.parse
 from botocore.exceptions import ClientError
 
 from media_input import endpoint
+from media_storage import s3_enabled
 from s3_client import client, object_args
 
 log = logging.getLogger("deepwiki.artifacts")
@@ -47,6 +48,8 @@ def object_key(relative: str) -> str:
 
 
 def head(relative: str):
+    if not s3_enabled():
+        return None  # The existing filesystem artifact server owns this path.
     try:
         return client(endpoint()).head_object(**object_args(object_key(relative)))
     except ClientError as exc:
@@ -56,6 +59,8 @@ def head(relative: str):
 
 
 def open_media(relative: str, **conditions):
+    if not s3_enabled():
+        raise FileNotFoundError(relative)
     return client(endpoint()).get_object(**object_args(object_key(relative)), **conditions)
 
 
@@ -81,13 +86,17 @@ def publish_file(root: Path, path: Path) -> str:
     root = root.resolve()
     resolved = path.resolve()
     relative = resolved.relative_to(root).as_posix()
-    key = object_key(relative)
+    if not media_path(relative):
+        raise ValueError("invalid media artifact path")
     if path.is_symlink():
         raise ValueError("cannot publish a symlink")
     with resolved.open("rb") as source:
         before = _signature(os.fstat(source.fileno()))
         if before[2] == 0:
             raise ValueError(f"empty media artifact: {relative}")
+        if not s3_enabled():
+            return f"/artifacts/{urllib.parse.quote(relative, safe='/')}"
+        key = object_key(relative)
         checksum = hashlib.md5()
         digest = _digest(source, checksum)
         if _signature(os.fstat(source.fileno())) != before:
@@ -185,6 +194,16 @@ def _publish_directory(root: Path, directory: Path, exclude) -> list[str]:
              if p.is_file() and media_path(p.relative_to(root).as_posix())
              and p.resolve() == p.absolute()
              and (p.relative_to(root).as_posix() not in exclude or _pending(p).is_file())]
+    if not s3_enabled():
+        # Keep completed images/videos in this service's artifact directory.
+        # No network calls or S3 pending markers while the flag is off.
+        for path in paths:
+            if path.suffix.lower() in VIDEO_SUFFIXES:
+                poster = make_poster(path)
+                if poster is not None:
+                    published.append(publish_file(root, poster))
+            published.append(publish_file(root, path))
+        return published
     # Mark every new output before the first upload. If one fails, the next
     # turn retries this batch while still excluding untouched legacy media.
     for path in paths:
@@ -207,7 +226,7 @@ def _publish_directory(root: Path, directory: Path, exclude) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("session_id", help="publish completed media in this session")
-    parser.add_argument("--root", type=Path, default=Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts")
+    parser.add_argument("--root", type=Path, default=Path(os.environ.get("WEBUI_DATA_HOME") or os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts")
     args = parser.parse_args()
     for url in publish_session(args.root, args.session_id):
         print(url)

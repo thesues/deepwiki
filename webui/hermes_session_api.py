@@ -96,6 +96,10 @@ def owner(session_id: str) -> str:
     return _owner_from_db(_db(), session_id)
 
 
+def exists(session_id: str) -> bool:
+    return bool(session_id and _db().get_session(session_id) is not None)
+
+
 def source(session_id: str) -> str:
     """Read the persisted identity without depending on the sidebar limit."""
     row = _db().get_session(session_id)

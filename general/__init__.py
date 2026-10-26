@@ -1,0 +1,1 @@
+"""Standalone general-assistant service."""

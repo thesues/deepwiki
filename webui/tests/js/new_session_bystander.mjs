@@ -141,6 +141,7 @@ function page() {
     querySelectorAll: (s) => body.querySelectorAll(s),
     createElement: (t) => new Node_(t),
     addEventListener: (t, fn) => { (docListeners[t] ||= []).push(fn); },
+    dispatchEvent: (event) => { (docListeners[event.type] || []).forEach(fn => fn(event)); return true; },
   };
   return { document, body };
 }
@@ -219,6 +220,7 @@ function harness({ url = "http://x/", streaming = {}, store = new Map(), server:
   const location = new URL(url);
   const ctx = vm.createContext({
     document, fetch, EventSource, console, URL, URLSearchParams, AbortController, JSON, Math, Date, Promise, Map, Set, Object, Array, String, Number,
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     localStorage: {
       getItem: (k) => (store.has(k) ? store.get(k) : null),
       setItem: (k, v) => store.set(k, String(v)),

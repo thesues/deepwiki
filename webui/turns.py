@@ -67,8 +67,8 @@ class Refused(Exception):
 # because the person it is asking may be away from the tab; bounded, because a
 # turn blocked forever holds its thread and its agent.
 APPROVAL_TIMEOUT_S = int(
-    os.environ.get("DEEPWIKI_APPROVAL_TIMEOUT_S",
-                   os.environ.get("BUDA_APPROVAL_TIMEOUT_S", "600"))
+    os.environ.get("WEBUI_APPROVAL_TIMEOUT_S",
+                   os.environ.get("DEEPWIKI_APPROVAL_TIMEOUT_S", "600"))
 )
 
 
@@ -612,8 +612,8 @@ class TurnManager:
                 # module before this change, so preserve its fail-closed rule.
                 if user_id:
                     raise
-            agent = (self._pool.acquire(session_id, endpoint, user_id=user_id)
-                     if user_id else self._pool.acquire(session_id, endpoint))
+            acquire_args = {"user_id": user_id} if user_id else {}
+            agent = self._pool.acquire(session_id, endpoint, **acquire_args)
             self._pool.note_running(stream.stream_id, agent)
             self._install_approval(stream)
             # After the approval key is pinned: it stays the id the hook was
@@ -637,14 +637,20 @@ class TurnManager:
 
             model_message = model_user_content(text)
             from hermes_agent import CHAT_DIRECTIVE, _artifacts_root
+            from media_storage import s3_enabled
+            publication_note = (
+                "Images and videos are uploaded to S3 and removed from local staging at turn completion. "
+                if s3_enabled() else
+                "S3 is disabled. Images and videos remain in this service's artifact directory and are served from the filesystem. "
+            )
             directive = CHAT_DIRECTIVE + (
                 f"\nStore generated artifacts under {_artifacts_root() / session_id}/. "
                 f"Link to them as /artifacts/{session_id}/<filename>. "
                 "Files outside this session directory are not published to the user. "
                 "Write media to a .part filename, close it, then rename to a new unique final filename. "
-                "Images and videos are uploaded to S3 and removed from local staging at turn completion. "
-                "Finish all local editing and inspection before publishing; never reuse a previous artifact URL. "
-                "Use input_image_open with artifact_path to inspect a historical image from S3."
+                + publication_note
+                + "Finish all local editing and inspection before publishing; never reuse a previous artifact URL. "
+                "Use input_image_open with artifact_path to inspect a historical image."
             )
             from artifact_store import existing_media, publish_session
             artifact_root = _artifacts_root()

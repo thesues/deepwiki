@@ -34,6 +34,7 @@ from media_input import get_object as _get_media_object
 from media_input import marker_keys as _media_marker_keys
 from media_input import owned_key as _owned_media_key
 from media_input import put_object as _put_media_object
+from media_storage import s3_enabled
 from sse import SSE_HEADERS, write_session_stream, write_stream
 from turns import Refused, TurnManager
 
@@ -94,6 +95,10 @@ def build_app(
     authenticator=None,
     sessions: object | None = None,
     mcp: dict | None = None,
+    welcome_html: Path | None = None,
+    page_transform=None,
+    page_assets: tuple[bytes, ...] = (),
+    chat_context=None,
 ) -> App:
     app = App(
         static_dir=static_dir,
@@ -107,6 +112,10 @@ def build_app(
     def _owns_session(req: Request, session_id: str) -> bool:
         """Authorize persisted and not-yet-persisted conversations alike."""
         if not req.user_id:
+            # Local mode still respects service boundaries: a session from the
+            # other process must not be silently re-created under the same id.
+            if sessions is not None and hasattr(sessions, "exists"):
+                return manager.owner_of(session_id) is not None or sessions.exists(session_id)
             return True
         live_owner = manager.owner_of(session_id)
         if live_owner is not None:
@@ -142,6 +151,7 @@ def build_app(
             "turns": [{"session": sid, "streamId": st} for sid, st in running.items()],
             "endpoints": [e.as_json() for e in endpoints],
             "defaultEndpoint": default_ep.key,
+            "mediaStorage": "s3" if s3_enabled() else "filesystem",
         })
 
     @app.route("GET", "/api/media/input")
@@ -153,6 +163,8 @@ def build_app(
         endpoint = os.environ.get("AUTUMN_S3_ENDPOINT", "http://autumn-s3.autumn.svc:9100")
         try:
             body, content_type = _get_media_object(endpoint, key)
+        except FileNotFoundError:
+            return json_response({"error": "image not found"}, status=404)
         except ClientError as exc:
             if exc.response["ResponseMetadata"]["HTTPStatusCode"] == 404:
                 return json_response({"error": "image not found"}, status=404)
@@ -242,6 +254,11 @@ def build_app(
                     status=400,
                 )
             endpoint = vision_endpoint
+        if chat_context is not None:
+            try:
+                chat_context(req, body, session_id)
+            except (ValueError, PermissionError) as exc:
+                return json_response({"error": str(exc)}, status=400)
         try:
             stream = manager.start(
                 session_id=session_id, text=text, endpoint=endpoint,
@@ -614,14 +631,16 @@ def build_app(
         b"vendor/marked.min.js", b"vendor/purify.min.js",
         b"math.js", b"vendor/katex-0.19.0/katex.min.js",
         b"vendor/katex-0.19.0/katex.min.css",
-    )
+    ) + page_assets
 
-    def _prepare_page(source: Path) -> tuple[bytes, str] | None:
+    def _prepare_page(source: Path, transform=None) -> tuple[bytes, str] | None:
         """Render one immutable-in-process HTML snapshot at application start."""
         try:
             body = source.read_bytes()
         except OSError:
             return None
+        if transform is not None:
+            body = transform(body)
         h = hashlib.sha256(body)
         for asset in assets:
             try:
@@ -638,7 +657,15 @@ def build_app(
     # These files ship in the read-only image and cannot change during this
     # process. Precompute the page and its validator once instead of
     # rereading and rehashing the whole frontend bundle on every navigation.
-    chat_page = _prepare_page(index_html)
+    def _service_page(body):
+        if page_transform is not None:
+            body = page_transform(body)
+        if welcome_html is not None:
+            # Product copy is handwritten, not generated from tool/skill metadata.
+            body = body.replace(b"</body>", welcome_html.read_bytes() + b"\n</body>")
+        return body
+
+    chat_page = _prepare_page(index_html, _service_page)
 
     def _versioned_page(req: Request, page: tuple[bytes, str] | None) -> Response:
         if page is None:

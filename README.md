@@ -1,11 +1,11 @@
-# buda
+# Agent WebUI
 
 An inference + retrieval service built **on top of** autumn-rs. It is a *user* of
 autumn, not part of it — which is why it lives in its own repository even though
 every piece of it talks to an autumn cluster.
 
 ```
-buda/
+agent-webui/
 ├── docker/
 │   ├── Dockerfile.freetoken     FreeToken serving image (+ the autumn client)
 │   ├── Dockerfile.webui         hermes webui (no autumn client — see below)
@@ -15,6 +15,8 @@ buda/
     ├── freetoken.yaml           MoE serving on one RTX 4090
     ├── upload-models.yaml       one-shot: load a checkpoint into autumn fs/
     ├── vllm-omni-h3.yaml        H3 on one RTX 4090 with CPU offload
+    ├── download-dreamzero-droid.yaml  oniond download directly into AutumnFS
+    ├── vllm-omni-dreamzero.yaml  DreamZero-DROID on two H20 GPUs
     ├── lance-mcp.yaml           LanceDB MCP over an Autumn FUSE mount
     └── webui.yaml               chat + session management
 ```
@@ -37,6 +39,27 @@ reaches retrieval through `lance-mcp`'s **HTTP** MCP transport and stores input
 images through the HTTP S3 gateway, so it holds no autumn credential and is not
 bound by the WIRE lockstep below. See `webui/ARCHITECTURE.md`.
 
+### Agent execution modes
+
+- `python -m complex.main`: unified assistant entry with **单体执行 / 团队协作 / 独立群研**
+  selected below the message input. Single directly uses ordinary Hermes with
+  configured tools/MCP/domain skills, without creating a Worker. Team and Swarm
+  use native Kanban; their lead only coordinates/aggregates and reports public
+  evidence. The Agent board follows chat-session navigation and shows actual
+  operations plus publisher/verifier provenance. Execution fixes the session's
+  mode; old research sessions retain their original mode and history.
+- `python -m general.main`: optional standalone, direct-only Hermes + WebUI.
+  Both standalone general and unified single mode use the handwritten introduction
+  in `general/skills-introduction.html`; update it manually when skills change.
+
+Both reuse shared chat/HTTP/media components. The unified entry scopes ordinary
+and research configuration with native Hermes context-local homes, without
+proxying to another service or introducing a second research scheduler/database.
+Local filesystem media is selected explicitly with `MEDIA_USE_S3=0`; storage is
+not tied to execution or authentication mode. See `general/README.md` and
+`complex/README.md`. The Dockerfile's default target stays direct-only; `--target
+complex` provides the unified entry. Research does not require Kubernetes.
+
 Storage-backed workloads mount Autumn FUSE in the privileged app container.
 This cluster does not propagate sidecar mounts reliably, so one mount namespace
 is intentional. LanceDB reads and writes ordinary paths under that mount.
@@ -49,6 +72,29 @@ Direct reads are enabled so large model reads bypass the partition server.
 Browser image inputs go through the WebUI backend to immutable keys under
 `s3://input/webui/<session-id>/`. Only the key is placed in chat history; the
 H3 skill GETs the object and sends image bytes to vLLM's Video API.
+
+DreamZero-DROID uses a separate vLLM-Omni service with the upstream TP=1,
+CFG=2 configuration. Download and deploy it in the cluster with:
+
+```bash
+kubectl apply -f k8s/download-dreamzero-droid.yaml
+kubectl apply -f k8s/vllm-omni-dreamzero.yaml
+kubectl -n autumn logs -f job/download-dreamzero-droid -c download
+```
+
+`oniond` selects the Volcengine TOS mirror described at
+<https://huggingface-mirror.bytedance.net/> and writes the full repository to
+`/mnt/autumn/models/DreamZero-DROID`. The Job checks safetensors lengths before
+writing `.download-complete`; the server waits for this marker. The tokenizer
+uses the existing UMT5 tokenizer at `models/wan22-i2v-a14b/tokenizer`.
+
+The robot-policy endpoint is
+`ws://vllm-omni-dreamzero.autumn.svc:8000/v1/realtime/robot/openpi`.
+It accepts three camera views, a language instruction and robot state, and
+returns action chunks. `k8s/scripts/smoke-dreamzero.py` sends the upstream
+recorded example and checks a finite `24 x 8` action response; it requires
+`openpi-client`, NumPy and OpenCV, with the three videos from
+`YangshenDeng/vllm-omni-dreamzero-assets` in the `--assets` directory.
 
 ## What lives here vs in autumn-rs
 

@@ -1,0 +1,5 @@
+[
+  {"key":"doubao-pro2.1","label":"Doubao Pro 2.1 · Ark","model_env":"ARK_DOUBAO_MODEL","provider":"custom","base_url":"https://ark.cn-beijing.volces.com/api/v3","api_key_env":"ARK_API_KEY","context":1048576,"supports_vision":true},
+  {"key":"deepseek","label":"DeepSeek · Ark","model_env":"ARK_DEEPSEEK_MODEL","provider":"custom","base_url":"https://ark.cn-beijing.volces.com/api/v3","api_key_env":"ARK_API_KEY","context":1048576},
+  {"key":"glm","label":"GLM · Ark","model_env":"ARK_GLM_MODEL","provider":"custom","base_url":"https://ark.cn-beijing.volces.com/api/v3","api_key_env":"ARK_API_KEY","context":1048576}
+]

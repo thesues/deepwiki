@@ -1,4 +1,4 @@
-"""Autumn S3 storage and model-facing hydration for browser image inputs."""
+"""Selected media storage and model-facing hydration for browser image inputs."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from s3_client import client, object_args
+from media_storage import s3_enabled
 
 
 MAX_IMAGE_BYTES = 8 << 20
@@ -49,17 +50,49 @@ def owned_key(key: str, user_id: str) -> bool:
     return valid_key(key) and (not user_id or key.startswith(f"input/webui/{user_id}/"))
 
 
+def _local_object(key: str) -> Path:
+    if not valid_key(key) or any(part in {".", ".."} for part in key.split("/")):
+        raise ValueError("invalid local image key")
+    from hermes_agent import data_home
+    root = (data_home() / "input-media").resolve()
+    path = (root / key).resolve()
+    path.relative_to(root)  # Reject symlink/path escapes even for a valid-looking key.
+    return path
+
+
 def put_object(endpoint_url: str, key: str, body: bytes, content_type: str) -> None:
-    """Write one immutable browser image to Autumn S3."""
+    """Persist an immutable input through the selected storage backend."""
+    if not s3_enabled():
+        if not 0 < len(body) <= MAX_IMAGE_BYTES or content_type not in IMAGE_TYPES:
+            raise ValueError("invalid local input image")
+        path = _local_object(key)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.mkdir(mode=0o700)  # A unique object directory; never overwrite old input.
+        try:
+            (path / "body").write_bytes(body)
+            (path / "content-type").write_text(content_type, encoding="ascii")
+        except Exception:
+            import shutil
+            shutil.rmtree(path)
+            raise
+        return
     client(endpoint_url).put_object(
         **object_args(key), Body=body, ContentType=content_type, IfNoneMatch="*",
     )
 
 
 def get_object(endpoint_url: str, key: str) -> tuple[bytes, str]:
-    """Read one immutable browser image from Autumn S3."""
+    """Read one immutable browser image through the selected backend."""
     if not valid_key(key):
         raise ValueError("invalid image key")
+    if not s3_enabled():
+        path = _local_object(key)
+        with (path / "body").open("rb") as source:
+            body = source.read(MAX_IMAGE_BYTES + 1)
+        content_type = (path / "content-type").read_text(encoding="ascii")
+        if len(body) > MAX_IMAGE_BYTES or content_type not in IMAGE_TYPES:
+            raise ValueError("invalid stored local image")
+        return body, content_type
     response = client(endpoint_url).get_object(**object_args(key))
     with response["Body"] as source:
         body = source.read(MAX_IMAGE_BYTES + 1)
@@ -106,9 +139,10 @@ def model_user_content(text: str) -> str | list[dict]:
 
 
 def tool_result(key: str, question: str) -> dict:
-    """Load one historical S3 image as a transient multimodal tool result."""
+    """Load one historical image as a transient multimodal tool result."""
     data_url, size = _data_url(key)
-    note = f"Loaded historical image {key} from Autumn S3."
+    storage = "Autumn S3" if s3_enabled() else "the filesystem"
+    note = f"Loaded historical image {key} from {storage}."
     if question.strip():
         note += f"\nQuestion: {question.strip()}"
     return {
@@ -117,7 +151,7 @@ def tool_result(key: str, question: str) -> dict:
             {"type": "text", "text": note},
             {"type": "image_url", "image_url": {"url": data_url}},
         ],
-        "text_summary": f"Loaded historical image {key} ({size} bytes) from Autumn S3.",
+        "text_summary": f"Loaded historical image {key} ({size} bytes) from {storage}.",
         "meta": {"object_key": key, "size_bytes": size},
     }
 

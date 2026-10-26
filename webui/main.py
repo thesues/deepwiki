@@ -116,9 +116,12 @@ def _reaper(manager: TurnManager, stop: threading.Event) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
+    """Standalone general assistant; research is not part of this runtime."""
+    home = Path(os.environ.get("GENERAL_HOME") or os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    os.environ["HERMES_HOME"] = str(home.resolve())
+    ap = argparse.ArgumentParser(description="general service")
     ap.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("GENERAL_PORT", os.environ.get("PORT", "8080"))))
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -126,8 +129,14 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+    from media_storage import s3_enabled
+    try:
+        use_s3 = s3_enabled()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    log.info("media storage: %s (MEDIA_USE_S3=%d)", "s3" if use_s3 else "filesystem", use_s3)
     endpoints = load_endpoints(
-        load_endpoints_env(),
+        os.environ.get("GENERAL_ENDPOINTS") or load_endpoints_env(),
         default_home_model=os.environ.get("LLM_MODEL", ""),
     )
     log.info(
@@ -159,6 +168,8 @@ def main() -> None:
     ) / "config.yaml"
     # Register every configured corpus with the shared agent.
     declared_servers = mcp_servers_from_env()
+    from hermes_config import ensure_skills_directory
+    ensure_skills_directory(hermes_cfg, HERE / "hermes" / "skills")
     for name, url in declared_servers:
         try:
             from hermes_config import ensure_mcp_server
@@ -201,7 +212,7 @@ def main() -> None:
     try:
         from hermes_config import ensure_compression_model
 
-        ensure_compression_model(hermes_cfg, load_endpoints(load_endpoints_env()))
+        ensure_compression_model(hermes_cfg, endpoints)
         # Independently of the above, which stops as soon as the file names a
         # compression model — as this deployment's does. A failed compression
         # with no deadline cost twelve minutes of a conversation showing
@@ -247,7 +258,8 @@ def main() -> None:
     except Exception:  # noqa: BLE001 -- a chat box without retrieval still starts
         log.exception("could not register MCP servers; corpus search will be unavailable")
 
-    artifacts = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "artifacts"
+    from hermes_agent import _artifacts_root
+    artifacts = _artifacts_root()
     try:
         artifacts.mkdir(parents=True, exist_ok=True)
     except OSError as e:  # noqa: BLE001 -- a chat box without diagrams still starts
@@ -272,7 +284,14 @@ def main() -> None:
 
         authenticator = JWTAuthenticator(jwks_url, audience="deepwiki")
         log.info("JWT authentication enabled; JWKS=%s", jwks_url)
+    local_identity = os.environ.get("WEBUI_LOCAL_MODE", "") == "1"
+    if local_identity and (authenticator is not None or auth_user or auth_pass):
+        raise SystemExit("WEBUI_LOCAL_MODE cannot be combined with authentication settings")
+    introduction = HERE.parent / "general" / "skills-introduction.html"
+    if not introduction.is_file():
+        introduction = HERE / "general" / "skills-introduction.html"
     app = build_app(
+        welcome_html=introduction,
         manager=manager,
         endpoints=endpoints,
         static_dir=shipped,
@@ -290,6 +309,7 @@ def main() -> None:
         ),
     )
 
+    app.local_identity = local_identity
     srv = serve(app, args.host, args.port)
     log.info("deepwiki webui on http://%s:%d", args.host, args.port)
 

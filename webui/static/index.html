@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>通用助手 · deepwiki</title>
+<title>助手</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/vendor/katex-0.19.0/katex.min.css">
@@ -21,7 +21,7 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
     <button id="sessions-toggle" class="sessions-toggle" type="button" title="收起会话列表" aria-label="收起会话列表" aria-controls="session-panel" aria-expanded="true">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM9 5.5v13M12.5 10l-2 2 2 2"/></svg>
     </button>
-    <span class="agent-name">通用助手</span>
+    <span class="agent-name">助手</span>
     <span class="spacer"></span>
     <button id="new-session" class="btn" title="新建会话">＋ 新会话</button>
     <button id="theme-toggle" class="theme-toggle" type="button" title="切换到亮色主题" aria-label="切换主题">
@@ -55,10 +55,8 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
            very work it is blocking. -->
       <div id="approval-dock" hidden></div>
       <form id="composer">
-        <!-- An attachment belongs to the draft, so it lives INSIDE the same
-             box as the text instead of becoming an object-key-shaped sentence.
-             The controls sit below it, like the message composers people
-             already know from multimodal chat UIs. -->
+        <!-- One compact input row; attachments expand it only when present.
+             Secondary controls live outside the box. -->
         <div class="compose-box">
           <div id="attachment-tray" hidden>
             <div class="attachment-card">
@@ -68,16 +66,12 @@ try { if (localStorage.getItem("hermes.theme") === "light") document.documentEle
             </div>
           </div>
           <textarea id="input" rows="1" placeholder="发消息…"></textarea>
-          <div class="compose-actions">
-            <input id="media-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
-            <button id="attach" type="button" class="compose-icon" title="添加图片" aria-label="添加图片">＋</button>
-            <span class="compose-spacer"></span>
-            <button id="send" type="submit" class="btn">发送</button>
-          </div>
+          <button id="send" type="submit" class="btn">发送</button>
         </div>
-        <!-- Pickers remain a small-font row below the actual message box. -->
+        <!-- Attachment and model controls do not add a second row inside the input. -->
         <div class="picker-row">
-          <span class="key-hint">Enter 发送 · Shift+Enter 换行</span>
+          <input id="media-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
+          <button id="attach" type="button" class="compose-icon" title="添加图片" aria-label="添加图片">＋</button>
           <span id="model-badge" hidden></span>
           <select id="endpoint" hidden title="本会话回复所用的模型"></select>
         </div>
