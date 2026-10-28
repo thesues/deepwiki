@@ -145,12 +145,26 @@
       }
       actions.append(list);card.append(actions);
     }
+    if(w.extensions?.length){
+      const labels={PENDING:'等待协调者审核',APPROVED:'已批准',REJECTED:'已拒绝',STALE:'对应运行已停止或过期',UNAVAILABLE:'旧任务未配置延期策略'};
+      const latest=w.extensions.at(-1);
+      card.append(styled('p','worker-window',`延期申请 +${duration(latest.extra_seconds)} · ${labels[latest.status]||latest.status}`));
+      const requests=disclosure(w.id+':extensions','延期记录');
+      for(const r of w.extensions){
+        const detail=styled('div','worker-diagnostics');
+        detail.append(make('p',`comment #${r.comment_id} · run #${r.run_id} · ${labels[r.status]||r.status}`),make('p','申请原因：'+r.reason),make('p','剩余计划：'+r.plan));
+        if(r.decision)detail.append(make('p',`批准增加 ${r.decision.granted_seconds} 秒 · ${r.decision.reason}`));
+        requests.append(detail);
+      }
+      card.append(requests);
+    }
     const diagnostics=disclosure(w.id+':run','运行详情'),body=styled('div','worker-diagnostics');
     const identity=make('p');identity.append(make('span','任务 '),make('code',w.id));body.append(identity);
     if(w.run)body.append(make('p',`运行记录 #${w.run.id}${w.pid?' · PID '+w.pid:''}`));
     if(typeof w.goal_mode==='boolean')body.append(make('p',w.goal_mode?'持续研究 · 原生 goal-loop':'单次任务 · 原生 single-shot'));
     const limit=w.run?.max_runtime_seconds??group.budget.wall_seconds;
     if(limit)body.append(make('p',`每次运行上限 ${limit} 秒`));
+    if(w.request_timeouts)body.append(make('p',`单条终端命令上限 ${w.request_timeouts.tool_timeout_seconds} 秒 · API 请求超时配置 ${w.request_timeouts.api_timeout_seconds} 秒 · API 无数据基础超时 ${w.request_timeouts.api_stale_timeout_seconds} 秒`));
     if(w.consecutive_failures)body.append(make('p',`连续失败 ${w.consecutive_failures} 次 · 原生阻塞阈值 ${w.failure_limit} 次`));
     if(w.status==='running'&&w.pid)body.append(make('p',w.alive?'进程存活':'PID 已退出，等待调度器更新'));
     if(w.status==='running'){const heartbeat=make('p');heartbeat.dataset.workerHeartbeat=w.id;body.append(heartbeat);}
@@ -209,7 +223,9 @@
     }
     detail.append(heading);
     const goal=disclosure(group.id+':goal','目标与执行约束','group-contract'),contract=styled('div','contract-body');
-    contract.append(make('p',group.question),make('p',`每次运行最多 ${group.budget.wall_seconds} 秒 · 每回合最多 ${group.budget.max_iterations??'未声明'} 次模型迭代${group.mode==='swarm'?' · 持续研究最多 '+group.budget.max_turns+' 回合':''}`));goal.append(contract);detail.append(goal);
+    contract.append(make('p',group.question),make('p',`${group.time_plan?'初始':''}每次运行最多 ${group.budget.wall_seconds} 秒 · 每回合最多 ${group.budget.max_iterations??'未声明'} 次模型迭代${group.mode==='swarm'?' · 持续研究最多 '+group.budget.max_turns+' 回合':''}`));
+    if(group.time_plan)contract.append(make('p','时间评估：'+group.time_plan.assessment),make('p',`申请延期后的每次运行上限 ${group.time_plan.max_run_seconds} 秒；以各 Agent 运行详情的当前限制为准。`));
+    goal.append(contract);detail.append(goal);
     const workers=styled('div','worker-grid');group.workers.forEach((w,i)=>workers.append(renderWorker(w,i,group)));detail.append(workers);
     renderPublications(group,detail);
   }
@@ -229,7 +245,7 @@
     }
   }
   function renderGroups(groups){
-    const key=JSON.stringify(groups,(k,v)=>['heartbeat_age','elapsed_seconds'].includes(k)?undefined:v);
+    const key=JSON.stringify(groups,(k,v)=>['heartbeat_age','elapsed_seconds','remaining_seconds'].includes(k)?undefined:v);
     if(key!==renderKey){
       const body=n('swarm-detail').closest('.board-body'),scroll=body?.scrollTop||0;
       const open=new Set([...n('swarm-detail').querySelectorAll('details[open][data-view-key]')].map(d=>d.dataset.viewKey));
@@ -271,26 +287,29 @@
   }
   function placeBoard(){
     const panel=n('research-board');if(panel.hidden)return;
-    const composer=n('composer').getBoundingClientRect(),chat=document.querySelector('.chat').getBoundingClientRect(),header=document.querySelector('.shell > header').getBoundingClientRect();
-    if(!chat.width)return;
-    const edge=innerWidth<=820?0:12,approval=n('approval-dock');
+    const composer=n('composer').getBoundingClientRect(),header=document.querySelector('.shell > header').getBoundingClientRect();
+    if(!composer.width)return;
+    const viewport=window.visualViewport,viewLeft=viewport?.offsetLeft||0,viewTop=viewport?.offsetTop||0;
+    const viewWidth=viewport?.width||innerWidth,viewHeight=viewport?.height||innerHeight,approval=n('approval-dock');
     const bottomAnchor=approval&&!approval.hidden?Math.min(composer.top,approval.getBoundingClientRect().top):composer.top;
-    const top=Math.max(8,header.bottom+8);
-    if(bottomAnchor-top<160){
+    const top=Math.max(viewTop+8,header.bottom+8),bottom=Math.min(viewTop+viewHeight-8,bottomAnchor-8);
+    const available=bottom-top;
+    if(available<160||viewWidth<160){
       panel.hidden=true;n('board-toggle').setAttribute('aria-expanded','false');
       if(panel.contains(document.activeElement))n('board-toggle').focus({preventScroll:true});
       return;
     }
-    panel.style.right=Math.max(8,innerWidth-chat.right+edge)+'px';
-    panel.style.width=Math.min(600,chat.width-edge*2)+'px';
-    panel.style.top=top+'px';
-    panel.style.bottom=Math.max(12,innerHeight-bottomAnchor+8)+'px';
+    const height=Math.min(680,available);
+    panel.style.left=viewLeft+viewWidth/2+'px';panel.style.right='auto';
+    panel.style.width=Math.min(600,viewWidth-16)+'px';
+    panel.style.top=top+(available-height)/2+'px';
+    panel.style.height=height+'px';panel.style.bottom='auto';
   }
   function toggle(open){n('research-board').hidden=!open;n('board-toggle').setAttribute('aria-expanded',String(open));if(open)placeBoard();refresh();}
   n('board-toggle').onclick=()=>toggle(n('research-board').hidden);
   n('board-close').onclick=()=>{toggle(false);n('board-toggle').focus();};n('board-refresh').onclick=refresh;
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!n('research-board').hidden){event.preventDefault();toggle(false);n('board-toggle').focus();}});
   if(typeof ResizeObserver!=='undefined'){const observer=new ResizeObserver(placeBoard);observer.observe(n('composer'));observer.observe(n('approval-dock'));observer.observe(document.querySelector('.chat'));}
-  window.addEventListener('resize',placeBoard);window.visualViewport?.addEventListener('resize',placeBoard);
+  window.addEventListener('resize',placeBoard);window.visualViewport?.addEventListener('resize',placeBoard);window.visualViewport?.addEventListener('scroll',placeBoard);
   syncSession();
 })();

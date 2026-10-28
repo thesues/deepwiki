@@ -145,8 +145,14 @@ class ResearchSwarm:
         return options
 
     def config(self):
-        return {'models': [{**m.as_json(), 'worker_toolsets': self.capabilities.get(m.key, {}).get('toolsets', ['file', 'terminal']),
-                            'worker_mcp': list(self.capabilities.get(m.key, {}).get('mcp_servers', {}))}
+        from .budgets import run_ceiling
+        from .request_timeouts import settings
+        return {'run_time_ceiling_seconds':run_ceiling(),
+                'swarm_time_plan':'Choose initial run duration and extension ceiling from assessed difficulty, expected research/verification work and model latency; explain the estimate. No fixed short default.',
+                'extensions':'Worker requests in native root comments; coordinator decides within the announced ceiling, only for live unexpired runs. Requests and heartbeat do not extend time.',
+                'models': [{**m.as_json(), 'worker_toolsets': self.capabilities.get(m.key, {}).get('toolsets', ['file', 'terminal']),
+                            'worker_mcp': list(self.capabilities.get(m.key, {}).get('mcp_servers', {})),
+                            'request_timeouts':settings(self.capabilities.get(m.key,{}).get('timeouts'))}
                            for m in self.models.values()], 'max_in_progress': self.capacity,
                 'modes': ['single', 'kanban', 'swarm'], 'default_mode': 'single', 'automatic_dispatch': True,
                 'single_execution': 'direct Hermes conversation; no Kanban task or Worker',
@@ -170,6 +176,8 @@ class ResearchSwarm:
             native_agent['reasoning_effort']=common_agent['reasoning_effort']
         native_agent.update(self.capabilities.get(model_key,{}).get('agent',{}))
         native_agent['max_turns']=budget['max_iterations']
+        from .request_timeouts import settings
+        request_timeouts=settings(self.capabilities.get(model_key,{}).get('timeouts'))
         key_name = self.capabilities.get(model_key, {}).get('api_key_env', 'ARK_API_KEY')
         cfg = {'model': {'provider': model.provider, 'model': model.model,
                          'base_url': model.base_url, 'api_key': '${' + key_name + '}',
@@ -177,6 +185,10 @@ class ResearchSwarm:
                'toolsets': ['kanban'], 'platform_toolsets': {'cli': list(dict.fromkeys(
                    [*self.capabilities.get(model_key, {}).get('toolsets', ['file', 'terminal']), 'skills', 'kanban']))},
                'agent': native_agent,
+               'terminal': {'timeout':request_timeouts['tool_timeout_seconds']},
+               'providers': {model.provider: {'models': {model.model: {
+                   'timeout_seconds':request_timeouts['api_timeout_seconds'],
+                   'stale_timeout_seconds':request_timeouts['api_stale_timeout_seconds']}}}},
                'skills': {'external_dirs': [str(self.skills)], 'creation_nudge_interval': 0},
                'kanban': {'dispatch_in_gateway': False, 'notify_in_gateway': False},
                'mcp_servers': self.capabilities.get(model_key, {}).get('mcp_servers', {})}
@@ -184,7 +196,7 @@ class ResearchSwarm:
         (profile / 'SOUL.md').write_text('You execute the assigned Kanban task. Follow its skill, publish deliverables and keep unpublished notes private.\n')
         return profile
 
-    def create(self, owner, *, question, models, budget, baseline='', session_id='', mode='swarm', tasks=None):
+    def create(self, owner, *, question, models, budget, baseline='', session_id='', mode='swarm', tasks=None, time_plan=None):
         if mode not in RESEARCH_MODES:
             raise ValueError('Single execution is a direct Hermes conversation, not a Kanban task')
         if session_id:
@@ -200,6 +212,9 @@ class ResearchSwarm:
         for key, low, high in [('wall_seconds', 30, 86400), ('max_iterations', 1, 1000), ('max_turns', 1, 100)]:
             if type(budget[key]) is not int or not low <= budget[key] <= high:
                 raise ValueError('invalid ' + key)
+        from .budgets import time_plan as validate_time_plan, run_ceiling
+        if budget['wall_seconds'] > run_ceiling():raise ValueError('wall_seconds exceeds configured run ceiling')
+        time_plan=validate_time_plan(time_plan,budget['wall_seconds'],required=mode=='swarm')
         if mode == 'swarm':
             if tasks:
                 raise ValueError('Swarm workers receive identical tasks; do not preassign directions')
@@ -258,6 +273,15 @@ class ResearchSwarm:
                               'not a demand to solve downstream tasks. Read completed parent deliverables and publish this task result. '
                               'Resume existing workspace work on retry rather than rebuilding from scratch.')
                     body += '\n\n' + STAGE_PUBLICATION_POLICY
+                    if time_plan:
+                        body += ('\nInitial run time: '+str(budget['wall_seconds'])+' seconds. Announced per-run extension ceiling: '
+                                 +str(time_plan['max_run_seconds'])+' seconds. Time assessment: '+time_plan['assessment']
+                                 +'\nIf useful work needs more time, request BEFORE expiry with research_request_extension(extra_seconds, reason, plan), '
+                                 +'which binds your native task/current run/root and posts the native comment. Alternatively use native blackboard '
+                                 +'key extension:<unique> and value {task_id, run_id, extra_seconds, reason, plan}. '
+                                 +'Use your own actual current_run_id. Await extension-decision:<request comment ID>; '
+                                 +'heartbeat/request does not extend time. Continue useful work without busy polling, '
+                                 +'never edit the DB or restart a stopped run to bypass limits.')
                     task = kb.create_task(conn, title=spec['title'], body=body,
                                           assignee=identity, created_by='research-coordinator',
                                           parents=[root, *[created[p]['task_id'] for p in spec['depends_on']]],
@@ -268,7 +292,8 @@ class ResearchSwarm:
                                     'model_name': self.models[model].model, 'model_label': self.models[model].label})
                 swarm.post_blackboard_update(conn, root, author='research-coordinator', key='topology',
                     value={'mode': 'continuous_research' if mode == 'swarm' else 'kanban', 'root_id': root,
-                           'workers': created, 'budget': budget, 'baseline': baseline, 'state': 'running', 'session_id': session_id})
+                           'workers': created, 'budget': budget, 'baseline': baseline, 'state': 'running', 'session_id': session_id,
+                           **({'time_plan':time_plan} if time_plan else {})})
                 if session_id:
                     kb.add_notify_sub(conn, task_id=root, platform='complex-webui', chat_id=session_id,
                                       user_id=owner, notifier_profile='default')
@@ -330,6 +355,19 @@ class ResearchSwarm:
             name=model.get('model') if isinstance(model,dict) else model
             return next((m.key for m in self.models.values() if m.model==name),fallback)
         except (OSError,ValueError,yaml.YAMLError):return fallback
+
+    @staticmethod
+    def profile_request_timeouts(profile):
+        from hermes_cli.profiles import get_profile_dir
+        import yaml
+        try:
+            cfg=yaml.safe_load((get_profile_dir(profile)/'config.yaml').read_text()) or {}
+            model=cfg.get('model') or {}
+            values=(cfg.get('providers',{}).get(model.get('provider'),{}).get('models',{}).get(model.get('model'),{}))
+            tool=cfg.get('terminal',{}).get('timeout')
+            if tool is None or 'timeout_seconds' not in values or 'stale_timeout_seconds' not in values:return None
+            return {'tool_timeout_seconds':tool,'api_timeout_seconds':values['timeout_seconds'],'api_stale_timeout_seconds':values['stale_timeout_seconds']}
+        except (OSError,ValueError,AttributeError,yaml.YAMLError):return None
 
     def members(self, conn, root, topology):
         seeds={w['task_id']:w for w in topology.get('workers',[])}
@@ -406,6 +444,8 @@ class ResearchSwarm:
             task, topology = self._topology(conn, root)
             mode = self.topology_mode(topology)
             workers = []
+            from .budgets import requests, announced_plan
+            extensions=requests(conn,root,topology,self.authors(conn,topology))
             for item in topology['workers']:
                 worker = kb.get_task(conn, item['task_id'])
                 run = kb.latest_run(conn, worker.id)
@@ -433,10 +473,12 @@ class ResearchSwarm:
                                 'consecutive_failures':worker.consecutive_failures,
                                 'failure_limit':worker.max_retries if worker.max_retries is not None else self.dispatch_options().get('failure_limit',kb.DEFAULT_FAILURE_LIMIT),
                                 'goal_mode':worker.goal_mode,'run':asdict(run) if run else None,
+                                'extensions':[r for r in extensions if r['task_id']==worker.id][-5:],
+                                'request_timeouts':self.profile_request_timeouts(run.profile if run else worker.assignee),
                                 'result': worker.result if mode == 'kanban' and worker.status == 'done' else None})
             return {'id': root, 'title': task.title, 'created_at':task.created_at, 'question': task.body, 'state': self._state(conn, topology), 'mode': mode,
                     'session_id': (self.session_lineage(topology.get('session_id') or task.session_id or '') or [''])[0], 'workers': workers,
-                    'budget': topology['budget'],
+                    'budget': topology['budget'],'time_plan':announced_plan(conn,root),
                     'state_reason':'；'.join(w['title']+'：'+(w['status_reason'] or '已阻塞') for w in workers if w['status']=='blocked'),
                     'publications': self.public(conn, root, topology),
                     'public_records': self.public_records(conn,root,topology)}
@@ -503,6 +545,20 @@ class ResearchSwarm:
                                 'limitations':value.get('limitations',''),
                                 **({'scope':target['scope']} if target and 'scope' in target else {})});seen.add(key)
         return sorted(records,key=lambda r:r['comment_id'])
+
+    def extension_requests(self, owner, root):
+        from .budgets import requests, announced_plan
+        with self.connect(owner) as (conn,_):
+            _,topology=self._topology(conn,root)
+            return {'root_id':root,'time_plan':announced_plan(conn,root),
+                    'requests':requests(conn,root,topology,self.authors(conn,topology))}
+
+    def resolve_extension(self, owner, root, request_comment_id, *, approve, reason, grant_seconds=None):
+        from .budgets import resolve
+        with self.connect(owner) as (conn,_):
+            _,topology=self._topology(conn,root)
+            return resolve(conn,root,topology,self.authors(conn,topology),request_comment_id,
+                           approve=approve,reason=reason,grant_seconds=grant_seconds)
 
     def cancel(self, owner, root):
         with self.connect(owner) as (conn, _):

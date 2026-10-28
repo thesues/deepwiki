@@ -51,9 +51,12 @@ def main():
             if not row.get('model'):raise SystemExit('Complex model is not configured: '+str(row.get('key')))
         raw=json.dumps(rows)
     rows=json.loads(raw)
-    capabilities={row['key']: {key: row[key] for key in ['toolsets','mcp_servers','api_key_env','agent'] if key in row} for row in rows}
+    capabilities={row['key']: {key: row[key] for key in ['toolsets','mcp_servers','api_key_env','agent','timeouts'] if key in row} for row in rows}
     if any(not row.get('api_key_env') or row.get('api_key') for row in rows):
         raise SystemExit('Complex worker credentials must use api_key_env, not inline keys')
+    from .request_timeouts import settings
+    from .budgets import run_ceiling
+    settings();run_ceiling()  # Fail before service admission for malformed resource settings.
     for spec in capabilities.values():
         if 'toolsets' in spec and (not isinstance(spec['toolsets'],list) or any(not isinstance(t,str) for t in spec['toolsets'])):
             raise SystemExit('Worker toolsets must be a list of configured toolset names')
@@ -61,6 +64,10 @@ def main():
             raise SystemExit('Worker mcp_servers must be a Hermes MCP config mapping')
         if 'agent' in spec and not isinstance(spec['agent'],dict):
             raise SystemExit('Worker agent settings must be a native Hermes config mapping')
+        if 'timeouts' in spec:
+            if not isinstance(spec['timeouts'],dict) or set(spec['timeouts'])-{'api_timeout_seconds','api_stale_timeout_seconds','timeout_seconds','stale_timeout_seconds'}:
+                raise SystemExit('Endpoint timeouts must contain only native/API timeout overrides; tool timeout uses COMPLEX_TOOL_TIMEOUT_SECONDS')
+            settings(spec['timeouts'])
     models=load_endpoints(raw)
     if any(not os.environ.get(row['api_key_env']) for row in rows):
         raise SystemExit('Complex endpoint credentials are not configured; anonymous endpoints must explicitly configure an env value such as none')

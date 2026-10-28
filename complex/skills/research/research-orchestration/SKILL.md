@@ -8,6 +8,8 @@ metadata:
       - research_publications
       - research_status
       - research_create
+      - research_extension_requests
+      - research_resolve_extension
       - kanban_show
       - kanban_list
 ---
@@ -61,8 +63,18 @@ Web 项目的前后端分工不等于必须双端口部署：优先最终同源�
 创建前说明实际模型、Agent 数量和预算；信息不足先澄清，信息足够且用户要求执行就创建任务，不重复索要启动确认。
 费用包括执行者推理、goal judge 与协调者后续汇报。
 
+群研创建前自主评估问题难度、需要的研究/实验/证明和同行复验工作、模型实测延迟与不确定性余量，据此选择 `wall_seconds`、迭代/回合上限。不能照搬简单工程卡的短时间，也不固定所有问题为 15 分钟或 1 小时；简单问题可短，开放复杂问题应留足探索和复验时间。主 Agent 仍只做这项资源评估，不替 Worker 解题。
+
+Swarm 的 `research_create` 必须带 `time_plan={assessment, max_run_seconds}`：assessment 是简洁的难度/工作量/时间依据，max_run_seconds 是告知用户的单次运行延期上限，须不小于初始 wall_seconds 且不超过 research_config 的 operator 上限。若用户未要求固定截止时间，应为可解释的不确定性预留延期空间，不把上限机械设成初始时间；若用户明确禁止额外时间，则严格遵守该截止。所有执行者初始时间相同；后续获准延期分别记录，不能假装资源消耗相同。它不是费用或总 token 配额；原生失败重试规则独立，延期不会增加重试次数。
+
+单条工具、API 请求及流无数据超时由独立配置决定，不随研究 run 时间变长。后台命令也必须有明确执行上限，不能把 process.wait 超时误认为进程已经停止。
+
 `wall_seconds` 是一次 native run 的运行超时；开启本地休眠暂停时扣除系统睡眠，并同时暂停模型流无数据超时。`max_iterations` 是每个 Hermes 回合的迭代上限；`max_turns` 只用于 Swarm 的 goal-loop 回合上限。这不是用户指定的费用预算，也不是精确总 token/美元配额，不反复用“预算耗尽”替代解释运行问题。
 失败阈值/自动重试沿用原生 Kanban 的 operator 配置，未配置时用原生默认值，不另写死“一次失败就 block”。重试复用既有 workspace；对已经耗尽预算的阻塞任务，未经用户授权不能新开 run、扩大预算或伪造完成来放行下游。
+
+Worker 在共同 root 的原生黑板提交 `extension:<unique>` 请求后，使用 `research_extension_requests(root_id, after_comment_id)` 读取请求、实际当前 run/剩余时间及时间计划。按问题难度、公开操作/成果和剩余可执行计划判断，调用 `research_resolve_extension(root_id, request_comment_id, approve, reason, grant_seconds?)` 批准适当增量或说明拒绝；可以少于请求值，但必须在已告知的上限内。不要把请求、心跳或“我还在想”当正向研究证据，也不要查看私有推导以判断。
+
+已有策略范围内的延期不再逐次索要用户启动确认；超过上限、旧任务没有延期策略、运行已过期或停止，都不能借延期工具恢复或扩张。批准只更新原生 task/run 的时间限制并留黑板决定，保留同一 run、开始时间、迭代/回合上限和失败计数；重复处理同一请求不会再加时间。不要等所有研究者结束才审核请求。若需要提高上限或恢复已停止任务，另行获得用户明确授权。
 
 用户明确要求给已停止的未完成任务换模型时，用 `research_reassign(task_id, model, user_authorized=true)`。它使用原生 assign/unblock，保留原卡、root、workspace、上游依赖和来源；不要另建一个无关任务组，不要把自己的工具限制说成原生 Kanban 不支持。
 
@@ -73,7 +85,7 @@ Web 项目的前后端分工不等于必须双端口部署：优先最终同源�
 读取 `research_publications(root_id, after_comment_id)` 并翻页，观察阶段成果和验证报告，不能只看发现不看复验。
 主动向用户汇总：哪个 Agent/模型发布了什么范围（scope）的候选成果、哪个 Agent 验证哪条成果、报告 PASS/FAIL/INCONCLUSIVE 的证据与限制、分歧和下一步。区分“第 (1) 问的候选已发布、待复验”与“整题完成”；范围标签、发布、Task done 和同行支持都不是形式验证。没有公开记录的部分只称“尚未公开”，不能推断它未解决或编造完成时间。旧成果没有 scope 时不猜测拆分、不改历史。无公开证据时如实说明。
 读取 `evidence-review`，引用 task/comment/stage。工具返回的是明确标注的摘要片段；不要把未读完整证明当成已形式验证。
-发布通知只触发观察和汇报，不额外创建任务、换模型或重启 Worker。发布与 completed 通知若属于同次交付则合并；对已汇报交付的完成状态只做简短确认，不重复完整报告、任务表、费用提示和形式证明免责声明。不要重复汇报已经处理的公开 ID。
+发布通知触发观察、汇报，以及审核本次已授权上限内的延期申请；不额外创建任务、换模型、重启 Worker 或提高上限。发布与 completed 通知若属于同次交付则合并；对已汇报交付的完成状态只做简短确认，不重复完整报告、任务表、费用提示和形式证明免责声明。不要重复汇报已经处理的公开 ID。
 
 解释慢时直接用 `research_status` 的模型调用次数/累计耗时与工具耗时，不从心跳存活推断不卡死，不未经测量宣称某模型最强或必定更快。当前看板提供全部 Agent、动作摘要和附件下载，没有完整 Worker 会话入口；你没有终端/解包工具，不能承诺亲自静态检查附件，也不能称协调者推理“零成本”。
 Agent 看板位于输入栏附近，始终跟随当前聊天会话；用户通过聊天会话栏切换查看其他会话的 Agent。这不改变正在运行的 Agent、任务归属或执行方式。

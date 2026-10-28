@@ -53,10 +53,12 @@ before execution evict the cached Agent so old tools or system prompts cannot
 leak into another mode. Research has coordinator-only tools/skills/identity;
 single uses its ordinary configuration and remains capable of doing the work.
 
-`research_create(question, models, budget, baseline?, tasks?)` creates the native
-graph. Kanban requires one `{title, body, depends_on?}` task per model, in dependency
-order; indices in `depends_on` are zero-based and refer to earlier tasks. Swarm
-requires two or more models and forbids preassigned task directions.
+`research_create(question, models, budget, baseline?, tasks?, time_plan?)` creates
+the native graph. Kanban requires one `{title, body, depends_on?}` task per model,
+in dependency order; indices in `depends_on` are zero-based and refer to earlier
+tasks. Swarm requires two or more models, forbids preassigned task directions, and
+requires `time_plan={assessment, max_run_seconds}` explaining its chosen initial
+time and announced extension ceiling.
 
 ## Native automatic dispatch
 
@@ -154,8 +156,10 @@ percentage), horizontal group filters, two-column execution cards on wide screen
 and stacked cards on phones. Latest actions and blockers are visible; run diagnostics,
 recent tools and delivered results expand on demand. Stage submissions and peer
 reports have separate type/verdict labels and retain their sources. Failed updates
-keep the previous records with an explicit warning. The panel follows the editor's
-size and stays above it instead of covering the message input; Escape closes it.
+keep the previous records with an explicit warning. The panel is centered in the
+visible viewport horizontally and in the usable space above the editor vertically,
+with a maximum 600px width/680px height. It follows input/approval size and visual
+viewport resize/scroll without covering those controls; Escape closes it.
 
 UI shows actual task/run state, model, PID, OS liveness, elapsed run time, heartbeat
 age, native failure limits, timeout reasons and unfinished dependencies. Operations
@@ -183,6 +187,27 @@ There is no navigation link to general.
   the root reasoning setting; otherwise provider defaults remain unchanged.
   Task `max_iterations` controls `agent.max_turns`. The lead does not inherit
   execution capabilities.
+- `COMPLEX_MAX_RUN_SECONDS`: operator ceiling for an initial/extended native run,
+  default 86400. This is not a fixed default research duration; the lead chooses
+  duration and a lower/equal extension ceiling from assessed difficulty/work.
+- `COMPLEX_TOOL_TIMEOUT_SECONDS`: independent per-terminal-command hard bound,
+  default 180. It does not grow when a research run is extended. Local foreground
+  and background commands use a per-command timeout executable under native
+  ownership, not a Worker-local timer. An identity gate runs before payload code;
+  timeout and normal native teardown use birth-checked tree termination. Owner
+  Worker exit/reuse is an additional stop condition, not a budget extension.
+  Approvals still inspect the original command and native cwd/PTY handling stays
+  intact. Remote background commands are refused; remote foreground keeps its
+  native backend semantics. External SIGKILL of the executable itself, unobserved
+  daemon escape or stalled/unavailable native kernel operations cannot have a
+  universal portable cleanup guarantee.
+- `COMPLEX_API_TIMEOUT_SECONDS` / `COMPLEX_API_STALE_TIMEOUT_SECONDS`: independent
+  API request timeout / base no-data timeout, default 1800 / 180. Endpoint
+  `timeouts` may override these using `api_timeout_seconds` and
+  `api_stale_timeout_seconds` (or native aliases `timeout_seconds` and
+  `stale_timeout_seconds`). Generated profiles use native provider/model config;
+  context-dependent transport behavior remains native. Other tools retain their
+  own backend timeouts; there is no universal Python tool-thread cancellation.
 - `COMPLEX_MAX_WORKERS`: native per-owner-board concurrency limit, default 8.
 - `COMPLEX_BASELINES_DIR`: approved baseline source root; each worker gets a copy.
 - `MEDIA_USE_S3=0|1`: independent storage flag, unrelated to product/local/auth.
@@ -194,6 +219,44 @@ Default Kanban uses native single-shot execution, without a goal judge;
 `max_turns` bounds the continuous goal loop only in Swarm. These are not exact
 aggregate tokens/dollars. Task scope is its assigned acceptance criteria, not
 repeated whole-project validation on every implementation card.
+
+For Swarm, the lead estimates difficulty, research/experiment/proof work, peer
+reproduction, model latency and uncertainty margin before selecting the initial
+budget. There is no fixed 15-minute/one-hour difficulty table. All workers start
+with the same initial budget and baseline. The time assessment and extension
+ceiling are visible on the board; each run's current native limit is authoritative.
+
+A worker calls `research_request_extension(extra_seconds, reason, plan)`, a
+validated convenience tool on native comments: task/current run/root are bound
+automatically and an existing pending request is reused. A captured native
+Worker run ID prevents stale Workers from borrowing a replacement run. New
+requests fail when the announced ceiling has no headroom. It does not grant time.
+The same request can also be posted directly to the common native root:
+
+```text
+[swarm:blackboard] {"key":"extension:<unique>","value":{
+  "task_id":"own task","run_id":123,"extra_seconds":600,
+  "reason":"actual need for more time","plan":"bounded remaining work"}}
+```
+
+The numbers are illustrative, not defaults. `research_extension_requests` reads
+first authenticated requests/decisions with cursors. The lead uses
+`research_resolve_extension(root_id, request_comment_id, approve, reason,
+grant_seconds?)` to grant a justified increment (optionally smaller) within the
+already announced ceiling. A native `extension-decision:<request comment ID>`
+comment and `runtime_extended` event record the decision; task/run limit updates
+and the decision are one native SQLite write transaction. Duplicate/concurrent
+resolution cannot add time twice. The same run ID, start/clock anchors, turn limits
+and failure count stay unchanged; stopped/expired runs are never revived. Native
+retries may inherit the updated task limit, but extensions add no retry attempts.
+
+Request/heartbeat is not an extension, and time requests do not enter research
+stage/verification counts. Root notification cursors remain pending until a
+request is decided, allowing an interrupted coordinator notice to retry.
+Notifications may resolve within the existing ceiling, but cannot raise it,
+restart workers or create tasks. Legacy groups without a time plan are not
+silently granted a policy or more time. Workers should apply before expiry,
+continue useful work without busy polling and obey the actual granted limit.
 
 Failure/retry policy follows native Kanban: no per-task `max_retries` override.
 Explicit root `kanban.failure_limit` and `kanban.dispatch_stale_timeout_seconds`

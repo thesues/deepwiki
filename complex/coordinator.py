@@ -28,7 +28,15 @@ Use research_status for actual operations, run outcomes and dependency blockers.
 Default Kanban uses single-shot execution, not continuous research or goal judge.
 For simple work use the smallest useful graph; do not require full-project validation
 on every implementation card. Native retries follow operator Kanban configuration.
-Never restart an exhausted run or increase its timeout without user authorization.
+Choose Swarm run time from problem difficulty, expected experiments/proof work,
+peer verification and model latency. Do not blindly reuse a short execution-task
+budget. Swarm research_create requires time_plan: explain assessment and announce
+max_run_seconds as the extension ceiling. All workers start with the same budget.
+Never restart an exhausted run or increase its timeout outside an announced policy
+without user authorization. A live Worker may request time on the native root;
+use research_extension_requests and research_resolve_extension to judge and decide
+within the announced ceiling. Granting does not restart/reset the run or increase
+its turn limits. Per-tool/API request timeouts are separate from total run time.
 When the user explicitly requests changing the model of a stopped task, use
 research_reassign on that same card, preserving its root, workspace and dependencies.
 Do not mistake your tool restrictions for missing native Kanban capabilities.
@@ -42,7 +50,9 @@ partial candidates as partial and pending review, not as completion of the entir
 problem. Missing publication means unpublished, not unsolved. Never invent scope,
 retroactive stages or publication times for old records. Preserve evidence and
 limits, and proactively summarize new publications to the user. Use evidence-review.
-Publication notifications only trigger observation and reporting, not more tasks.
+Publication notifications trigger observation/reporting and, when present,
+review of authenticated extension requests within the already announced ceiling;
+they never authorize more tasks, stopped-run recovery or raising that ceiling.
 A task done or peer PASS is not a formal proof. Missing capability is a blocker,
 not permission to solve or verify the problem yourself.
 """
@@ -104,9 +114,11 @@ def register(runtime):
             item={k:w[k] for k in ['id','title','model','status','activity','activity_source','activity_at','status_reason',
                                   'dependencies','consecutive_failures','failure_limit','goal_mode','stats','timing','attachments']}
             item['run']={k:w['run'][k] for k in ['id','status','outcome','started_at','ended_at','max_runtime_seconds']} if w['run'] else None
+            item['extensions']=[{k:r[k] for k in ['comment_id','run_id','status','extra_seconds','limit_seconds','max_run_seconds','can_approve']} for r in w.get('extensions',[])]
+            item['request_timeouts']=w.get('request_timeouts')
             workers.append(item)
         return {'id':group['id'],'mode':group['mode'],'state':group['state'],'state_reason':group['state_reason'],
-                'budget':group['budget'],'workers':workers}
+                'budget':group['budget'],'time_plan':group.get('time_plan'),'workers':workers}
     def status(args,**_):
         try:return json.dumps(facts(runtime.detail(owner(),args['root_id'])),ensure_ascii=False)
         except (ValueError,LookupError,PermissionError,KeyError) as exc:return json.dumps({'error':str(exc)})
@@ -119,7 +131,7 @@ def register(runtime):
         try:
             result=runtime.create(owner(),question=args['question'],models=args['models'],budget=args['budget'],
                                   baseline=args.get('baseline',''),session_id=get_session_env('HERMES_SESSION_KEY',''),
-                                  mode=current_mode.get(),tasks=args.get('tasks'))
+                                  mode=current_mode.get(),tasks=args.get('tasks'),time_plan=args.get('time_plan'))
             # Return bounded coordination facts, not private workspaces or credentials.
             return json.dumps(facts(result),ensure_ascii=False)
         except (ValueError,LookupError,PermissionError,KeyError) as exc:return json.dumps({'error':str(exc)})
@@ -135,6 +147,34 @@ def register(runtime):
     registry.register(name='research_config',toolset='research-coordinator',handler=config,
                       schema={'name':'research_config','description':'Read actual configured models, capacity, native research mode and budget semantics.',
                               'parameters':{'type':'object','properties':{}}})
+    def extension_requests(args,**_):
+        try:
+            after=args.get('after_comment_id',0);limit=args.get('limit',4)
+            if type(after) is not int or after<0 or type(limit) is not int or not 1<=limit<=8:raise ValueError('invalid extension cursor/limit')
+            result=runtime.extension_requests(owner(),args['root_id'])
+            rows=[r for r in result['requests'] if r['comment_id']>after];page=[]
+            for row in rows[:limit]:
+                item={**row,'excerpted':False}
+                for key,size in [('reason',400),('plan',500)]:
+                    if len(item[key])>size:item['excerpted']=True
+                    item[key]=item[key][:size]
+                if item['decision']:
+                    item['decision']={**item['decision'],'reason':item['decision']['reason'][:400]}
+                page.append(item)
+            return json.dumps({'root_id':args['root_id'],'time_plan':result['time_plan'],'requests':page,
+                               'next_comment_id':page[-1]['comment_id'] if page else after,'has_more':len(rows)>limit},ensure_ascii=False)
+        except (ValueError,LookupError,PermissionError,KeyError) as exc:return json.dumps({'error':str(exc)})
+    def resolve_extension(args,**_):
+        try:
+            return json.dumps(runtime.resolve_extension(owner(),args['root_id'],args['request_comment_id'],
+                approve=args['approve'],reason=args['reason'],grant_seconds=args.get('grant_seconds')),ensure_ascii=False)
+        except (ValueError,LookupError,PermissionError,KeyError,RuntimeError) as exc:return json.dumps({'error':str(exc)})
+    registry.register(name='research_extension_requests',toolset='research-coordinator',handler=extension_requests,
+        schema={'name':'research_extension_requests','description':'Read authenticated Worker extension requests and native decisions. Time requests are not research evidence. Only live unexpired runs within the announced ceiling are eligible.',
+                'parameters':{'type':'object','properties':{'root_id':{'type':'string'},'after_comment_id':{'type':'integer'},'limit':{'type':'integer','minimum':1,'maximum':8}},'required':['root_id']}})
+    registry.register(name='research_resolve_extension',toolset='research-coordinator',handler=resolve_extension,
+        schema={'name':'research_resolve_extension','description':'Approve/reject an authenticated native-root extension request within its announced run ceiling. Atomic and idempotent; keeps the same run/start time/turn limits. Never resumes stopped or expired runs. Optional grant_seconds permits a smaller grant than requested.',
+                'parameters':{'type':'object','properties':{'root_id':{'type':'string'},'request_comment_id':{'type':'integer'},'approve':{'type':'boolean'},'reason':{'type':'string'},'grant_seconds':{'type':'integer','minimum':1}},'required':['root_id','request_comment_id','approve','reason']}})
     def publications(args,**_):
         try:
             limit=int(args.get('limit',2));after=int(args.get('after_comment_id',0))
@@ -162,6 +202,8 @@ def register(runtime):
                               'parameters':{'type':'object','properties':{'question':{'type':'string'},
                                   'models':{'type':'array','items':{'type':'string'}},
                                   'budget':{'type':'object','properties':{'wall_seconds':{'type':'integer'},'max_iterations':{'type':'integer'},'max_turns':{'type':'integer'}},'required':['wall_seconds','max_iterations','max_turns']},
+                                  'time_plan':{'type':'object','description':'Required for Swarm. Assess problem difficulty, research/verification work and model latency; choose initial budget and this extension ceiling, not a fixed short timeout.',
+                                               'properties':{'assessment':{'type':'string'},'max_run_seconds':{'type':'integer','minimum':30}},'required':['assessment','max_run_seconds']},
                                   'baseline':{'type':'string'},
                                   'tasks':{'type':'array','description':'Required in default Kanban mode, omitted in Swarm mode. One specification per model, in dependency order.',
                                            'items':{'type':'object','properties':{'title':{'type':'string'},'body':{'type':'string'},
@@ -172,7 +214,8 @@ def scope(agent):
     """Keep research leads coordinator-only, including native tool refreshes."""
     if getattr(agent,'_coordination_scope',False):return agent
     allowed={'kanban_show','kanban_list','kanban_comment','kanban_attachments',
-             'research_config','research_create','research_reassign','research_publications','research_status','skill_view','skills_list','clarify','input_image_open'}
+             'research_config','research_create','research_reassign','research_publications','research_status',
+             'research_extension_requests','research_resolve_extension','skill_view','skills_list','clarify','input_image_open'}
     raw_tools=agent.tools;raw_names=agent.valid_tool_names
     cls=type(agent)
     def set_tools(self,value):self.__dict__['_coordinator_tools']=[t for t in (value or []) if t.get('function',{}).get('name') in allowed]
